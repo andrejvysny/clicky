@@ -57,7 +57,7 @@ nonisolated public struct PNGImageAttachment: Equatable, Sendable {
     }
 }
 
-nonisolated public struct WindowCaptureTarget: Equatable, Sendable {
+nonisolated public struct WindowCaptureTarget: Codable, Equatable, Sendable {
     public let processIdentifier: Int32
     public let windowIdentifier: UInt32
     public let applicationIdentifier: String

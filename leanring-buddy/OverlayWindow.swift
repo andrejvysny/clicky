@@ -369,6 +369,10 @@ struct BlueCursorView: View {
             companionManager.tearDownOnboardingVideo()
         }
         .onChange(of: companionManager.detectedElementScreenLocation) { newLocation in
+            if newLocation == nil, buddyNavigationMode != .followingCursor {
+                cancelNavigationAndResumeFollowing()
+                return
+            }
             // When a UI element location is detected, navigate the buddy to
             // that position so it points at the element.
             guard let screenLocation = newLocation,

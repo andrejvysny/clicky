@@ -17,11 +17,13 @@ let package = Package(
     products: [
         .library(name: "ClickyCore", targets: ["ClickyCore"]),
         .executable(name: "clicky-text", targets: ["ClickyTextCLI"]),
+        .executable(name: "clicky-guide", targets: ["ClickyGuideCLI"]),
     ],
     targets: [
         // Mirror the app target's isolation settings: the app compiles these same files with MainActor default isolation.
         .target(name: "ClickyCore", path: "leanring-buddy/TextInput/Core", swiftSettings: appTargetSwiftSettings),
         .executableTarget(name: "ClickyTextCLI", dependencies: ["ClickyCore"], path: "Tools/ClickyTextCLI"),
+        .executableTarget(name: "ClickyGuideCLI", dependencies: ["ClickyCore"], path: "Tools/ClickyGuideCLI"),
         .testTarget(name: "ClickyCoreTests", dependencies: ["ClickyCore"], path: "Tests/ClickyCoreTests", resources: [.copy("Fixtures")]),
     ],
     swiftLanguageModes: [.v5]

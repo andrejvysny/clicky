@@ -10,6 +10,14 @@ struct QuickAskEditor: NSViewRepresentable {
     var onAttach: (() -> Void)? = nil
     /// Command+Shift+S toggles including the whole screen.
     var onIncludeScreen: (() -> Void)? = nil
+    /// Option+Shift+E cycles per-prompt effort.
+    var onCycleEffort: (() -> Void)? = nil
+    /// Long multi-line pastes collapse into a chip instead of the editor.
+    var onPasteSnippet: ((String) -> Void)? = nil
+    /// Backspace in an empty editor removes the newest quote/chip.
+    var onDeleteEmpty: (() -> Void)? = nil
+    /// Command+N starts a new conversation.
+    var onNewConversation: (() -> Void)? = nil
     let onSubmit: () -> Void
     let onCancel: () -> Void
 
@@ -28,6 +36,10 @@ struct QuickAskEditor: NSViewRepresentable {
         editor.onCancel = onCancel
         editor.onAttach = onAttach
         editor.onIncludeScreen = onIncludeScreen
+        editor.onCycleEffort = onCycleEffort
+        editor.onPasteSnippet = onPasteSnippet
+        editor.onDeleteEmpty = onDeleteEmpty
+        editor.onNewConversation = onNewConversation
         editor.isRichText = false
         editor.isAutomaticQuoteSubstitutionEnabled = false
         editor.isAutomaticDashSubstitutionEnabled = false
@@ -38,7 +50,7 @@ struct QuickAskEditor: NSViewRepresentable {
         editor.isHorizontallyResizable = false
         editor.autoresizingMask = [.width]
         editor.textContainer?.widthTracksTextView = true
-        editor.textContainer?.containerSize = NSSize(width: compact ? 220 : 380, height: CGFloat.greatestFiniteMagnitude)
+        editor.textContainer?.containerSize = NSSize(width: compact ? 330 : 380, height: CGFloat.greatestFiniteMagnitude)
         editor.font = .systemFont(ofSize: compact ? 13 : 14)
         editor.textColor = .white
         editor.insertionPointColor = .white
@@ -61,6 +73,10 @@ struct QuickAskEditor: NSViewRepresentable {
         editor.onCancel = onCancel
         editor.onAttach = onAttach
         editor.onIncludeScreen = onIncludeScreen
+        editor.onCycleEffort = onCycleEffort
+        editor.onPasteSnippet = onPasteSnippet
+        editor.onDeleteEmpty = onDeleteEmpty
+        editor.onNewConversation = onNewConversation
         if editor.string != text, !editor.hasMarkedText() { editor.string = text }
     }
 
@@ -89,6 +105,10 @@ private final class PromptTextView: NSTextView {
     var onCancel: (() -> Void)?
     var onAttach: (() -> Void)?
     var onIncludeScreen: (() -> Void)?
+    var onCycleEffort: (() -> Void)?
+    var onPasteSnippet: ((String) -> Void)?
+    var onDeleteEmpty: (() -> Void)?
+    var onNewConversation: (() -> Void)?
     var placeholder = ""
 
     override func draw(_ dirtyRect: NSRect) {
@@ -111,7 +131,20 @@ private final class PromptTextView: NSTextView {
                event.charactersIgnoringModifiers?.lowercased() == "a" { onAttach(); return }
             if let onIncludeScreen, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
                event.charactersIgnoringModifiers?.lowercased() == "s" { onIncludeScreen(); return }
+            // Physical E key so the dead-key character Option+E would insert never reaches the text.
+            if let onCycleEffort, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.option, .shift],
+               event.keyCode == 14 { onCycleEffort(); return }
+            if let onNewConversation, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command],
+               event.charactersIgnoringModifiers?.lowercased() == "n" { onNewConversation(); return }
+            if let onDeleteEmpty, event.keyCode == 51, string.isEmpty,
+               event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty { onDeleteEmpty(); return }
         }
         super.keyDown(with: event)
+    }
+
+    override func paste(_ sender: Any?) {
+        if let onPasteSnippet, !hasMarkedText(), let text = NSPasteboard.general.string(forType: .string),
+           PastedSnippet.shouldCollapse(text) { onPasteSnippet(text); return }
+        super.paste(sender)
     }
 }

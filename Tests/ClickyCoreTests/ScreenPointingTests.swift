@@ -67,7 +67,7 @@ final class ScreenPointingTests: XCTestCase {
     }
 
     func testScreenInclusionPreference() {
-        XCTAssertEqual(ScreenInclusionPreference.allCases.map(\.displayName), ["Off", "Ask each time", "Always"])
+        XCTAssertEqual(ScreenInclusionPreference.allCases.map(\.displayName), ["Off", "Confirm per task", "Task window"])
         XCTAssertTrue(ScreenInclusionPreference.always.startsIncluded)
         XCTAssertFalse(ScreenInclusionPreference.askEachTime.startsIncluded)
         XCTAssertFalse(ScreenInclusionPreference.off.isAvailable)

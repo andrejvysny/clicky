@@ -6,6 +6,8 @@ private final class QuickAskPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
     override func cancelOperation(_ sender: Any?) { onCancel?() }
+    /// The island hangs from the top edge over the menu bar; AppKit would push it below.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 
 enum QuickAskPresentation: Equatable {
@@ -25,7 +27,6 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
     private var isClosing = false
     private var presentationIdentifier = UUID()
     private var currentPresentation = QuickAskPresentation.ghost
-    private var followTimer: Timer?
     private let isUITest = ProcessInfo.processInfo.arguments.contains("--clicky-ui-test")
 
     init(controller: AskController) {
@@ -44,7 +45,6 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
                 currentPresentation = presentation
                 if case .details(let settings) = presentation { controller.showSettings = settings }
                 panel.contentView = makeHostingView(for: presentation)
-                updatePointerFollowing()
                 resize()
             } else if case .details(true) = presentation {
                 controller.showSettings = true
@@ -66,10 +66,11 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
         newPanel.contentView = makeHostingView(for: presentation)
         newPanel.onCancel = { [weak self] in self?.close(restoreFocus: true) }
         newPanel.isFloatingPanel = true
-        newPanel.level = .floating
+        // The island version sits over the menu bar, like the status island it replaces.
+        newPanel.level = presentation == .ghost ? .statusBar : .floating
         newPanel.isOpaque = false
         newPanel.backgroundColor = .clear
-        newPanel.hasShadow = true
+        newPanel.hasShadow = presentation != .ghost
         newPanel.hidesOnDeactivate = false
         newPanel.isReleasedWhenClosed = false
         newPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -80,48 +81,26 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
             newPanel.setFrame(placement(pointer: presentationPointer, size: CGSize(width: panelWidth, height: 280), visibleFrame: screen.visibleFrame), display: false)
         }
         resize()
-        installFocusObservers()
+        if !isUITest { installFocusObservers() }
         newPanel.makeKeyAndOrderFront(nil)
-        updatePointerFollowing()
     }
 
     private func placement(pointer: CGPoint, size: CGSize, visibleFrame: CGRect) -> CGRect {
-        currentPresentation == .ghost
-            ? PopupPlacement.besideCompanion(pointer: pointer, size: size, visibleFrame: visibleFrame)
-            : PopupPlacement.frame(pointer: pointer, size: size, visibleFrame: visibleFrame)
+        guard currentPresentation == .ghost else { return PopupPlacement.frame(pointer: pointer, size: size, visibleFrame: visibleFrame) }
+        let screen = NSScreen.screens.first { $0.frame.contains(pointer) } ?? NSScreen.main
+        return IslandLayout.frame(screen: screen?.frame ?? visibleFrame, width: size.width, height: size.height)
     }
 
-    /// The ghost input travels with the pointer beside the companion. The UI-test fixture keeps it
-    /// stationary because XCUITest moves the pointer onto the elements it clicks.
-    private func updatePointerFollowing() {
-        followTimer?.invalidate()
-        followTimer = nil
-        guard currentPresentation == .ghost, !isUITest else { return }
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.followPointer() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        followTimer = timer
-    }
-
-    private func followPointer() {
-        // Holding Option pins the pill so its buttons can be reached with the mouse.
-        guard let panel, panel.isVisible, currentPresentation == .ghost, !NSEvent.modifierFlags.contains(.option) else { return }
-        let pointer = NSEvent.mouseLocation
-        guard pointer != presentationPointer,
-              let screen = NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? NSScreen.main else { return }
-        presentationPointer = pointer
-        panel.setFrame(placement(pointer: pointer, size: panel.frame.size, visibleFrame: screen.visibleFrame), display: false)
-    }
-
-    private var panelWidth: CGFloat { currentPresentation == .ghost ? 300 : 440 }
+    private var panelWidth: CGFloat { currentPresentation == .ghost ? IslandLayout.askWidth : 440 }
 
     private func makeHostingView(for presentation: QuickAskPresentation) -> NSHostingView<AnyView> {
         let onCancel: () -> Void = { [weak self] in self?.close(restoreFocus: true) }
         let onLayoutChanged: () -> Void = { [weak self] in self?.resize() }
         switch presentation {
         case .ghost:
-            return NSHostingView(rootView: AnyView(GhostAskView(controller: controller, onCancel: onCancel, onLayoutChanged: onLayoutChanged)))
+            let screen = NSScreen.screens.first(where: { $0.frame.contains(presentationPointer) }) ?? NSScreen.main
+            let metrics = screen.map(IslandMetrics.init(screen:)) ?? IslandMetrics()
+            return NSHostingView(rootView: AnyView(IslandAskView(controller: controller, metrics: metrics, onCancel: onCancel, onLayoutChanged: onLayoutChanged)))
         case .details:
             let screen = NSScreen.screens.first(where: { $0.frame.contains(presentationPointer) }) ?? NSScreen.main
             return NSHostingView(rootView: AnyView(QuickAskView(controller: controller, onCancel: onCancel, onLayoutChanged: onLayoutChanged,
@@ -141,8 +120,6 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
     func close(restoreFocus: Bool) {
         guard let panel, panel.isVisible, !isClosing else { return }
         isClosing = true
-        followTimer?.invalidate()
-        followTimer = nil
         let ownedFocus = panel.isKeyWindow
         panel.orderOut(nil)
         removeFocusObservers()
@@ -156,6 +133,7 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        guard !isUITest else { return }
         let expectedPresentation = presentationIdentifier
         DispatchQueue.main.async { [weak self] in
             guard let self, presentationIdentifier == expectedPresentation, !isClosing, NSApp.modalWindow == nil, panel?.isVisible == true, panel?.isKeyWindow == false else { return }

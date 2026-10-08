@@ -1,89 +1,66 @@
 import AppKit
 import SwiftUI
 
+/// Clicky window opened from the menu: the full last reply, or Settings. Asking happens in the island.
 struct QuickAskView: View {
     @ObservedObject var controller: AskController
     let onCancel: () -> Void
     let onLayoutChanged: () -> Void
     let maximumHeight: CGFloat
-    @State private var editorHeight: CGFloat = 88
     @State private var contentHeight: CGFloat = 420
 
     var body: some View {
         ScrollView {
-            composer.background(GeometryReader { geometry in
+            content.background(GeometryReader { geometry in
                 Color.clear.preference(key: ComposerHeightKey.self, value: geometry.size.height)
             })
         }
-        .frame(width: 440, height: min(maximumHeight, max(240, contentHeight)))
-        .background(Color(red: 0.08, green: 0.09, blue: 0.12), in: RoundedRectangle(cornerRadius: 14))
+        .frame(width: 440, height: min(maximumHeight, max(200, contentHeight)))
+        .background(ClickyChrome.panel, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 1))
         .preferredColorScheme(.dark)
         .onPreferenceChange(ComposerHeightKey.self) { height in
             guard abs(contentHeight - height) > 0.5 else { return }
             contentHeight = height
             onLayoutChanged()
         }
+        .onChange(of: controller.showSettings) { _ in onLayoutChanged() }
     }
 
-    private var composer: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Triangle().fill(Color.blue).frame(width: 16, height: 16).rotationEffect(.degrees(35))
-                Text("Ask Clicky").font(.headline)
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 8) {
+                Triangle().fill(ClickyChrome.ask).frame(width: 14, height: 12).rotationEffect(.degrees(35))
+                Text(controller.showSettings ? "Settings" : "Last reply").font(.system(size: 13, weight: .semibold))
                 Spacer()
-                Button(controller.showSettings ? "Done" : "Settings") { controller.showSettings.toggle() }
-                    .clickyPointerCursor()
+                Button(controller.showSettings ? "Last reply" : "Settings") { controller.showSettings.toggle() }.islandButton(.secondary)
+                Button("Close", action: onCancel).islandButton(.quiet).keyboardShortcut(.cancelAction)
             }
-            Picker("Backend", selection: $controller.provider) {
-                ForEach(AgentProvider.allCases, id: \.self) { Text($0.displayName).tag($0) }
-            }.disabled(controller.isBusy)
-            Text(controller.session.map { "Managed session · " + String($0.identifier.prefix(12)) } ?? "New managed conversation")
-                .font(.caption).foregroundStyle(.secondary)
-            if controller.showSettings { AskSettingsView(controller: controller) }
-            QuickAskEditor(text: $controller.draft, height: $editorHeight, onSubmit: { _ = controller.submit() }, onCancel: onCancel)
-                .frame(height: editorHeight)
-                .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
-                .id(controller.editorGeneration)
-                .disabled(controller.isBusy)
-            HStack {
-                Button(controller.isCapturing ? "Capturing window…" : "Attach window screenshot") { controller.attachWindowSnapshot() }
-                    .disabled(controller.isBusy || controller.isCapturing || controller.captureTargetName == nil)
-                    .clickyPointerCursor().accessibilityIdentifier("quickAskAttachWindow")
-                if controller.isCapturing { Button("Cancel capture") { controller.removeAttachment() }.clickyPointerCursor() }
-            }
-            if let image = controller.attachment { AttachmentPreview(image: image, onRemove: controller.removeAttachment) }
-            if let error = controller.attachmentError { Text(error).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
-            Text(controller.captureTargetName.map { "Captures only the original \($0) window. Review before sending." } ?? "Reopen Quick Ask in the window you want to attach.")
-                .font(.caption2).foregroundStyle(.secondary)
-            if let error = controller.errorMessage { Text(error).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
-            Text(controller.status).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            if !controller.response.isEmpty {
-                ScrollView { Text(ReplyMarkdown.attributed(controller.response)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                    .frame(maxHeight: 160)
-                    .accessibilityIdentifier("quickAskResponse")
-            }
-            HStack {
-                Text("Enter sends · Shift+Enter adds a line").font(.caption2).foregroundStyle(.secondary)
-                Spacer()
-                Button("Cancel", action: onCancel).clickyPointerCursor()
-                if controller.isBusy {
-                    Button("Stop reply") { controller.stopReply() }.clickyPointerCursor()
-                } else {
-                    Button("Send") { _ = controller.submit() }.disabled(!controller.canSubmit).clickyPointerCursor().accessibilityIdentifier("quickAskSend")
-                }
-            }
+            if controller.showSettings { AskSettingsView(controller: controller) } else { reply }
         }
         .padding(16)
-        .frame(width: 440)
-        .foregroundStyle(.white)
-        .background(Color(red: 0.08, green: 0.09, blue: 0.12), in: RoundedRectangle(cornerRadius: 14))
-        .preferredColorScheme(.dark)
-        .onChange(of: editorHeight) { _ in onLayoutChanged() }
-        .onChange(of: controller.showSettings) { _ in onLayoutChanged() }
-        .onChange(of: controller.errorMessage) { _ in onLayoutChanged() }
-        .onChange(of: controller.response.isEmpty) { _ in onLayoutChanged() }
-        .onChange(of: controller.attachment) { _ in onLayoutChanged() }
-        .onChange(of: controller.attachmentError) { _ in onLayoutChanged() }
+        .frame(width: 440, alignment: .leading)
+        .foregroundStyle(DS.Colors.textPrimary)
+    }
+
+    @ViewBuilder private var reply: some View {
+        if controller.response.isEmpty {
+            Text("No reply yet. Press \(ShortcutLabel.text(keyCode: controller.shortcutKeyCode, modifiers: controller.shortcutModifiers)) to ask.")
+                .font(.system(size: 12)).foregroundStyle(DS.Colors.textSecondary)
+        } else {
+            Text(ReplyMarkdown.attributed(controller.response)).font(.system(size: 13)).lineSpacing(3)
+                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel(controller.response).accessibilityIdentifier("quickAskResponse")
+            HStack(spacing: 6) {
+                Button("Copy") { controller.copyResponse() }.islandButton(.secondary)
+                Button("Speak") { controller.speakResponse() }.islandButton(.secondary)
+                Spacer()
+                Button("New conversation") { controller.newConversation() }.islandButton(.quiet)
+            }
+        }
+        if let error = controller.errorMessage {
+            Text(error).font(.system(size: 11)).foregroundStyle(DS.Colors.warningText).fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
@@ -92,65 +69,79 @@ private struct ComposerHeightKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
+/// Grouped settings: backend, shortcuts, sharing, speech, conversation.
 struct AskSettingsView: View {
     @ObservedObject var controller: AskController
     @State private var recordingShortcut = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Project folder").font(.caption)
-            HStack {
-                TextField("Project folder", text: $controller.workingDirectory).textFieldStyle(.roundedBorder)
-                Button("Choose") { controller.chooseDirectory() }.clickyPointerCursor()
-            }
-            if controller.provider != .preview {
-                Text("Installed agent executable").font(.caption)
-                HStack {
-                    TextField("Executable path", text: controller.provider == .claude ? $controller.claudeExecutable : $controller.codexExecutable).textFieldStyle(.roundedBorder)
-                    Button("Choose") { controller.chooseExecutable() }.clickyPointerCursor()
+        VStack(alignment: .leading, spacing: 18) {
+            section("Backend") {
+                Picker("", selection: $controller.provider) {
+                    ForEach(AgentProvider.allCases, id: \.self) { Text($0 == .preview ? "Preview" : $0.displayName).tag($0) }
                 }
-                Text("Use the official CLI to sign in. Clicky does not store account credentials.").font(.caption2).foregroundStyle(.secondary)
+                .pickerStyle(.segmented).labelsHidden()
+                if controller.provider == .preview {
+                    note("Local preview sends nothing and uses no AI.")
+                    Button("Demo guide (no AI)") { controller.guide.startDemo() }.islandButton(.secondary)
+                } else {
+                    HStack(spacing: 6) {
+                        TextField("Executable path", text: controller.provider == .claude ? $controller.claudeExecutable : $controller.codexExecutable)
+                            .textFieldStyle(.roundedBorder).font(.system(size: 11, design: .monospaced))
+                        Button("Choose") { controller.chooseExecutable() }.islandButton(.secondary)
+                    }
+                    note(controller.provider == .claude
+                         ? "Haiku 5.5 with your Claude sign-in. Raising effort starts a new conversation."
+                         : "GPT-6 Luna in a separate Clicky-owned Codex profile. Effort applies per prompt.")
+                    if controller.provider == .codex { Button("Sign in to Clicky Codex") { controller.signInCodex() }.islandButton(.secondary) }
+                }
             }
-            HStack {
-                Button(recordingShortcut ? "Press a shortcut…" : "Change Quick Ask shortcut") { recordingShortcut = true }.clickyPointerCursor()
-                Button("Reset") { controller.updateShortcut(keyCode: 49, modifiers: 0xA00) }.clickyPointerCursor()
+            section("Shortcuts") {
+                HStack(spacing: 3) {
+                    Text("Quick Ask").font(.system(size: 12))
+                    Spacer()
+                    ForEach(ShortcutLabel.parts(keyCode: controller.shortcutKeyCode, modifiers: controller.shortcutModifiers), id: \.self) { KeyCap(label: $0) }
+                }
+                HStack(spacing: 6) {
+                    Button(recordingShortcut ? "Press a shortcut…" : "Change") { recordingShortcut = true }.islandButton(.secondary)
+                    Button("Reset") { controller.updateShortcut(keyCode: 49, modifiers: 0xA00) }.islandButton(.quiet)
+                }
+                if recordingShortcut {
+                    ShortcutCaptureView { keyCode, modifiers in
+                        if let keyCode, let modifiers { controller.updateShortcut(keyCode: keyCode, modifiers: modifiers) }
+                        recordingShortcut = false
+                    }.frame(height: 22)
+                }
+                if let warning = controller.shortcutWarning { Text(warning).font(.system(size: 11)).foregroundStyle(DS.Colors.warningText) }
+                note("In Quick Ask: ⌥⇧E effort · ⌘N new conversation. Open reply: ⌥⇧C copy · ⌥⇧V speak · ⌥⇧↓ hide; click the blue dot to reopen. Guide step: ⌥⇧→ Next · ⌥⇧R Retry.")
             }
-            if recordingShortcut { ShortcutCaptureView { keyCode, modifiers in
-                if let keyCode, let modifiers { controller.updateShortcut(keyCode: keyCode, modifiers: modifiers) }
-                recordingShortcut = false
-            }.frame(height: 26) }
-            if let warning = controller.shortcutWarning { Text(warning).font(.caption2).foregroundStyle(.orange) }
-            Picker("Speak replies", selection: $controller.speechPreference) {
-                ForEach(SpeechReplyPreference.allCases, id: \.self) { Text($0.displayName).tag($0) }
+            section("Screen") {
+                Picker("Sharing", selection: $controller.screenInclusion) {
+                    ForEach(ScreenInclusionPreference.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                }
+                note("When a question needs the screen, Clicky shares the window you were in automatically. With no focused window it asks once per session before sharing the display. Images stay in memory.")
+                Toggle("Attach selected text when Quick Ask opens", isOn: $controller.attachSelection).font(.system(size: 12))
+                note("Reads only the selection in the focused, non-secure field through Accessibility. ⌫ in an empty prompt removes it.")
             }
-            Picker("Screen sharing", selection: $controller.screenInclusion) {
-                ForEach(ScreenInclusionPreference.allCases, id: \.self) { Text($0.displayName).tag($0) }
+            section("Speech") {
+                Picker("Speak replies", selection: $controller.speechPreference) {
+                    ForEach(SpeechReplyPreference.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                }
             }
-            Text("Your screen is captured only when you include it (eye button or ⌘⇧S), or on every ask with Always. It is sent only to the selected agent and never saved.")
-                .font(.caption2).foregroundStyle(.secondary)
-            Text("Voice input, dictation, and guided steps are prepared for a later build.").font(.caption2).foregroundStyle(.secondary)
-            Button("New conversation") { controller.newConversation() }.clickyPointerCursor()
-        }.disabled(controller.isBusy)
+            Button("New conversation") { controller.newConversation() }.islandButton(.secondary)
+        }
+        .disabled(controller.isBusy)
     }
-}
 
-private struct AttachmentPreview: View {
-    let image: PNGImageAttachment
-    let onRemove: () -> Void
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title.uppercased()).font(.system(size: 10, weight: .semibold)).tracking(0.6).foregroundStyle(DS.Colors.textTertiary)
+            content()
+        }
+    }
 
-    var body: some View {
-        HStack(alignment: .top) {
-            if let preview = NSImage(data: image.data) {
-                Image(nsImage: preview).resizable().scaledToFit().frame(width: 120, height: 80)
-                    .accessibilityLabel("Attached window screenshot")
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(image.displayName).font(.caption).lineLimit(2)
-                Text("\(image.pixelWidth) × \(image.pixelHeight) pixels").font(.caption2).foregroundStyle(.secondary)
-                if let context = image.context { Text(context.capturedAt, style: .time).font(.caption2).foregroundStyle(.secondary) }
-                Button("Remove screenshot", action: onRemove).clickyPointerCursor()
-            }
-        }.accessibilityIdentifier("quickAskAttachment")
+    private func note(_ text: String) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(DS.Colors.textTertiary).fixedSize(horizontal: false, vertical: true)
     }
 }
 

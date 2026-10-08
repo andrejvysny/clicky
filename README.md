@@ -1,21 +1,20 @@
-# Clicky: text-first development build
+# Clicky visual task guide — development build
 
-This fork now includes cursor-adjacent **Quick Ask**, managed Claude Code/Codex text and image transports, explicit single-window screenshot attachments, local system reply speech, and an offline preview for Mac validation. Default shortcut: **Option+Shift+Space**, configurable in Settings. Enter submits, Shift+Enter inserts a newline, and Escape cancels. The original blue companion remains available.
+Clicky combines cursor-adjacent Quick Ask, the original blue companion, and a development visual walkthrough. It presents one grounded instruction, observes the user's action, verifies the outcome independently, and continues automatically. Local preview remains visibly **no AI**; its deterministic guide demo performs no capture or real verification.
 
-The active startup path needs no Cloudflare deployment, speech API keys, email onboarding, microphone permission, or screen recording. Screenshot attachment requests Screen Recording only when explicitly invoked; typed replies stay silent by default. PostHog has been removed. Voice input, safe dictation, visual MCP, and verified guidance have supporting contracts/state logic but remain disabled pending integration.
+Opening Quick Ask captures nothing. A submitted task can share one approved window when visual evidence is requested. Related UI requires an established relationship; other windows need explicit selection. Task content/images stay in memory. Claude uses normal authentication with a clean profile; Codex uses official sign-in in a dedicated Clicky profile. Personal coding sessions/project directories are not reused.
 
-- **Mac setup and acceptance checklist:** [docs/MAC_VALIDATION.md](docs/MAC_VALIDATION.md)
-- **Specification coverage and implementation roadmap:** [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)
-- **Supporting module setup:** [docs/SUPPORTING_SETUP.md](docs/SUPPORTING_SETUP.md)
-- **Reference reuse:** [docs/REFERENCE_REUSE.md](docs/REFERENCE_REUSE.md)
-- **Portable tests:** `bash scripts/test-core.sh` (Swift 6.2+, Python 3)
-- **Cloud toolchain setup:** `bash scripts/cloud-setup.sh` (Linux x86_64)
-- **Mac preflight:** `bash scripts/mac-preflight.sh`; then open `leanring-buddy.xcodeproj` in Xcode 16+.
-- **Export current source for Mac:** `bash scripts/package-mac-source.sh /tmp/clicky-mac-source.tar.gz`
+Default shortcut: **Option+Shift+Space**. Enter sends, Shift+Enter inserts a line, Escape cancels. Popup stays at its opening position. Voice, desktop execution, terminal attachment, and MCP integration remain outside this implementation. Release walkthroughs remain gated until native acceptance passes.
 
-Portable tests and the `clicky-text` diagnostic run in Linux. The native app and real provider inference still require Mac validation. The shared `leanring-buddy` scheme includes the existing tests and new Quick Ask UI tests; build/run/test through Xcode, not terminal `xcodebuild`.
+- [Architecture, protocol and sharing](docs/VISUAL_GUIDE_PROTOCOL.md)
+- [Mac validation and release gates](docs/MAC_VALIDATION.md)
+- [Supporting contracts](docs/SUPPORTING_SETUP.md)
+- Portable checks: `bash scripts/test-core.sh` (Swift 6.2+, Python 3).
+- Source typecheck: `bash scripts/typecheck-app.sh` and `--debug`.
+- Mac preflight: `bash scripts/mac-preflight.sh`; open `leanring-buddy.xcodeproj` in Xcode 26+.
+- Clean transport diagnostic: `swift run clicky-guide claude|codex /absolute/CLI/path /absolute/Clicky/profile/root`, with harmless newline-separated requests on stdin. Real inference consumes account limits.
 
-The upstream README below describes the **legacy voice implementation**, retained for reference. Its Cloudflare and voice-key instructions are not prerequisites for the current text build.
+Build/run/test through Xcode's shared `leanring-buddy` scheme. Never terminal `xcodebuild`. Plane holds product decisions/future work; Git holds code-coupled documentation. The upstream README below describes the retained legacy voice implementation; its deployment/voice-key instructions are not prerequisites.
 
 ---
 

@@ -110,8 +110,8 @@ nonisolated public enum ScreenInclusionPreference: String, Codable, CaseIterable
     public var displayName: String {
         switch self {
         case .off: return "Off"
-        case .askEachTime: return "Ask each time"
-        case .always: return "Always"
+        case .askEachTime: return "Confirm per task"
+        case .always: return "Task window"
         }
     }
 

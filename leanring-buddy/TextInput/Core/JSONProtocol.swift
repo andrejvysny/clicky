@@ -71,17 +71,21 @@ nonisolated public enum AgentProtocol {
         ["app-server", "-c", "features.apps=false", "-c", "features.plugins=false", "-c", "approvals_reviewer=\"user\"", "--listen", "stdio://"]
     }
 
-    public static func claudePrompt(_ text: String, image: PNGImageAttachment? = nil) -> JSONValue {
+    public static func claudePrompt(_ text: String, image: PNGImageAttachment? = nil,
+                                    includePointingInstructions: Bool = true, identifier: UUID? = nil) -> JSONValue {
         var content: [JSONValue] = [.object(["type": .string("text"), "text": .string(text)])]
         if let image {
             content.append(.object(["type": .string("image"), "source": .object([
                 "type": .string("base64"), "media_type": .string(image.mediaType), "data": .string(image.data.base64EncodedString()),
             ])]))
-            if image.capturedRegion != nil {
+            if includePointingInstructions, image.capturedRegion != nil {
                 content.append(.object(["type": .string("text"), "text": .string(ScreenPointing.instruction(imageWidth: image.pixelWidth, imageHeight: image.pixelHeight))]))
             }
         }
-        return .object(["type": .string("user"), "session_id": .string(""), "parent_tool_use_id": .null, "message": .object(["role": .string("user"), "content": .array(content)])])
+        var fields: [String: JSONValue] = ["type": .string("user"), "session_id": .string(""), "parent_tool_use_id": .null,
+                                           "message": .object(["role": .string("user"), "content": .array(content)])]
+        if let identifier { fields["uuid"] = .string(identifier.uuidString) }
+        return .object(fields)
     }
 
     public static func claudeEvents(_ message: JSONValue, directory: String, streamedText: Bool) throws -> [AgentEvent] {

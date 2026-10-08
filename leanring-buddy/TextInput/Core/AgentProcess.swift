@@ -17,17 +17,19 @@ nonisolated public final class AgentProcess: @unchecked Sendable {
     private var stopped = false
     private var inputClosed = false
 
-    public init(executable: URL, arguments: [String], workingDirectory: String) throws {
+    public init(executable: URL, arguments: [String], workingDirectory: String, environment: [String: String]? = nil,
+                onExit: (@Sendable () -> Void)? = nil) throws {
         guard FileManager.default.isExecutableFile(atPath: executable.path) else { throw AskError.missingExecutable(executable.lastPathComponent) }
         var directoryExists: ObjCBool = false
         guard FileManager.default.fileExists(atPath: workingDirectory, isDirectory: &directoryExists), directoryExists.boolValue else { throw AskError.invalidDirectory }
         process.executableURL = executable
         process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
+        if let environment { process.environment = environment }
         process.standardInput = input
         process.standardOutput = output
         process.standardError = errors
-        process.terminationHandler = { [exited] _ in exited.signal() }
+        process.terminationHandler = { [exited] _ in onExit?(); exited.signal() }
     }
 
     public func start() throws -> AsyncThrowingStream<JSONValue, Error> {
@@ -193,7 +195,7 @@ nonisolated public final class ManagedAgentRunner: @unchecked Sendable {
     }
 }
 
-nonisolated private final class AgentProcessCancellation: @unchecked Sendable {
+nonisolated final class AgentProcessCancellation: @unchecked Sendable {
     private let lock = NSLock()
     private var process: AgentProcess?
     private var canceled = false

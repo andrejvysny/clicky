@@ -36,6 +36,8 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var quickAskPanelManager: QuickAskPanelManager?
     private let quickAskHotkey = QuickAskHotkey()
     private let pointingPresenter = PointingPresenter()
+    private let scopedShortcuts = ScopedShortcuts()
+    private lazy var island = IslandController(ask: askController)
     private var sparkleUpdaterController: SPUStandardUpdaterController?
     #if DEBUG
     private let guidanceStepController = GuidanceStepController()
@@ -48,26 +50,41 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
-        askController.onPointTarget = { [weak self] rect, label in self?.pointingPresenter.show(rect: rect, label: label) }
-        askController.onPointingCleared = { [weak self] in self?.pointingPresenter.hide() }
+        askController.onPointTarget = { [weak self] rect, label in
+            // The island shows progress; the label at the target carries only the instruction.
+            self?.pointingPresenter.show(rect: rect, label: label, persistent: true)
+        }
+        askController.onPointingCleared = { [weak self] in
+            self?.pointingPresenter.hide(); self?.companionManager.clearDetectedElementLocation()
+        }
         pointingPresenter.onFlyCompanion = { [weak self] point, screenFrame, label in
             guard let manager = self?.companionManager, manager.detectedElementScreenLocation == nil else { return }
             manager.detectedElementBubbleText = label.isEmpty ? nil : label
             manager.detectedElementDisplayFrame = screenFrame
             manager.detectedElementScreenLocation = point
         }
+        askController.guide.onAnnotate = { [weak self] rect, label in self?.pointingPresenter.show(rect: rect, label: label) }
         quickAskPanelManager = QuickAskPanelManager(controller: askController)
+        island.refresh()
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager, askController: askController) { [weak self] presentation in
             self?.quickAskPanelManager?.show(presentation)
         }
         if ProcessInfo.processInfo.arguments.contains("--clicky-ui-test") {
-            quickAskPanelManager?.show()
+            if ProcessInfo.processInfo.arguments.contains("--clicky-guide-demo") { askController.guide.startDemo() }
+            else { quickAskPanelManager?.show() }
             return
         }
         quickAskHotkey.onPressed = { [weak self] in self?.quickAskPanelManager?.show() }
+        installScopedShortcuts()
         askController.onShortcutChanged = { [weak self] in self?.registerQuickAskShortcut() ?? false }
         registerQuickAskShortcut()
         companionManager.startTextMode()
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--clicky-show-settings") {
+            quickAskPanelManager?.show(.details(showSettings: true))
+            return
+        }
+        #endif
         menuBarPanelManager?.showPanelOnLaunch()
         // startSparkleUpdater()
     }
@@ -82,11 +99,25 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        askController.stopReply()
+        askController.shutdown()
         pointingPresenter.hide()
         quickAskHotkey.unregister()
+        scopedShortcuts.unregisterAll()
         quickAskPanelManager?.close(restoreFocus: false)
         companionManager.stopTextMode()
+    }
+
+    private func installScopedShortcuts() {
+        scopedShortcuts.onNext = { [weak self] in self?.askController.guideNextShortcut() }
+        scopedShortcuts.onRetry = { [weak self] in self?.askController.guideRetryShortcut() }
+        scopedShortcuts.onCopy = { [weak self] in self?.askController.copyResponse() }
+        scopedShortcuts.onSpeak = { [weak self] in self?.askController.speakResponse() }
+        askController.onGuideStateChanged = { [weak self] in
+            guard let self else { return }
+            scopedShortcuts.setGuideActive(askController.guideStepActive)
+        }
+        scopedShortcuts.onToggleReply = { [weak self] in self?.island.toggleReply() }
+        island.onReplyAvailabilityChanged = { [weak self] available in self?.scopedShortcuts.setReplyActive(available) }
     }
 
     @discardableResult

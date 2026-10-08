@@ -1,9 +1,12 @@
 import AppKit
 import Combine
+import SwiftUI
 
 @MainActor
 final class AskController: ObservableObject {
     private let preferences: UserDefaults
+    let guide = VisualGuideController()
+    let replySpeech = LocalReplySpeech()
     @Published var draft = ""
     @Published private(set) var response = ""
     @Published private(set) var status = "Ready"
@@ -14,7 +17,20 @@ final class AskController: ObservableObject {
     @Published private(set) var isCapturing = false
     @Published private(set) var attachmentError: String?
     @Published private(set) var captureTargetName: String?
-    let replySpeech = LocalReplySpeech()
+    @Published var editorGeneration = UUID()
+    @Published private(set) var presentationHasSubmission = false
+    @Published var showSettings = false
+    /// Per-prompt effort; resets to Low after every submission.
+    @Published private(set) var effort: AskEffort = .low
+    @Published private(set) var selection: SelectionQuote?
+    @Published private(set) var snippets: [PastedSnippet] = []
+    @Published private(set) var busySince: Date?
+    /// Quick Ask is open; the island hides its own status meanwhile.
+    @Published private(set) var isComposing = false
+    @Published private(set) var lastReplyAt: Date?
+    @Published private(set) var lastReplyEffort: AskEffort = .low
+    /// Off by default: opening Quick Ask reads nothing unless the user opts in.
+    @Published var attachSelection: Bool { didSet { preferences.set(attachSelection, forKey: "askAttachSelection") } }
     @Published var speechPreference: SpeechReplyPreference {
         didSet {
             preferences.set(speechPreference.rawValue, forKey: "askSpeechPreference")
@@ -23,37 +39,34 @@ final class AskController: ObservableObject {
     }
     @Published var screenInclusion: ScreenInclusionPreference {
         didSet {
-            preferences.set(screenInclusion.rawValue, forKey: "askScreenInclusion")
-            if !screenInclusion.isAvailable, hasScreenAttachment { removeAttachment() }
+            preferences.set(screenInclusion.rawValue, forKey: "askTaskSharing")
+            guide.sharingPreference = screenInclusion
+            if screenInclusion == .off { guide.pause(); removeAttachment() }
         }
     }
-    @Published var editorGeneration = UUID()
-    @Published private(set) var presentationHasSubmission = false
-    @Published var showSettings = false
     @Published var provider: AgentProvider {
-        didSet { preferences.set(provider.rawValue, forKey: "askProvider"); refreshSession() }
+        didSet {
+            guard oldValue != provider else { return }
+            preferences.set(provider.rawValue, forKey: "askProvider")
+            cancelLogin()
+            guide.endTask(); syncGuideSettings(); response = ""; removeAttachment(); replySpeech.stop()
+        }
     }
-    @Published var workingDirectory: String {
-        didSet { preferences.set(workingDirectory, forKey: "askWorkingDirectory"); refreshSession() }
-    }
-    @Published var claudeExecutable: String { didSet { preferences.set(claudeExecutable, forKey: "askClaudeExecutable") } }
-    @Published var codexExecutable: String { didSet { preferences.set(codexExecutable, forKey: "askCodexExecutable") } }
+    @Published var claudeExecutable: String { didSet { preferences.set(claudeExecutable, forKey: "askClaudeExecutable"); syncGuideSettings() } }
+    @Published var codexExecutable: String { didSet { preferences.set(codexExecutable, forKey: "askCodexExecutable"); syncGuideSettings() } }
     @Published private(set) var shortcutKeyCode: UInt32
     @Published private(set) var shortcutModifiers: UInt32
     @Published var shortcutWarning: String?
-    /// Registers the current shortcut and reports whether macOS accepted it.
     var onShortcutChanged: (() -> Bool)?
     var onSubmitted: (() -> Void)?
-    /// Rect is global top-left points; label may be empty.
     var onPointTarget: ((CGRect, String) -> Void)?
     var onPointingCleared: (() -> Void)?
-
-    private var inputState = AskInputState()
-    private let runner = ManagedAgentRunner()
-    private var responseTask: Task<Void, Never>?
+    var onGuideStateChanged: (() -> Void)?
+    private var presentationTarget: WindowCaptureTarget?
     private var captureTask: Task<Void, Never>?
+    private var loginTask: Task<Void, Never>?
     private var attachmentState = WindowAttachmentState()
-    private let responseOverlay = CompanionResponseOverlayManager()
+    private var submitAfterCapture = false
 
     init() {
         let testing = ProcessInfo.processInfo.arguments.contains("--clicky-ui-test")
@@ -62,293 +75,173 @@ final class AskController: ObservableObject {
         preferences = defaults
         provider = AgentProvider(rawValue: defaults.string(forKey: "askProvider") ?? "") ?? .preview
         speechPreference = SpeechReplyPreference(rawValue: defaults.string(forKey: "askSpeechPreference") ?? "") ?? .voiceOnly
-        screenInclusion = ScreenInclusionPreference(rawValue: defaults.string(forKey: "askScreenInclusion") ?? "") ?? (testing ? .off : .always)
-        workingDirectory = defaults.string(forKey: "askWorkingDirectory") ?? (testing ? NSTemporaryDirectory() : NSHomeDirectory())
+        let savedSharing = defaults.string(forKey: "askTaskSharing") ?? defaults.string(forKey: "askScreenInclusion") ?? ""
+        screenInclusion = ScreenInclusionPreference(rawValue: savedSharing) ?? (testing ? .off : .always)
         claudeExecutable = defaults.string(forKey: "askClaudeExecutable") ?? Self.discover("claude")
         codexExecutable = defaults.string(forKey: "askCodexExecutable") ?? Self.discover("codex")
+        attachSelection = defaults.bool(forKey: "askAttachSelection")
         shortcutKeyCode = defaults.object(forKey: "askShortcutKeyCode") == nil ? 49 : UInt32(defaults.integer(forKey: "askShortcutKeyCode"))
         shortcutModifiers = defaults.object(forKey: "askShortcutModifiers") == nil ? 0xA00 : UInt32(defaults.integer(forKey: "askShortcutModifiers"))
-        refreshSession()
+        defaults.removeObject(forKey: "askSessions")
+        defaults.removeObject(forKey: "askWorkingDirectory")
+        syncGuideSettings()
+        guide.onResponse = { [weak self] value in self?.showResponse(value) }
+        guide.onTarget = { [weak self] rect, text in self?.onPointTarget?(rect, text) }
+        guide.onClearTarget = { [weak self] in self?.onPointingCleared?() }
+        guide.onStateChanged = { [weak self] in self?.syncGuideState() }
     }
-
-    var hasScreenAttachment: Bool { attachment?.context?.applicationIdentifier == "screen" }
-    var canSubmit: Bool { !isBusy && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    /// Enter pressed while the automatic capture is still running; send once it finishes.
-    private var submitAfterCapture = false
+    var hasScreenAttachment: Bool { guide.task?.grant?.paused == false }
+    var canSubmit: Bool { !isBusy && AskComposition.hasContent(draft: draft, selection: selection, snippets: snippets) }
+    var effortAdjustable: Bool { guide.effortAdjustable && !isBusy }
+    /// What the next prompt will actually use: a running Claude task keeps its launch effort.
+    var displayedEffort: AskEffort { provider == .claude && guide.agent != nil && guide.task != nil ? guide.agentEffort : effort }
     var selectedExecutable: URL? {
         let path = provider == .claude ? claudeExecutable : codexExecutable
         return path.isEmpty ? nil : URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
     }
-
     @discardableResult
     func submit() -> Bool {
         guard !isBusy else { return false }
-        if isCapturing {
-            guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-            submitAfterCapture = true
-            return true
-        }
-        let directory = NSString(string: workingDirectory).expandingTildeInPath
-        let request = AskRequest(text: draft, workingDirectory: directory, session: session, image: attachment)
-        let generation: UInt64
+        if isCapturing { submitAfterCapture = canSubmit; return submitAfterCapture }
+        guard canSubmit else { return false }
         do {
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory), isDirectory.boolValue else { throw AskError.invalidDirectory }
             if provider != .preview {
                 guard let selectedExecutable, FileManager.default.isExecutableFile(atPath: selectedExecutable.path) else { throw AskError.missingExecutable(provider.displayName) }
             }
-            generation = try inputState.begin(text: draft, identifier: request.identifier)
-        } catch { errorMessage = error.localizedDescription; showSettings = provider != .preview; return false }
-
-        let selectedProvider = provider
-        let executable = selectedExecutable
-        let pointing = attachment.flatMap { image in
-            image.capturedRegion.map { (size: CGSize(width: image.pixelWidth, height: image.pixelHeight), region: $0) }
-        }
-        onPointingCleared?()
-        replySpeech.stop()
-        isBusy = true
-        presentationHasSubmission = true
-        errorMessage = nil
-        response = ""
-        status = selectedProvider == .preview ? "Local preview" : "Working"
-        draft = ""
-        removeAttachment()
-        responseOverlay.showOverlayAndBeginStreaming()
-        onSubmitted?()
-        responseTask = Task { [weak self] in
-            guard let self else { return }
-            var completed = false
-            do {
-                for try await event in runner.stream(provider: selectedProvider, executable: executable, request: request) {
-                    guard !Task.isCancelled, inputState.activeRequest == request.identifier, inputState.generation == generation else { return }
-                    switch event {
-                    case .session(let value): session = value; persistSession(value)
-                    case .textDelta(let delta):
-                        if inputState.append(delta, identifier: request.identifier, generation: generation) {
-                            response = ScreenPointing.visibleStreamingText(inputState.response)
-                            responseOverlay.updateStreamingText(response)
-                        }
-                    case .status(let message): status = message
-                    case .completed: completed = true
-                    }
-                }
-                guard inputState.activeRequest == request.identifier, inputState.generation == generation else { return }
-                inputState.finish(identifier: request.identifier, generation: generation, succeeded: completed)
-                status = selectedProvider == .preview ? "Preview complete · no AI request" : "Ready"
-                let parsed = ScreenPointing.parse(inputState.response)
-                response = parsed.text
-                responseOverlay.updateStreamingText(parsed.text)
-                responseOverlay.finishStreaming()
-                if let target = parsed.target, let pointing,
-                   let rect = ScreenPointing.screenRect(for: target, imagePixelSize: pointing.size, capturedRegion: pointing.region) {
-                    onPointTarget?(rect, target.label)
-                }
-                if selectedProvider != .preview, speechPreference.shouldSpeak(voiceInitiated: false, dictation: false) {
-                    replySpeech.speak(parsed.text)
-                }
-            } catch {
-                guard inputState.activeRequest == request.identifier, inputState.generation == generation else { return }
-                inputState.finish(identifier: request.identifier, generation: generation, succeeded: false)
-                if error is CancellationError {
-                    errorMessage = "Reply stopped. Your question is available to retry."
-                } else if request.session != nil {
-                    // Providers report an expired or deleted resumed session as a generic turn failure.
-                    errorMessage = error.localizedDescription + " If the saved conversation is no longer available, choose New conversation in Settings."
-                } else {
-                    errorMessage = error.localizedDescription
-                }
-                status = "Needs attention"
-                if draft.isEmpty { draft = inputState.recoveryDraft }
-                responseOverlay.updateStreamingText(errorMessage ?? "The reply could not complete.")
-                responseOverlay.finishStreaming()
-            }
-            isBusy = false
-            responseTask = nil
-        }
-        return true
+            syncGuideSettings(); replySpeech.stop()
+            let message = AskComposition.message(draft: draft, selection: selection, snippets: snippets)
+            try guide.ask(message, target: presentationTarget, explicitlyVisual: attachment != nil, effort: effort)
+            draft = ""; response = ""; errorMessage = nil; presentationHasSubmission = true
+            selection = nil; snippets = []; effort = .low
+            removeAttachment(); onSubmitted?(); return true
+        } catch { errorMessage = error.localizedDescription; return false }
     }
-
     func stopReply() {
-        onPointingCleared?()
+        guide.pause(message: "Stopped · Retry explicitly")
+        if draft.isEmpty { draft = guide.lastUserText }
         replySpeech.stop()
-        responseTask?.cancel()
-        runner.cancel()
-        inputState.cancel()
-        if draft.isEmpty { draft = inputState.recoveryDraft }
-        responseTask = nil
-        isBusy = false
-        status = "Stopped · question available to retry"
-        responseOverlay.hideOverlay()
     }
-
-    func dismissResponse() { responseOverlay.hideOverlay() }
-
+    /// Clears a failed request's message without ending the conversation.
+    func dismissError() { guide.error = nil; errorMessage = nil; attachmentError = nil }
+    func copyResponse() {
+        guard !response.isEmpty else { return }
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(response, forType: .string)
+    }
+    /// A step card is on screen and accepts Next/Retry shortcuts.
+    var guideStepActive: Bool {
+        if let demo = guide.demo { return !demo.completed && !demo.paused }
+        guard guide.task?.step != nil, let phase = guide.task?.phase else { return false }
+        return [.waiting, .verifying, .uncertain].contains(phase)
+    }
+    func guideNextShortcut() { guide.nextManually() }
+    func guideRetryShortcut() { guide.task?.phase == .uncertain ? guide.checkNow() : guide.retry() }
+    func speakResponse() { if !response.isEmpty { replySpeech.speak(response) } }
+    func cycleEffort() { if effortAdjustable { effort = effort.next } }
+    func removeSelection() { selection = nil }
+    func removeSnippet(_ id: UUID) { snippets.removeAll { $0.id == id } }
+    func addSnippet(_ text: String) { if !isBusy { snippets.append(PastedSnippet(text: text)) } }
+    func newConversation() { guide.endTask(); response = ""; errorMessage = nil; removeAttachment(); replySpeech.stop(); lastReplyAt = nil }
     func beginPresentation(target: WindowCaptureTarget?) {
-        presentationHasSubmission = false
-        removeAttachment()
-        attachmentState.beginPresentation(target: target)
-        captureTargetName = target?.applicationName
-        if screenInclusion.startsIncluded { attachScreenSnapshot() }
+        isComposing = true
+        presentationHasSubmission = false; removeAttachment(); presentationTarget = target
+        snippets = []
+        selection = attachSelection ? target.flatMap { target in
+            ScopedAccessibility.selectedText(target).flatMap { SelectionQuote(text: $0, applicationName: target.applicationName) }
+        } : nil
+        attachmentState.beginPresentation(target: target); captureTargetName = target?.applicationName
+        guide.composerWillOpen()
     }
-
     func endPresentation() {
-        removeAttachment()
-        attachmentState.endPresentation()
-        captureTargetName = nil
+        isComposing = false
+        removeAttachment(); attachmentState.endPresentation(); captureTargetName = nil; selection = nil
+        guide.composerDidClose(submitted: presentationHasSubmission)
     }
-
     func attachWindowSnapshot() {
         guard !isBusy, !isCapturing else { return }
         let lease: WindowCaptureLease
         do { lease = try attachmentState.beginCapture() }
         catch { attachmentError = error.localizedDescription; return }
-        attachment = nil
-        attachmentError = nil
-        isCapturing = true
+        attachment = nil; attachmentError = nil; isCapturing = true
         captureTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let image = try await WindowSnapshotCapture.capture(lease.target)
                 try Task.checkCancellation()
-                guard attachmentState.accept(image, lease: lease) else { throw AttachmentError.targetChanged }
+                guard attachmentState.accept(image, lease: lease) else { return }
                 attachment = image
             } catch {
                 guard attachmentState.fail(lease: lease) else { return }
                 if !(error is CancellationError) { attachmentError = error.localizedDescription }
             }
-            finishCapture()
-        }
-    }
-
-    func attachScreenSnapshot() {
-        guard screenInclusion.isAvailable, !isBusy, !isCapturing else { return }
-        let lease: UUID
-        do { lease = try attachmentState.beginDisplayCapture() }
-        catch { attachmentError = error.localizedDescription; return }
-        attachment = nil
-        attachmentError = nil
-        isCapturing = true
-        let location = NSEvent.mouseLocation
-        let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.screens.first)?.frame.height ?? 0
-        let pointer = CGPoint(x: location.x, y: primaryHeight - location.y)
-        captureTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                let image = try await WindowSnapshotCapture.captureDisplay(containing: pointer)
-                try Task.checkCancellation()
-                guard attachmentState.acceptDisplay(image, lease: lease) else { throw AttachmentError.targetChanged }
-                attachment = image
-            } catch {
-                guard attachmentState.failDisplay(lease: lease) else { return }
-                if !(error is CancellationError) { attachmentError = error.localizedDescription }
+            isCapturing = false; captureTask = nil
+            if submitAfterCapture {
+                submitAfterCapture = false
+                if attachmentError == nil { _ = submit() }
             }
-            finishCapture()
         }
     }
-
-    private func finishCapture() {
-        isCapturing = false
-        captureTask = nil
-        guard submitAfterCapture else { return }
-        submitAfterCapture = false
-        // A failed capture keeps the popup open with its error so the user decides whether to send text only.
-        if attachmentError == nil { _ = submit() }
-    }
-
     func toggleScreenAttachment() {
-        if hasScreenAttachment { removeAttachment(); return }
-        if attachment != nil { removeAttachment() }
-        attachScreenSnapshot()
+        if let grant = guide.task?.grant {
+            if !grant.paused { guide.pause() }
+            else { attachmentError = "Sharing is paused while editing. Close Quick Ask and use Resume in the guide controls." }
+            return
+        }
+        if let presentationTarget, guide.task != nil { guide.authorizeWindow(presentationTarget) }
+        else { attachmentError = "This window will be shared only if your submitted task needs visual context." }
     }
-
     func removeAttachment() {
-        captureTask?.cancel()
-        captureTask = nil
-        attachmentState.discard()
-        attachment = nil
-        attachmentError = nil
-        isCapturing = false
-        submitAfterCapture = false
+        captureTask?.cancel(); captureTask = nil; attachmentState.discard()
+        attachment = nil; attachmentError = nil; isCapturing = false; submitAfterCapture = false
     }
-
-    func newConversation() {
-        guard !isBusy else { return }
-        onPointingCleared?()
-        var sessions = savedSessions()
-        sessions.removeValue(forKey: sessionKey)
-        saveSessions(sessions)
-        session = nil
-        response = ""
-        errorMessage = nil
-        responseOverlay.hideOverlay()
-        replySpeech.stop()
-        removeAttachment()
-    }
-
-    func chooseDirectory() {
-        let chooser = NSOpenPanel()
-        chooser.canChooseDirectories = true
-        chooser.canChooseFiles = false
-        chooser.allowsMultipleSelection = false
-        if chooser.runModal() == .OK, let url = chooser.url { workingDirectory = url.path }
-    }
-
     func chooseExecutable() {
-        let chooser = NSOpenPanel()
-        chooser.canChooseDirectories = false
-        chooser.canChooseFiles = true
-        chooser.allowsMultipleSelection = false
-        chooser.showsHiddenFiles = true
+        let chooser = NSOpenPanel(); chooser.canChooseDirectories = false; chooser.canChooseFiles = true; chooser.allowsMultipleSelection = false
         if chooser.runModal() == .OK, let url = chooser.url {
             if provider == .claude { claudeExecutable = url.path } else { codexExecutable = url.path }
         }
     }
-
-    /// Applies key and modifiers together so a half-updated combination is never registered,
-    /// and keeps the previous working binding when the new one is unavailable.
     func updateShortcut(keyCode: UInt32, modifiers: UInt32) {
-        let previous = (keyCode: shortcutKeyCode, modifiers: shortcutModifiers)
-        shortcutKeyCode = keyCode
-        shortcutModifiers = modifiers
+        let previous = (shortcutKeyCode, shortcutModifiers)
+        shortcutKeyCode = keyCode; shortcutModifiers = modifiers
         if onShortcutChanged?() ?? true {
-            preferences.set(Int(keyCode), forKey: "askShortcutKeyCode")
-            preferences.set(Int(modifiers), forKey: "askShortcutModifiers")
-            return
+            preferences.set(Int(keyCode), forKey: "askShortcutKeyCode"); preferences.set(Int(modifiers), forKey: "askShortcutModifiers"); return
         }
-        shortcutKeyCode = previous.keyCode
-        shortcutModifiers = previous.modifiers
-        let restored = onShortcutChanged?() ?? false
-        shortcutWarning = restored ? "That shortcut is unavailable. The previous shortcut is still active."
-            : "Quick Ask shortcut is unavailable. Rebind it in Settings or use the menu bar."
+        shortcutKeyCode = previous.0; shortcutModifiers = previous.1
+        shortcutWarning = (onShortcutChanged?() ?? false) ? "That shortcut is unavailable. The previous shortcut is still active." : "Quick Ask shortcut is unavailable. Use the menu bar."
     }
-
-    private var sessionKey: String { provider.rawValue + ":" + NSString(string: workingDirectory).expandingTildeInPath }
-    private func refreshSession() {
-        guard !isBusy else { return }
-        onPointingCleared?()
-        session = savedSessions()[sessionKey]
-        response = ""
-        status = "Ready"
-        responseOverlay.hideOverlay()
-        errorMessage = nil
-        replySpeech.stop()
-        removeAttachment()
+    func signInCodex() {
+        guard loginTask == nil, let executable = selectedExecutable, provider == .codex else { return }
+        loginTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let profile = try GuideAgentProfile(provider: .codex, root: guide.profileRoot, taskID: UUID())
+                for try await event in GuideCodexLogin.signIn(executable: executable, profile: profile) {
+                    try Task.checkCancellation()
+                    switch event {
+                    case .authorizationURL(let url): NSWorkspace.shared.open(url); status = "Complete official Codex sign-in in your browser"
+                    case .completed: status = "Clicky's Codex profile is signed in"
+                    }
+                }
+            } catch { if !Task.isCancelled { errorMessage = error.localizedDescription } }
+            loginTask = nil
+        }
     }
-    private func savedSessions() -> [String: AgentSession] {
-        guard let data = preferences.data(forKey: "askSessions") else { return [:] }
-        return (try? JSONDecoder().decode([String: AgentSession].self, from: data)) ?? [:]
+    private func syncGuideSettings() {
+        guide.provider = provider; guide.executable = selectedExecutable; guide.sharingPreference = screenInclusion
     }
-    private func saveSessions(_ sessions: [String: AgentSession]) {
-        if let data = try? JSONEncoder().encode(sessions) { preferences.set(data, forKey: "askSessions") }
+    func cancelLogin() { loginTask?.cancel(); loginTask = nil }
+    func shutdown() { cancelLogin(); removeAttachment(); guide.endTask(); replySpeech.stop() }
+    private func syncGuideState() {
+        if guide.isBusy != isBusy { busySince = guide.isBusy ? Date() : nil }
+        status = guide.status; errorMessage = guide.error; isBusy = guide.isBusy; session = guide.session
+        if guide.error != nil, draft.isEmpty { draft = guide.lastUserText }
+        onGuideStateChanged?()
     }
-    private func persistSession(_ session: AgentSession) {
-        var sessions = savedSessions()
-        sessions[session.provider.rawValue + ":" + session.workingDirectory] = session
-        saveSessions(sessions)
+    private func showResponse(_ value: String) {
+        response = value; lastReplyAt = Date(); lastReplyEffort = guide.replyEffort
+        if provider != .preview, speechPreference.shouldSpeak(voiceInitiated: false, dictation: false) { replySpeech.speak(value) }
     }
     private static func discover(_ name: String) -> String {
-        let directories = [NSHomeDirectory() + "/.local/bin", NSHomeDirectory() + "/.claude/local", "/opt/homebrew/bin", "/usr/local/bin"] + (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
+        let directories = [NSHomeDirectory() + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"]
         return directories.map { $0 + "/" + name }.first { FileManager.default.isExecutableFile(atPath: $0) } ?? ""
     }
 }

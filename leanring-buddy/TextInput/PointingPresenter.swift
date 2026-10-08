@@ -15,15 +15,16 @@ final class PointingPresenter {
     }
 
     /// `rect` is global top-left points.
-    func show(rect: CGRect, label: String) {
+    func show(rect: CGRect, label: String, persistent: Bool = false, progress: GuideCardProgress? = nil) {
         hide()
         let current = generation
-        overlay.show(target: rect, instruction: label.isEmpty ? "Here" : label)
-        overlay.update(status: "Click it, or click anywhere to dismiss", tone: .waiting)
+        overlay.show(target: rect, instruction: label.isEmpty ? "Here" : label, progress: progress, shortcutHints: persistent)
+        overlay.update(status: persistent ? "Waiting for your action" : "Click it, or click anywhere to dismiss", tone: .waiting)
         let center = CGPoint(x: rect.midX, y: primaryHeight - rect.midY)
         if let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) ?? NSScreen.main {
             onFlyCompanion?(center, screen.frame, label)
         }
+        if persistent { return }
         monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.generation == current else { return }
