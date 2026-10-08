@@ -1,3 +1,24 @@
+# Clicky: text-first development build
+
+This fork now includes cursor-adjacent **Quick Ask**, managed Claude Code/Codex text and image transports, explicit single-window screenshot attachments, local system reply speech, and an offline preview for Mac validation. Default shortcut: **Option+Shift+Space**, configurable in Settings. Enter submits, Shift+Enter inserts a newline, and Escape cancels. The original blue companion remains available.
+
+The active startup path needs no Cloudflare deployment, speech API keys, email onboarding, microphone permission, or screen recording. Screenshot attachment requests Screen Recording only when explicitly invoked; typed replies stay silent by default. PostHog has been removed. Voice input, safe dictation, visual MCP, and verified guidance have supporting contracts/state logic but remain disabled pending integration.
+
+- **Mac setup and acceptance checklist:** [docs/MAC_VALIDATION.md](docs/MAC_VALIDATION.md)
+- **Specification coverage and implementation roadmap:** [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)
+- **Supporting module setup:** [docs/SUPPORTING_SETUP.md](docs/SUPPORTING_SETUP.md)
+- **Reference reuse:** [docs/REFERENCE_REUSE.md](docs/REFERENCE_REUSE.md)
+- **Portable tests:** `bash scripts/test-core.sh` (Swift 6+, Python 3)
+- **Cloud toolchain setup:** `bash scripts/cloud-setup.sh` (Linux x86_64)
+- **Mac preflight:** `bash scripts/mac-preflight.sh`; then open `leanring-buddy.xcodeproj` in Xcode 16+.
+- **Export current source for Mac:** `bash scripts/package-mac-source.sh /tmp/clicky-mac-source.tar.gz`
+
+Portable tests and the `clicky-text` diagnostic run in Linux. The native app and real provider inference still require Mac validation. The shared `leanring-buddy` scheme includes the existing tests and new Quick Ask UI tests; build/run/test through Xcode, not terminal `xcodebuild`.
+
+The upstream README below describes the **legacy voice implementation**, retained for reference. Its Cloudflare and voice-key instructions are not prerequisites for the current text build.
+
+---
+
 Update: April 27, 2026.
 
 Hi there! I'm Farza, the guy that made Clicky.

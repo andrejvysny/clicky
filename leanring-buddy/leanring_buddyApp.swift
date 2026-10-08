@@ -4,7 +4,7 @@
 //
 //  Menu bar-only companion app. No dock icon, no main window — just an
 //  always-available status item in the macOS menu bar. Clicking the icon
-//  opens a floating panel with companion voice controls.
+//  opens a floating panel with Quick Ask and response controls.
 //
 
 import ServiceManagement
@@ -26,11 +26,14 @@ struct leanring_buddyApp: App {
 }
 
 /// Manages the companion lifecycle: creates the menu bar panel and starts
-/// the companion voice pipeline on launch.
+/// the text-first companion on launch.
 @MainActor
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
     private let companionManager = CompanionManager()
+    private let askController = AskController()
+    private var quickAskPanelManager: QuickAskPanelManager?
+    private let quickAskHotkey = QuickAskHotkey()
     private var sparkleUpdaterController: SPUStandardUpdaterController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -39,22 +42,32 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
-        ClickyAnalytics.configure()
-        ClickyAnalytics.trackAppOpened()
-
-        menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
-        companionManager.start()
-        // Auto-open the panel if the user still needs to do something:
-        // either they haven't onboarded yet, or permissions were revoked.
-        if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
-            menuBarPanelManager?.showPanelOnLaunch()
+        quickAskPanelManager = QuickAskPanelManager(controller: askController)
+        menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager, askController: askController) { [weak self] settings in
+            self?.quickAskPanelManager?.show(settings: settings)
         }
-        registerAsLoginItemIfNeeded()
+        if ProcessInfo.processInfo.arguments.contains("--clicky-ui-test") {
+            quickAskPanelManager?.show()
+            return
+        }
+        quickAskHotkey.onPressed = { [weak self] in self?.quickAskPanelManager?.show() }
+        askController.onShortcutChanged = { [weak self] in self?.registerQuickAskShortcut() }
+        registerQuickAskShortcut()
+        companionManager.startTextMode()
+        menuBarPanelManager?.showPanelOnLaunch()
         // startSparkleUpdater()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        companionManager.stop()
+        askController.stopReply()
+        quickAskHotkey.unregister()
+        quickAskPanelManager?.close(restoreFocus: false)
+        companionManager.stopTextMode()
+    }
+
+    private func registerQuickAskShortcut() {
+        let registered = quickAskHotkey.register(keyCode: askController.shortcutKeyCode, modifiers: askController.shortcutModifiers)
+        askController.shortcutWarning = registered ? nil : "Quick Ask shortcut is unavailable. Rebind it in Settings or use the menu bar."
     }
 
     /// Registers the app as a login item so it launches automatically on

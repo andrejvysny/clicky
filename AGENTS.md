@@ -1,167 +1,75 @@
-# Clicky - Agent Instructions
+# Clicky — Agent Instructions
 
-<!-- This is the single source of truth for all AI coding agents. CLAUDE.md is a symlink to this file. -->
-<!-- AGENTS.md spec: https://github.com/agentsmd/agents.md — supported by Claude Code, Cursor, Copilot, Gemini CLI, and others. -->
+## Current delivery
 
-## Overview
+Native macOS menu-bar companion, macOS 14.2+, Apple Silicon. The active implementation is text-first: cursor-adjacent Quick Ask, offline preview, and managed Claude Code/Codex text sessions. Preserve the original blue companion and cursor animation. Do not rename the legacy `leanring-buddy` directory or scheme.
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
+`CompanionAppDelegate` starts `AskController`, `QuickAskPanelManager`, a Carbon registered hotkey, and `CompanionManager.startTextMode()`. It does not start the legacy voice pipeline, permission polling, Cloudflare warmup, email onboarding, analytics, or automatic login-item registration. PostHog is removed; `ClickyAnalytics` is a compatibility no-op for dormant views. Sparkle is retained but its updater is not started.
 
-All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
+Default backend is **Local preview (no AI)**; it visibly echoes text and must never be presented as a real agent response. Default shortcut is Option+Shift+Space, configurable in Settings. Ask popup is temporarily keyable; companion and response overlays remain nonactivating/click-through. Enter submits, Shift+Enter inserts a line, and Escape cancels. IME composition must not prematurely submit. Preserve code indentation, paths, Unicode, and line breaks. Drafts/replies stay in memory; only preferences and provider/project/session metadata persist.
 
-## Architecture
+Quick Ask's explicit Attach button captures only the window of the originating app resolved before popup presentation. Use `SCContentFilter(desktopIndependentWindow:)`, never a fallback display capture. Screen Recording is requested only by that action. Preview the attachment before sending; PNGs stay in memory, are capped at 3 MiB and 4096 pixels per axis, and travel over stdin as Claude image blocks or Codex image data URLs. Popup dismissal/provider changes/removal invalidate capture leases. Failed or canceled agent turns restore text only; require an explicit new attachment. System reply speech uses AVSpeechSynthesizer, defaults to voice-only (typed requests silent), and supports Always plus explicit Speak/Stop. Preview does not automatically speak.
 
-- **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
-- **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
-- **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via Cloudflare Worker proxy with SSE streaming
-- **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
-- **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
-- **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
-- **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
-- **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
-- **Concurrency**: `@MainActor` isolation, async/await throughout
-- **Analytics**: PostHog via `ClickyAnalytics.swift`
+Managed Claude uses the user's installed binary and normal authentication, stdin stream-json, and `--tools ""`. Codex uses app-server stdio, account status, thread start/resume, turn streaming, a read-only sandbox, and untrusted approval policy. Action approvals are explicitly declined in this text client. Do not add `bypassPermissions`, `--bare`, unsafe automatic approvals, shell prompt injection, or account-token extraction. Managed resume is not live terminal attachment. Never silently retry a submitted prompt.
 
-### API Proxy (Cloudflare Worker)
+## Source map
 
-The app never calls external APIs directly. All requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds the real API keys as secrets.
+| Files | Responsibility |
+|---|---|
+| `TextInput/AskController.swift` (~190 lines) | Settings, in-memory drafts/replies, session metadata, serialized UI submission, recovery |
+| `TextInput/QuickAskPanelManager.swift` (~140 lines) | Cursor placement, focus ownership/restoration, dismissal observers |
+| `TextInput/QuickAskEditor.swift` (~80 lines) | Plain-text NSTextView, IME-aware key handling, bounded editor growth |
+| `TextInput/QuickAskView.swift` (~100 lines) | Composer, backend selection, settings and shortcut capture |
+| `TextInput/QuickAskHotkey.swift` (~80 lines) | Carbon shortcut registration and rebinding; no keylogging/event tap |
+| `TextInput/TextCompanionPanelView.swift` (~45 lines) | Menu controls, last-response reading/copy, companion visibility |
+| `TextInput/Core/AskModels.swift` | Request/session/events, validation, cancellation generations and recovery state |
+| `TextInput/Core/AgentProcess.swift` | Portable process pipes, concurrent stderr draining, bounded framing, timeout/cancellation |
+| `TextInput/Core/JSONProtocol.swift`, `CodexConversation.swift` | Provider wire encoding/parsing and text-only permission behavior |
+| `TextInput/Core/PopupPlacement.swift` | Testable point-space placement and clamping |
+| `TextInput/Core/ImageAttachment.swift` | Bounded PNG payloads, originating-window identity and per-presentation capture leases |
+| `TextInput/WindowSnapshotCapture.swift` | Native scoped ScreenCaptureKit capture and in-memory PNG encoding |
+| `TextInput/LocalReplySpeech.swift` | Local system reply speech and cancellation |
+| `TextInput/Core/HybridRecordingGesture.swift` | Future Ask/Dictate tap/hold state machine; not audio capture |
+| `TextInput/Core/GuidanceVerification.swift` | Expected-action/outcome gate and dictation-destination eligibility; not native observers/insertion |
+| `TextInput/Core/SupportingCapabilities.swift` | Unavailable capability flags and supporting contracts |
+| `CompanionManager.swift`, `OverlayWindow.swift`, `DesignSystem.swift` | Original blue buddy state, visuals, animation and design tokens |
+| `CompanionResponseOverlay.swift` | Compact streamed-response bubble; full reply remains in Quick Ask |
+| `MenuBarPanelManager.swift`, `leanring_buddyApp.swift` | Menu-bar shell and text-first lifecycle |
+| `Tools/ClickyTextCLI/` | Portable stdin-based text transport diagnostic |
+| `Tests/ClickyCoreTests/` | Portable behavioral/process tests and offline Python fixture |
+| `leanring-buddyUITests/QuickAskUITests.swift` | Four Mac-only preview UI tests |
 
-| Route | Upstream | Purpose |
-|-------|----------|---------|
-| `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
-| `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
-| `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
+Paths above are relative to `leanring-buddy/` unless their directory is at repository root.
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
-Worker vars: `ELEVENLABS_VOICE_ID`
+## Supporting scope
 
-### Key Architecture Decisions
+Local ASR, smart cleanup, system-wide dictation insertion, visual MCP, persistent guidance/auto-advance, and live terminal attachment are **not enabled**. Contracts and deterministic supporting state machines exist, with setup in `docs/SUPPORTING_SETUP.md`. Scoped screenshots and system speech are available for manual development-build testing but remain unvalidated on a Mac. Do not set release capability flags true without validating the actual native feature. No microphone or automatic screen capture should be triggered by typed Ask.
 
-**Menu Bar Panel Pattern**: The companion panel uses `NSStatusItem` for the menu bar icon and a custom borderless `NSPanel` for the floating control panel. This gives full control over appearance (dark, rounded corners, custom shadow) and avoids the standard macOS menu/popover chrome. The panel is non-activating so it doesn't steal focus. A global event monitor auto-dismisses it on outside clicks.
+Legacy `BuddyDictationManager`, AssemblyAI/OpenAI/Apple speech providers, ClaudeAPI, ElevenLabs client, onboarding views, and `worker/` remain for reference. They are not current app prerequisites. Migrate these incrementally; keep known nonblocking Swift concurrency and deprecated `onChange` warnings unchanged.
 
-**Cursor Overlay**: A full-screen transparent `NSPanel` hosts the blue cursor companion. It's non-activating, joins all Spaces, and never steals focus. The cursor position, response text, waveform, and pointing animations all render in this overlay via SwiftUI through `NSHostingView`.
+## Build and verification
 
-**Global Push-To-Talk Shortcut**: Background push-to-talk uses a listen-only `CGEvent` tap instead of an AppKit global monitor so modifier-based shortcuts like `ctrl + option` are detected more reliably while the app is running in the background.
+Open `leanring-buddy.xcodeproj` in **Xcode 16+ / Swift 6+**; select shared scheme `leanring-buddy`, set the user's signing team, Cmd+R to build/run, and Cmd+U for native tests. **Do not run `xcodebuild` from the terminal**: the repository prohibits it because it affects TCC permissions.
 
-**Shared URLSession for AssemblyAI**: A single long-lived `URLSession` is shared across all AssemblyAI streaming sessions (owned by the provider, not the session). Creating and invalidating a URLSession per session corrupts the OS connection pool and causes "Socket is not connected" errors after a few rapid reconnections.
+The Xcode app compiles the synchronized `leanring-buddy/TextInput/Core` files directly. Root `Package.swift` compiles the same files as ClickyCore in Swift 5 language mode and also builds `clicky-text`. Do not link a duplicate ClickyCore copy into the app.
 
-**Transient Cursor Mode**: When "Show Clicky" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
+Portable checks: `bash scripts/test-core.sh` with Swift 6+ and Python 3. Cloud installation: `bash scripts/cloud-setup.sh` uses the official signed Swift 6.2.3 Debian toolchain and pins its signing fingerprint. Caches stay outside tracked source. Linux Foundation subprocess lifecycle tests require local socket IPC; if sandboxing blocks the wakeup socket pair, run the test command with the appropriate execution permission rather than disabling tests.
 
-## Key Files
+Mac preflight: `bash scripts/mac-preflight.sh`. Detailed acceptance, real-provider compatibility, and remaining limitations: `docs/MAC_VALIDATION.md`. AppKit syntax parsing in Linux is not Mac typechecking or GUI validation. Never claim native tests ran without a Mac.
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1026 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
-| `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
-| `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
-| `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
-| `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
-| `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
-| `BuddyTranscriptionProvider.swift` | ~100 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — AssemblyAI, OpenAI, or Apple Speech. |
-| `AssemblyAIStreamingTranscriptionProvider.swift` | ~478 | Streaming transcription provider. Fetches temp tokens from the Cloudflare Worker, opens an AssemblyAI v3 websocket, streams PCM16 audio, tracks turn-based transcripts, and delivers finalized text on key-up. Shares a single URLSession across all sessions. |
-| `OpenAIAudioTranscriptionProvider.swift` | ~317 | Upload-based transcription provider. Buffers push-to-talk audio locally, uploads as WAV on release, returns finalized transcript. |
-| `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
-| `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
-| `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
-| `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
-| `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
-| `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
-| `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
-| `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
-| `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
-| `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
-| `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
-| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
+The `--clicky-ui-test` launch argument selects a dedicated preferences domain, preview backend, no hotkey/companion/capture target, and a panel that remains visible after submission for assertions. It does not validate production focus restoration.
 
-## Build & Run
+## Conventions
 
-```bash
-# Open in Xcode
-open leanring-buddy.xcodeproj
-
-# Select the leanring-buddy scheme, set signing team, Cmd+R to build and run
-
-# Known non-blocking warnings: Swift 6 concurrency warnings,
-# deprecated onChange warning in OverlayWindow.swift. Do NOT attempt to fix these.
-```
-
-**Do NOT run `xcodebuild` from the terminal** — it invalidates TCC (Transparency, Consent, and Control) permissions and the app will need to re-request screen recording, accessibility, etc.
-
-## Cloudflare Worker
-
-```bash
-cd worker
-npm install
-
-# Add secrets
-npx wrangler secret put ANTHROPIC_API_KEY
-npx wrangler secret put ASSEMBLYAI_API_KEY
-npx wrangler secret put ELEVENLABS_API_KEY
-
-# Deploy
-npx wrangler deploy
-
-# Local dev (create worker/.dev.vars with your keys)
-npx wrangler dev
-```
-
-## Code Style & Conventions
-
-### Variable and Method Naming
-
-IMPORTANT: Follow these naming rules strictly. Clarity is the top priority.
-
-- Be as clear and specific with variable and method names as possible
-- **Optimize for clarity over concision.** A developer with zero context on the codebase should immediately understand what a variable or method does just from reading its name
-- Use longer names when it improves clarity. Do NOT use single-character variable names
-- Example: use `originalQuestionLastAnsweredDate` instead of `originalAnswered`
-- When passing props or arguments to functions, keep the same names as the original variable. Do not shorten or abbreviate parameter names. If you have `currentCardData`, pass it as `currentCardData`, not `card` or `cardData`
-
-### Code Clarity
-
-- **Clear is better than clever.** Do not write functionality in fewer lines if it makes the code harder to understand
-- Write more lines of code if additional lines improve readability and comprehension
-- Make things so clear that someone with zero context would completely understand the variable names, method names, what things do, and why they exist
-- When a variable or method name alone cannot fully explain something, add a comment explaining what is happening and why
-
-### Swift/SwiftUI Conventions
-
-- Use SwiftUI for all UI unless a feature is only supported in AppKit (e.g., `NSPanel` for floating windows)
-- All UI state updates must be on `@MainActor`
-- Use async/await for all asynchronous operations
-- Comments should explain "why" not just "what", especially for non-obvious AppKit bridging
-- AppKit `NSPanel`/`NSWindow` bridged into SwiftUI via `NSHostingView`
-- All buttons must show a pointer cursor on hover
-- For any interactive element, explicitly think through its hover behavior (cursor, visual feedback, and whether hover should communicate clickability)
-
-### Do NOT
-
-- Do not add features, refactor code, or make "improvements" beyond what was asked
-- Do not add docstrings, comments, or type annotations to code you did not change
-- Do not try to fix the known non-blocking warnings (Swift 6 concurrency, deprecated onChange)
-- Do not rename the project directory or scheme (the "leanring" typo is intentional/legacy)
-- Do not run `xcodebuild` from the terminal — it invalidates TCC permissions
-
-## Git Workflow
-
-- Branch naming: `feature/description` or `fix/description`
-- Commit messages: imperative mood, concise, explain the "why" not the "what"
-- Do not force-push to main
-
-## Self-Update Instructions
-
-<!-- AI agents: follow these instructions to keep this file accurate. -->
-
-When you make changes to this project that affect the information in this file, update this file to reflect those changes. Specifically:
-
-1. **New files**: Add new source files to the "Key Files" table with their purpose and approximate line count
-2. **Deleted files**: Remove entries for files that no longer exist
-3. **Architecture changes**: Update the architecture section if you introduce new patterns, frameworks, or significant structural changes
-4. **Build changes**: Update build commands if the build process changes
-5. **New conventions**: If the user establishes a new coding convention during a session, add it to the appropriate conventions section
-6. **Line count drift**: If a file's line count changes significantly (>50 lines), update the approximate count in the Key Files table
-
-Do NOT update this file for minor edits, bug fixes, or changes that don't affect the documented architecture or conventions.
+- All UI state updates are on `@MainActor`; keep audio/model/process work off the UI thread.
+- Use SwiftUI for views and AppKit where native focus/windows/text input require it.
+- Use clear descriptive names, async/await, and comments explaining non-obvious decisions.
+- All interactive buttons must show a pointer cursor on hover.
+- Track request IDs/generations so stale callbacks cannot mutate a later interaction.
+- Preserve pre-existing user changes. Do not change unrelated features or known warnings.
+- Never log raw prompts, replies, screenshots, clipboard contents, credentials, or sensitive AX values.
+- Do not perform desktop actions or synthesize Enter. Future dictation must validate its original destination and offer Copy on uncertainty.
+- No product subagent platform or automatic live-terminal typing.
+- No force-pushing main. Suggested branches: `feature/description` or `fix/description`; imperative commit messages explaining why.
+- Use existing checkouts in cloud tasks; do not create Git worktrees unless explicitly requested.
+- Update these instructions when architecture, build commands, or file responsibilities change.

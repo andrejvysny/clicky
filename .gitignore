@@ -1,5 +1,8 @@
 worker/node_modules/
 worker/.dev.vars
+worker/.wrangler/
+.build/
+.swiftpm/
 .DS_Store
 *.xcuserstate
 build/

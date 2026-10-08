@@ -59,7 +59,7 @@ final class CompanionResponseOverlayManager {
             self?.fadeOutAndHide()
         }
         autoHideWorkItem = hideWork
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: hideWork)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: hideWork)
     }
 
     func hideOverlay() {
@@ -157,7 +157,7 @@ final class CompanionResponseOverlayManager {
 
         let fittingSize = contentView.fittingSize
         let newWidth = min(fittingSize.width, overlayMaxWidth)
-        let newHeight = fittingSize.height
+        let newHeight = min(fittingSize.height, 240)
 
         // Keep the panel origin relative to the cursor (the timer handles that),
         // but update the frame size so the content fits.
@@ -199,6 +199,7 @@ private struct CompanionResponseOverlayView: View {
                 .font(.system(size: 13, weight: .regular))
                 .foregroundColor(DS.Colors.textPrimary)
                 .lineSpacing(3)
+                .lineLimit(10)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: 300, alignment: .leading)
                 .padding(.horizontal, 14)

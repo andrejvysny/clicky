@@ -1,28 +1,7 @@
-# AGENTS.md - leanring-buddy (Main App Target)
+# Main app target
 
-## Source Files
+Follow the root `AGENTS.md`. The Xcode target synchronizes this directory, including `TextInput/Core`; do not add duplicate package products to the app.
 
-### FloatingSessionButton.swift
-- `FloatingSessionButtonManager` — `@MainActor` class managing the `NSPanel` lifecycle
-  - `showFloatingButton()` — Creates/shows the panel in top-right of primary screen
-  - `hideFloatingButton()` — Hides panel (keeps it alive for quick re-show)
-  - `destroyFloatingButton()` — Removes panel permanently (session ended)
-  - `onFloatingButtonClicked` — Callback closure, set by ContentView to bring main window to front
-  - `floatingButtonPanel` — Exposed `NSPanel` reference for screenshot exclusion
-- `FloatingButtonView` — Private SwiftUI view with gradient circle, scale+glow hover animation, pointer cursor
+The active lifecycle is text-first. Keep Quick Ask independent of the dormant voice permission gates and cloud clients. Preserve original blue cursor assets/animation. Popup focus and NSTextView behavior need manual Mac validation; pure state/protocol changes should have portable behavioral coverage.
 
-### ContentView.swift
-- Receives `FloatingSessionButtonManager` via `@EnvironmentObject`
-- `isMainWindowCurrentlyFocused` — Tracks main window focus state
-- `configureFloatingButtonManager()` — Wires up the click callback
-- `startObservingMainWindowFocusChanges()` — Sets up `NSWindow` notification observers
-- `updateFloatingButtonVisibility()` — Core logic: show if running + not focused, hide otherwise
-- `bringMainWindowToFront()` — Activates app and orders main window front
-
-### ScreenshotManager.swift
-- `floatingButtonWindowToExcludeFromCaptures` — `NSWindow?` reference set by ContentView
-- `captureScreen()` — Matches the floating window to an `SCWindow` and excludes it from capture filter
-
-### leanring_buddyApp.swift
-- Owns `FloatingSessionButtonManager` as `@StateObject`
-- Injects it into ContentView via `.environmentObject()`
+Do not rename `leanring-buddy`, invoke terminal `xcodebuild`, fix known nonblocking warnings, or enable unfinished supporting capabilities. Use Xcode's shared scheme for native build/tests and the root Swift package for cloud checks.

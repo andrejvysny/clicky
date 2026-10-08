@@ -32,11 +32,15 @@ final class MenuBarPanelManager: NSObject {
     private var dismissPanelObserver: NSObjectProtocol?
 
     private let companionManager: CompanionManager
+    private let askController: AskController
+    private let onOpenQuickAsk: (Bool) -> Void
     private let panelWidth: CGFloat = 320
     private let panelHeight: CGFloat = 380
 
-    init(companionManager: CompanionManager) {
+    init(companionManager: CompanionManager, askController: AskController, onOpenQuickAsk: @escaping (Bool) -> Void) {
         self.companionManager = companionManager
+        self.askController = askController
+        self.onOpenQuickAsk = onOpenQuickAsk
         super.init()
         createStatusItem()
 
@@ -144,7 +148,10 @@ final class MenuBarPanelManager: NSObject {
     }
 
     private func createPanel() {
-        let companionPanelView = CompanionPanelView(companionManager: companionManager)
+        let companionPanelView = TextCompanionPanelView(controller: askController, companionManager: companionManager, onOpenQuickAsk: { [weak self] settings in
+            self?.hidePanel()
+            self?.onOpenQuickAsk(settings)
+        })
             .frame(width: panelWidth)
 
         let hostingView = NSHostingView(rootView: companionPanelView)
@@ -223,12 +230,7 @@ final class MenuBarPanelManager: NSObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 guard panel.isVisible else { return }
 
-                // If permissions aren't all granted yet, a system dialog
-                // may have focus — don't dismiss during onboarding.
-                if !self.companionManager.allPermissionsGranted && !NSApp.isActive {
-                    return
-                }
-
+                guard NSApp.modalWindow == nil else { return }
                 self.hidePanel()
             }
         }
