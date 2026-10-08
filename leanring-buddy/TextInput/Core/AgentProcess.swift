@@ -5,12 +5,15 @@ import Darwin
 import Glibc
 #endif
 
-public final class AgentProcess: @unchecked Sendable {
+nonisolated public final class AgentProcess: @unchecked Sendable {
     private let process = Process()
     private let input = Pipe()
     private let output = Pipe()
     private let errors = Pipe()
     private let lock = NSLock()
+    // Darwin's waitUntilExit spins the caller's run loop and can miss the exit wakeup on
+    // cooperative-pool threads; the termination handler always fires once the child exits.
+    private let exited = DispatchSemaphore(value: 0)
     private var stopped = false
     private var inputClosed = false
 
@@ -24,6 +27,7 @@ public final class AgentProcess: @unchecked Sendable {
         process.standardInput = input
         process.standardOutput = output
         process.standardError = errors
+        process.terminationHandler = { [exited] _ in exited.signal() }
     }
 
     public func start() throws -> AsyncThrowingStream<JSONValue, Error> {
@@ -47,7 +51,7 @@ public final class AgentProcess: @unchecked Sendable {
                         for message in try framer.append(chunk) { continuation.yield(message) }
                     }
                     for message in try framer.finish() { continuation.yield(message) }
-                    process.waitUntilExit()
+                    waitForExit()
                     if !isStopped && process.terminationStatus != 0 { throw AskError.processFailed(process.terminationStatus) }
                     continuation.finish()
                 } catch { continuation.finish(throwing: error) }
@@ -71,6 +75,9 @@ public final class AgentProcess: @unchecked Sendable {
         if !inputClosed { try? input.fileHandleForWriting.close(); inputClosed = true }
     }
 
+    // Blocks the detached reader exactly like its pipe reads; never called on the main actor.
+    private func waitForExit() { exited.wait() }
+
     private var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
 
     public func stop() {
@@ -92,7 +99,7 @@ public final class AgentProcess: @unchecked Sendable {
     deinit { stop() }
 }
 
-public final class ManagedAgentRunner: @unchecked Sendable {
+nonisolated public final class ManagedAgentRunner: @unchecked Sendable {
     private let lock = NSLock()
     private var activeProcess: AgentProcess?
 
@@ -124,7 +131,7 @@ public final class ManagedAgentRunner: @unchecked Sendable {
                         return
                     }
                     guard let executable else { throw AskError.missingExecutable(provider.rawValue) }
-                    let arguments = provider == .claude ? AgentProtocol.claudeArguments(session: request.session) : ["app-server", "--listen", "stdio://"]
+                    let arguments = provider == .claude ? AgentProtocol.claudeArguments(session: request.session) : AgentProtocol.codexArguments()
                     let agentProcess = try AgentProcess(executable: executable, arguments: arguments, workingDirectory: request.workingDirectory)
                     process = agentProcess
                     cancellation.install(agentProcess)
@@ -160,9 +167,13 @@ public final class ManagedAgentRunner: @unchecked Sendable {
                         if provider == .codex && completed { break }
                     }
                     guard completed else { throw AskError.incompleteTurn }
+                    // Free the runner before finishing so an immediate next turn is not rejected as busy.
+                    timeout.cancel()
+                    agentProcess.stop()
+                    self.release(agentProcess)
                     continuation.finish()
                 } catch {
-                    process?.stop()
+                    if let process { process.stop(); self.release(process) }
                     continuation.finish(throwing: error)
                 }
             }
@@ -182,7 +193,7 @@ public final class ManagedAgentRunner: @unchecked Sendable {
     }
 }
 
-private final class AgentProcessCancellation: @unchecked Sendable {
+nonisolated private final class AgentProcessCancellation: @unchecked Sendable {
     private let lock = NSLock()
     private var process: AgentProcess?
     private var canceled = false

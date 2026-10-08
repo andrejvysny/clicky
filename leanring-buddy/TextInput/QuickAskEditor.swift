@@ -4,6 +4,10 @@ import SwiftUI
 struct QuickAskEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var height: CGFloat
+    var placeholder: String = ""
+    var compact: Bool = false
+    /// Command+Shift+A; the cursor-following ghost pill cannot be reached with the mouse.
+    var onAttach: (() -> Void)? = nil
     let onSubmit: () -> Void
     let onCancel: () -> Void
 
@@ -12,11 +16,15 @@ struct QuickAskEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
+        // Legacy (always-visible) scrollers draw a track inside the compact pill; show only while scrolling.
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
         scrollView.drawsBackground = false
         let editor = PromptTextView()
         editor.delegate = context.coordinator
         editor.onSubmit = onSubmit
         editor.onCancel = onCancel
+        editor.onAttach = onAttach
         editor.isRichText = false
         editor.isAutomaticQuoteSubstitutionEnabled = false
         editor.isAutomaticDashSubstitutionEnabled = false
@@ -27,13 +35,15 @@ struct QuickAskEditor: NSViewRepresentable {
         editor.isHorizontallyResizable = false
         editor.autoresizingMask = [.width]
         editor.textContainer?.widthTracksTextView = true
-        editor.textContainer?.containerSize = NSSize(width: 380, height: CGFloat.greatestFiniteMagnitude)
-        editor.font = .systemFont(ofSize: 14)
+        editor.textContainer?.containerSize = NSSize(width: compact ? 220 : 380, height: CGFloat.greatestFiniteMagnitude)
+        editor.font = .systemFont(ofSize: compact ? 13 : 14)
         editor.textColor = .white
         editor.insertionPointColor = .white
         editor.drawsBackground = false
-        editor.textContainerInset = NSSize(width: 8, height: 8)
+        editor.textContainerInset = compact ? NSSize(width: 2, height: 3) : NSSize(width: 8, height: 8)
         editor.string = text
+        editor.placeholder = placeholder
+        editor.setAccessibilityPlaceholderValue(placeholder)
         editor.setAccessibilityIdentifier("quickAskEditor")
         scrollView.documentView = editor
         DispatchQueue.main.async { editor.window?.makeFirstResponder(editor) }
@@ -46,6 +56,7 @@ struct QuickAskEditor: NSViewRepresentable {
         editor.isEditable = context.environment.isEnabled
         editor.onSubmit = onSubmit
         editor.onCancel = onCancel
+        editor.onAttach = onAttach
         if editor.string != text, !editor.hasMarkedText() { editor.string = text }
     }
 
@@ -57,8 +68,14 @@ struct QuickAskEditor: NSViewRepresentable {
             parent.text = editor.string
             if let layout = editor.layoutManager, let container = editor.textContainer {
                 layout.ensureLayout(for: container)
-                parent.height = min(180, max(88, layout.usedRect(for: container).height + 20))
+                let used = layout.usedRect(for: container).height
+                if parent.compact {
+                    parent.height = min(120, max(20, used + 2 * editor.textContainerInset.height))
+                } else {
+                    parent.height = min(180, max(88, used + 20))
+                }
             }
+            editor.needsDisplay = true
         }
     }
 }
@@ -66,10 +83,27 @@ struct QuickAskEditor: NSViewRepresentable {
 private final class PromptTextView: NSTextView {
     var onSubmit: (() -> Void)?
     var onCancel: (() -> Void)?
+    var onAttach: (() -> Void)?
+    var placeholder = ""
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard string.isEmpty, !hasMarkedText(), !placeholder.isEmpty else { return }
+        let origin = textContainerOrigin
+        let padding = textContainer?.lineFragmentPadding ?? 0
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font ?? NSFont.systemFont(ofSize: 14),
+            .foregroundColor: NSColor(white: 1, alpha: 0.45)
+        ]
+        placeholder.draw(at: NSPoint(x: origin.x + padding, y: origin.y), withAttributes: attributes)
+    }
+
     override func keyDown(with event: NSEvent) {
         if !hasMarkedText() {
             if [UInt16(36), UInt16(76)].contains(event.keyCode), !event.modifierFlags.contains(.shift) { onSubmit?(); return }
             if event.keyCode == 53 { onCancel?(); return }
+            if let onAttach, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
+               event.charactersIgnoringModifiers?.lowercased() == "a" { onAttach(); return }
         }
         super.keyDown(with: event)
     }

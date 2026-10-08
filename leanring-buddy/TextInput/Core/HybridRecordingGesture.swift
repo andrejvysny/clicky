@@ -1,6 +1,6 @@
 import Foundation
 
-public struct HybridRecordingGesture {
+nonisolated public struct HybridRecordingGesture {
     public enum Phase: Equatable { case idle, held(InputMode), latched(InputMode) }
     public enum Effect: Equatable { case none, start(InputMode), finalize(InputMode), discard(InputMode) }
     public private(set) var phase: Phase = .idle

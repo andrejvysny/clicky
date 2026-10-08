@@ -56,7 +56,14 @@ else:
             result(message['id'], {'userAgent': 'fixture'})
         elif method == 'account/read':
             result(message['id'], {'account': None if 'unauth' in os.path.basename(sys.argv[0]) else {'type': 'chatgpt'}})
+        elif method == 'config/read':
+            result(message['id'], {'config': {'mcp_servers': {'fixture-server': {'command': 'x'}}}})
         elif method in ('thread/start', 'thread/resume'):
+            params = message['params']
+            disabled = params.get('config', {}).get('mcp_servers', {}).get('fixture-server', {}).get('enabled') is False
+            if params.get('approvalsReviewer') != 'user' or not disabled:
+                emit({'id': message['id'], 'error': {'code': -32602, 'message': 'fixture: tools not disabled'}})
+                continue
             result(message['id'], {'thread': {'id': message['params'].get('threadId', 'codex-fixture')}})
         elif method == 'turn/start':
             prompt = message['params']['input'][0]['text']

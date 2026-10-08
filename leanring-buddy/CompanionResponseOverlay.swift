@@ -25,6 +25,7 @@ final class CompanionResponseOverlayViewModel: ObservableObject {
 final class CompanionResponseOverlayManager {
     private let overlayViewModel = CompanionResponseOverlayViewModel()
     private var overlayPanel: NSPanel?
+    private var overlayHostingController: NSHostingController<AnyView>?
     private var cursorTrackingTimer: Timer?
     private var autoHideWorkItem: DispatchWorkItem?
 
@@ -93,12 +94,16 @@ final class CompanionResponseOverlayManager {
         responseOverlayPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         responseOverlayPanel.isExcludedFromWindowsMenu = true
 
-        let hostingView = NSHostingView(
-            rootView: CompanionResponseOverlayView(viewModel: overlayViewModel)
+        let hostingController = NSHostingController(rootView: AnyView(
+            CompanionResponseOverlayView(viewModel: overlayViewModel)
                 .frame(maxWidth: overlayMaxWidth)
-        )
-        hostingView.frame = initialFrame
-        responseOverlayPanel.contentView = hostingView
+        ))
+        // The panel is sized explicitly in resizePanelToFitContent; automatic window sizing
+        // would pin the width measured for the initial "..." placeholder.
+        hostingController.sizingOptions = []
+        hostingController.view.frame = initialFrame
+        responseOverlayPanel.contentView = hostingController.view
+        overlayHostingController = hostingController
 
         overlayPanel = responseOverlayPanel
     }
@@ -153,9 +158,11 @@ final class CompanionResponseOverlayManager {
     }
 
     private func resizePanelToFitContent() {
-        guard let overlayPanel, let contentView = overlayPanel.contentView else { return }
+        guard let overlayPanel, let contentView = overlayPanel.contentView, let overlayHostingController else { return }
 
-        let fittingSize = contentView.fittingSize
+        // Propose the full bubble width; fittingSize measured at the current (possibly narrow) width
+        // made long replies wrap one character per line.
+        let fittingSize = overlayHostingController.sizeThatFits(in: CGSize(width: overlayMaxWidth, height: 10_000))
         let newWidth = min(fittingSize.width, overlayMaxWidth)
         let newHeight = min(fittingSize.height, 240)
 

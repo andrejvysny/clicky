@@ -10,6 +10,7 @@
 import ServiceManagement
 import SwiftUI
 import Sparkle
+import os
 
 @main
 struct leanring_buddyApp: App {
@@ -35,6 +36,10 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var quickAskPanelManager: QuickAskPanelManager?
     private let quickAskHotkey = QuickAskHotkey()
     private var sparkleUpdaterController: SPUStandardUpdaterController?
+    #if DEBUG
+    private let guidanceStepController = GuidanceStepController()
+    private let guidanceLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "clicky", category: "guidance")
+    #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("🎯 Clicky: Starting...")
@@ -43,19 +48,28 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
         quickAskPanelManager = QuickAskPanelManager(controller: askController)
-        menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager, askController: askController) { [weak self] settings in
-            self?.quickAskPanelManager?.show(settings: settings)
+        menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager, askController: askController) { [weak self] presentation in
+            self?.quickAskPanelManager?.show(presentation)
         }
         if ProcessInfo.processInfo.arguments.contains("--clicky-ui-test") {
             quickAskPanelManager?.show()
             return
         }
         quickAskHotkey.onPressed = { [weak self] in self?.quickAskPanelManager?.show() }
-        askController.onShortcutChanged = { [weak self] in self?.registerQuickAskShortcut() }
+        askController.onShortcutChanged = { [weak self] in self?.registerQuickAskShortcut() ?? false }
         registerQuickAskShortcut()
         companionManager.startTextMode()
         menuBarPanelManager?.showPanelOnLaunch()
         // startSparkleUpdater()
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        #if DEBUG
+        for url in urls {
+            do { guidanceStepController.handle(try GuidanceDebugRequest.parse(url)) }
+            catch { guidanceLogger.error("guidance request rejected: \(error.localizedDescription, privacy: .public)") }
+        }
+        #endif
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -65,9 +79,11 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         companionManager.stopTextMode()
     }
 
-    private func registerQuickAskShortcut() {
+    @discardableResult
+    private func registerQuickAskShortcut() -> Bool {
         let registered = quickAskHotkey.register(keyCode: askController.shortcutKeyCode, modifiers: askController.shortcutModifiers)
         askController.shortcutWarning = registered ? nil : "Quick Ask shortcut is unavailable. Rebind it in Settings or use the menu bar."
+        return registered
     }
 
     /// Registers the app as a login item so it launches automatically on

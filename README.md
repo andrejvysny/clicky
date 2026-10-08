@@ -8,7 +8,7 @@ The active startup path needs no Cloudflare deployment, speech API keys, email o
 - **Specification coverage and implementation roadmap:** [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)
 - **Supporting module setup:** [docs/SUPPORTING_SETUP.md](docs/SUPPORTING_SETUP.md)
 - **Reference reuse:** [docs/REFERENCE_REUSE.md](docs/REFERENCE_REUSE.md)
-- **Portable tests:** `bash scripts/test-core.sh` (Swift 6+, Python 3)
+- **Portable tests:** `bash scripts/test-core.sh` (Swift 6.2+, Python 3)
 - **Cloud toolchain setup:** `bash scripts/cloud-setup.sh` (Linux x86_64)
 - **Mac preflight:** `bash scripts/mac-preflight.sh`; then open `leanring-buddy.xcodeproj` in Xcode 16+.
 - **Export current source for Mac:** `bash scripts/package-mac-source.sh /tmp/clicky-mac-source.tar.gz`

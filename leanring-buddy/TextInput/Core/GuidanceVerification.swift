@@ -1,6 +1,10 @@
 import Foundation
+// Darwin Foundation does not re-export CGRect geometry members to this module.
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
-public struct GuidanceVerification {
+nonisolated public struct GuidanceVerification {
     public enum ExpectedAction: Equatable { case click(button: Int), key(code: UInt16, modifiers: UInt64) }
     public enum ObservedAction: Equatable { case click(button: Int, point: CGPoint), key(code: UInt16, modifiers: UInt64) }
     public private(set) var phase: GuidancePhase = .waiting
@@ -49,7 +53,7 @@ public struct GuidanceVerification {
     public mutating func cancel() { phase = .canceled }
 }
 
-public struct DictationDestination: Equatable, Sendable {
+nonisolated public struct DictationDestination: Equatable, Sendable {
     public let processIdentifier: Int32
     public let windowIdentifier: UInt32
     public let elementIdentifier: String

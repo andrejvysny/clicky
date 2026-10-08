@@ -1,6 +1,52 @@
 # Mac validation: text-first Clicky
 
-Status: the portable Swift suite is tested in Linux. The AppKit/SwiftUI app, four new UI tests, real provider inference, and focus restoration need validation on macOS. Syntax parsing alone does not establish a successful Mac build.
+Status: the portable suite, an app-source typecheck, and real provider transport now pass on a Mac (results below). The app has still not been built, signed, or launched by Xcode; the four new UI tests, native focus/capture/speech behavior, and GUI provider flows remain unverified.
+
+## Mac results — 8 October 2026
+
+Environment: Apple Silicon (arm64), macOS 26.6.2 (25G83), Xcode 26.6 (17F113), Apple Swift 6.3.3, Python 3.14.7, Claude Code 2.1.294 (`~/.local/bin/claude`), codex-cli 0.160.1 (`/opt/homebrew/bin/codex`), both signed in through their official CLIs.
+
+| Check | Result |
+|---|---|
+| `bash scripts/mac-preflight.sh` | Pass; Xcode developer directory selected |
+| `bash scripts/test-core.sh` (before fixes) | **Failed to compile**: `PopupPlacement.swift` — `value of type 'CGRect' has no member 'minY'` (Darwin Foundation does not re-export CoreGraphics geometry members). Fixed |
+| `bash scripts/test-core.sh` (after fixes) | Pass: 29 tests, 0 failures |
+| Process-runner stress: `--filter AgentRunnerTests` ×40 under 12 busy-loop CPU processes | Before fix: hang ~1 in 14 runs, then 2 `busy` failures in 40. After fixes: 40/40 pass, 0 hangs |
+| App-source typecheck (`swiftc -typecheck`, below) | Before fixes: 1 error (`QuickAskPanelManager.swift:75` implicit `self` in closure) plus 26 main-actor isolation warnings in Core. After: 0 errors; remaining warnings are known legacy files and deprecated `onChange` |
+| UI test sources typecheck | Pass |
+| Codex app-server schema (`codex app-server generate-json-schema`) | Every method/field Clicky sends or reads exists in 0.160.1 |
+| Real `clicky-text` turns, both providers | Text streaming, `--resume`/`thread/resume` continuity ("sapphire"), and a harmless 240×240 PNG (both described "red circle") pass |
+| Codex write attempt through Clicky | Two approval requests declined by Clicky; no file created |
+| Unknown saved session ID, both providers | Actionable failure, no retry; app now adds a New conversation hint |
+| Missing executable / invalid folder | Actionable errors before launch |
+| Xcode build/run, Cmd+U UI tests, manual GUI matrix below | **Not run** — requires the user in Xcode |
+
+Defects found and fixed on the Mac:
+
+1. **Core isolation mismatch.** The app target uses `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so Core types compiled inside the app (process runner, framer, protocol parsers) were main-actor isolated while the package compiled them nonisolated. Detached process readers called main-actor code (hops/unsafe synchronous calls). Core declarations are now explicitly `nonisolated`, and `Package.swift` (tools 6.2) mirrors the app's isolation settings so the portable build reports such regressions.
+2. **Process exit hang.** `Process.waitUntilExit()` on a cooperative-pool thread could miss the exit wakeup and block forever (pre-existing). A turn would stay "Working" even after the five-minute timeout. Replaced by a termination-handler signal.
+3. **Runner slot race.** The active-process slot was released after the stream finished, so an immediate next turn could fail with `busy`. Now released before finishing.
+4. **Provider tools leaked into the text client.** Claude `--tools ""` still loaded the user's MCP servers and claude.ai connectors (Atlassian, Plane, …). Codex inherited the user's `approvals_reviewer = "auto_review"` (approvals never reach Clicky), user MCP servers (including `computer-use`, `node_repl`), plugins, and apps. Claude now runs with `--strict-mcp-config` (verified `tools: []`, `mcp_servers: []`). Codex launches with `-c features.apps=false -c features.plugins=false -c approvals_reviewer="user"`, reads `config/read` for the project, and starts/resumes the thread with `approvalsReviewer: "user"` and every configured MCP server disabled; it fails closed if the configuration cannot be read. Verified live: only Codex built-in tools remain. Codex `-c mcp_servers={}` does not work (table overrides merge).
+5. **Shortcut rebinding** registered a transient half-updated combination and lost the old binding on conflict. Key and modifiers now update atomically and the previous binding is restored on failure.
+6. `QuickAskPanelManager.swift:75` compile error; `LocalReplySpeech` delegate captured non-Sendable utterances (now compares identities).
+
+Still open: Codex keeps its built-in tools under the read-only sandbox and `untrusted` policy, so known-safe read commands can still read files in the selected project folder without an approval request. Choose a project folder you are willing to share. A response-bubble fade completion can hide a new bubble if a new request starts during the 0.4 s fade (pre-existing original code).
+
+### App-source typecheck without building
+
+This compiles nothing to disk, signs nothing, and does not touch TCC. Sparkle is replaced by a typecheck-only stub declaring `SPUUpdater` and `SPUStandardUpdaterController(startingUpdater:updaterDelegate:userDriverDelegate:)`, emitted with `xcrun swiftc -emit-module -module-name Sparkle`. Then:
+
+```bash
+xcrun swiftc -typecheck -module-name Clicky -sdk "$(xcrun --show-sdk-path --sdk macosx)" \
+  -target arm64-apple-macos14.2 -swift-version 5 -I /path/to/sparkle-stub \
+  -default-isolation MainActor -enable-upcoming-feature MemberImportVisibility \
+  -enable-upcoming-feature NonisolatedNonsendingByDefault -enable-upcoming-feature InferIsolatedConformances \
+  -enable-upcoming-feature InferSendableFromCaptures -enable-upcoming-feature GlobalActorIsolatedTypesUsability \
+  -enable-upcoming-feature DisableOutwardActorInference \
+  $(find leanring-buddy -name '*.swift')
+```
+
+It does not process asset catalogs, Info.plist, entitlements, or linking; only an Xcode build establishes those.
 
 This development build also implements explicit single-window screenshots and local system reply speech. Both require the native acceptance checks below before being considered validated.
 
@@ -10,7 +56,7 @@ You can use the prepared `clicky-mac-source.tar.gz` snapshot, which includes the
 
 Optional transfer integrity check from the archive directory: `shasum -a 256 -c clicky-mac-source.tar.gz.sha256`.
 
-1. Use an Apple Silicon Mac on macOS 14.2+, with Xcode 16+ and Swift 6+.
+1. Use an Apple Silicon Mac on macOS 14.2+, with Xcode 26+ and Swift 6.2+ (the target relies on Xcode 26 default actor isolation; Core uses `nonisolated` type declarations).
 2. Run `bash scripts/mac-preflight.sh` from the checkout. If `xcode-select -p` selects Command Line Tools, select the installed Xcode developer directory before proceeding.
 3. Run `bash scripts/test-core.sh`. These tests launch offline Python fixtures, so `python3` must be installed. They make no provider requests. They do not launch the app or use TCC permissions.
 4. Open `leanring-buddy.xcodeproj` in Xcode. Keep the existing scheme name `leanring-buddy` and set your own signing team. Build and launch with **Cmd+R**. Do not run terminal `xcodebuild`; the repository prohibits it because of TCC behavior.
@@ -24,8 +70,8 @@ The first launch selects **Local preview (no AI)**. This deliberately echoes the
 
 | Scenario | Expected result |
 |---|---|
-| Trigger Option+Shift+Space in a browser | Popup appears beside the pointer; text can be entered immediately |
-| Move the pointer while editing | Popup remains stationary |
+| Trigger Option+Shift+Space in a browser | A small ghost input appears beside the blue companion (right of the pointer); text can be entered immediately. Backend, folder, shortcut, speech, and the full reply are under the menu bar's Settings / Read last reply |
+| Move the pointer while editing | Ghost input follows the pointer beside the companion; holding Option pins it so its buttons can be clicked; Command+Shift+A attaches a window screenshot; clicking elsewhere closes it |
 | Type `first`, Shift+Enter, then `second` | Multiline prompt; Shift+Enter does not submit |
 | Press Enter or Send | Exactly one preview; popup closes and prior app regains keyboard focus |
 | Press Escape or Cancel | Popup closes; no request is sent; in-memory draft remains available |
@@ -52,9 +98,11 @@ Install/sign in using official tools before testing. Clicky never reads credenti
 6. Request a longer explanation, Stop Reply, and send another question. Confirm no late text leaks into the new reply, no duplicate requests, and the stopped prompt is available to retry.
 7. Test missing executable, invalid folder, signed-out provider, expired session, network loss, and provider exit. Confirm actionable error and editable recovery draft. Retry is manual because an interrupted request may already have reached the provider.
 
+Tool isolation: Claude runs with `--tools ""` and `--strict-mcp-config`, so neither built-in tools nor any MCP server/connector is loaded. Codex runs with apps and plugins disabled, approvals routed to Clicky (which declines), and every MCP server from `config/read` disabled for the thread. Codex built-in read commands remain available inside the read-only sandbox.
+
 Current limits: managed text/image turns only, no live terminal attachment, no microphone input, no visual MCP/guidance tools, and a five-minute turn timeout. Claude is launched with `--tools ""` and normal account authentication. Codex uses a read-only sandbox with untrusted approval policy; execution/edit approval requests are explicitly declined and surfaced as status. This is not the specification's complete approval UI. Use the official CLI for agent actions.
 
-The Claude stream flags and tools flag require compatibility testing against your installed release. Codex wire methods were checked against generated schemas from cloud `codex-cli 0.159.0-alpha.3`; compatibility with your Mac version must still be established. Do not resolve protocol differences by adding permission bypass flags.
+Claude Code 2.1.294 and codex-cli 0.160.1 passed real transport checks through `clicky-text` (see results above); Codex methods also match its generated 0.160.1 schema. Recheck after upgrading either CLI. Do not resolve protocol differences by adding permission bypass flags.
 
 For transport-only diagnosis, the root package also builds `clicky-text`. It uses the same runner as the app and reads UTF-8 from stdin (or `--prompt-file`) so prompts do not enter process arguments. Example from the checkout:
 

@@ -1,6 +1,6 @@
 import Foundation
 
-public enum AttachmentError: Error, LocalizedError, Equatable {
+nonisolated public enum AttachmentError: Error, LocalizedError, Equatable {
     case noTarget, targetChanged, permissionRequired, invalidImage, imageTooLarge, captureFailed
 
     public var errorDescription: String? {
@@ -16,7 +16,7 @@ public enum AttachmentError: Error, LocalizedError, Equatable {
 }
 
 /// An immutable snapshot, never a handle that permits later screen reads.
-public struct PNGImageAttachment: Equatable, Sendable {
+nonisolated public struct PNGImageAttachment: Equatable, Sendable {
     public static let maximumBytes = 3 * 1024 * 1024
     public let data: Data
     public let pixelWidth: Int
@@ -46,7 +46,7 @@ public struct PNGImageAttachment: Equatable, Sendable {
     }
 }
 
-public struct WindowCaptureTarget: Equatable, Sendable {
+nonisolated public struct WindowCaptureTarget: Equatable, Sendable {
     public let processIdentifier: Int32
     public let windowIdentifier: UInt32
     public let applicationIdentifier: String
@@ -60,13 +60,13 @@ public struct WindowCaptureTarget: Equatable, Sendable {
     }
 }
 
-public struct WindowCaptureLease: Equatable, Sendable {
+nonisolated public struct WindowCaptureLease: Equatable, Sendable {
     public let identifier: UUID
     public let target: WindowCaptureTarget
 }
 
 /// A capture belongs to one explicit button press in one popup presentation.
-public struct WindowAttachmentState: Sendable {
+nonisolated public struct WindowAttachmentState: Sendable {
     public private(set) var target: WindowCaptureTarget?
     public private(set) var pending: WindowCaptureLease?
     public private(set) var attachment: PNGImageAttachment?

@@ -113,10 +113,10 @@ struct AskSettingsView: View {
             }
             HStack {
                 Button(recordingShortcut ? "Press a shortcut…" : "Change Quick Ask shortcut") { recordingShortcut = true }.clickyPointerCursor()
-                Button("Reset") { controller.shortcutModifiers = 0xA00; controller.shortcutKeyCode = 49 }.clickyPointerCursor()
+                Button("Reset") { controller.updateShortcut(keyCode: 49, modifiers: 0xA00) }.clickyPointerCursor()
             }
             if recordingShortcut { ShortcutCaptureView { keyCode, modifiers in
-                if let keyCode, let modifiers { controller.shortcutModifiers = modifiers; controller.shortcutKeyCode = keyCode }
+                if let keyCode, let modifiers { controller.updateShortcut(keyCode: keyCode, modifiers: modifiers) }
                 recordingShortcut = false
             }.frame(height: 26) }
             if let warning = controller.shortcutWarning { Text(warning).font(.caption2).foregroundStyle(.orange) }

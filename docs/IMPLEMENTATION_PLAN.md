@@ -25,7 +25,7 @@ Reference reuse is documented with pinned revisions and licenses in `REFERENCE_R
 | §§7, 10 MCP/context | Explicit originating-window snapshot and preview, cancellation leases, in-memory image payloads; socket/tool design | Native capture/permission tests; MCP executable/server, AX grounding, agent registration |
 | §8 guidance | Tested expected-action/outcome transitions, stale generations, explicit manual override | Native event producers, evidence verifier, annotations, continuation and manual UI |
 | §4.4 spoken replies | Tested preference policy, native system speech, settings and Stop Speaking | Native playback/voice/cancellation tests |
-| §§14, 17 quality | 27 portable tests and offline text/image transport diagnostic | Native build/UI suite, provider sessions, app matrix, performance/ASR measurements |
+| §§14, 17 quality | 29 portable tests, offline text/image transport diagnostic, Mac app-source typecheck, real CLI provider turns | Native build/UI suite, provider sessions, app matrix, performance/ASR measurements |
 
 Cloud passing tests establish portable behavior only. See `CLOUD_VALIDATION.md` for executed checks and their limits.
 

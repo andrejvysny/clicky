@@ -1,6 +1,6 @@
 import Foundation
 
-public struct CodexConversation {
+nonisolated public struct CodexConversation {
     public private(set) var threadIdentifier: String?
     public private(set) var turnIdentifier: String?
     public private(set) var completed = false
@@ -38,10 +38,17 @@ public struct CodexConversation {
             return ([.object(["method": .string("initialized")]), AgentProtocol.rpc(identifier: 2, method: "account/read", params: .object([:]))], [])
         case 2:
             guard message["result"]["account"] != .null else { throw AskError.authenticationRequired }
+            return ([AgentProtocol.rpc(identifier: 5, method: "config/read", params: .object(["includeLayers": .bool(false), "cwd": .string(request.workingDirectory)]))], [])
+        case 5:
+            // Per-server disable is the only override that survives Codex's table merge; fail closed if config is unreadable.
+            guard case .object(let config) = message["result"]["config"] else { throw AskError.protocolFailure("Codex did not report its configuration, so Clicky could not disable its tools.") }
             var params: [String: JSONValue] = [
                 "cwd": .string(request.workingDirectory), "sandbox": .string("read-only"),
-                "approvalPolicy": .string("untrusted"),
+                "approvalPolicy": .string("untrusted"), "approvalsReviewer": .string("user"),
             ]
+            if case .object(let servers)? = config["mcp_servers"], !servers.isEmpty {
+                params["config"] = .object(["mcp_servers": .object(Dictionary(uniqueKeysWithValues: servers.keys.sorted().map { ($0, JSONValue.object(["enabled": .bool(false)])) }))])
+            }
             let resume = request.session?.provider == .codex
             if resume, let session = request.session { params["threadId"] = .string(session.identifier) }
             return ([AgentProtocol.rpc(identifier: 3, method: resume ? "thread/resume" : "thread/start", params: .object(params))], [])

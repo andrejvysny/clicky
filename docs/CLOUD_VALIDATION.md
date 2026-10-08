@@ -15,6 +15,8 @@ Validated 8 October 2026 on Linux x86_64 (Debian 13), using the official Swift 6
 
 The execution sandbox initially prevented Foundation's CFSocket wakeup socket pair, causing cancellation tests to hang. With local IPC allowed, the same tests completed. No tests were skipped or weakened to obtain the passing result.
 
+Later Mac results, including 29 tests after the provider-isolation changes, are recorded in `MAC_VALIDATION.md`.
+
 ## Not executed
 
 The macOS app has not been typechecked, built, or launched here. The four new Quick Ask UI tests, production focus restoration, global shortcut registration, scoped ScreenCaptureKit screenshots, system speech, real authenticated text/image inference/session restoration, and native permission/Space behavior remain unrun. See `MAC_VALIDATION.md`.

@@ -1,6 +1,6 @@
 import Foundation
 
-public enum AgentProvider: String, Codable, CaseIterable, Sendable {
+nonisolated public enum AgentProvider: String, Codable, CaseIterable, Sendable {
     case claude, codex, preview
 
     public var displayName: String {
@@ -12,7 +12,7 @@ public enum AgentProvider: String, Codable, CaseIterable, Sendable {
     }
 }
 
-public struct AgentSession: Codable, Equatable, Sendable {
+nonisolated public struct AgentSession: Codable, Equatable, Sendable {
     public let provider: AgentProvider
     public let identifier: String
     public let workingDirectory: String
@@ -24,7 +24,7 @@ public struct AgentSession: Codable, Equatable, Sendable {
     }
 }
 
-public struct AskRequest: Sendable {
+nonisolated public struct AskRequest: Sendable {
     public let identifier: UUID
     public let text: String
     public let workingDirectory: String
@@ -40,14 +40,14 @@ public struct AskRequest: Sendable {
     }
 }
 
-public enum AgentEvent: Equatable, Sendable {
+nonisolated public enum AgentEvent: Equatable, Sendable {
     case session(AgentSession)
     case textDelta(String)
     case status(String)
     case completed
 }
 
-public enum AskError: Error, LocalizedError, Equatable {
+nonisolated public enum AskError: Error, LocalizedError, Equatable {
     case emptyPrompt, promptTooLarge, busy, missingExecutable(String), invalidDirectory
     case protocolFailure(String), authenticationRequired, processFailed(Int32), incompleteTurn
 
@@ -66,7 +66,7 @@ public enum AskError: Error, LocalizedError, Equatable {
     }
 }
 
-public struct AskInputState: Sendable {
+nonisolated public struct AskInputState: Sendable {
     public private(set) var activeRequest: UUID?
     public private(set) var response = ""
     public private(set) var recoveryDraft = ""
@@ -104,7 +104,7 @@ public struct AskInputState: Sendable {
     }
 }
 
-public enum SpeechReplyPreference: String, Codable, CaseIterable, Sendable {
+nonisolated public enum SpeechReplyPreference: String, Codable, CaseIterable, Sendable {
     case never, voiceOnly, always
 
     public var displayName: String {

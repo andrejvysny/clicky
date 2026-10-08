@@ -1,6 +1,6 @@
 import Foundation
 
-public enum JSONValue: Codable, Equatable, Sendable {
+nonisolated public enum JSONValue: Codable, Equatable, Sendable {
     case object([String: JSONValue]), array([JSONValue]), string(String), number(Double), bool(Bool), null
 
     public init(from decoder: Decoder) throws {
@@ -32,7 +32,7 @@ public enum JSONValue: Codable, Equatable, Sendable {
     public var integer: Int? { if case .number(let value) = self { return Int(exactly: value) }; return nil }
 }
 
-public struct JSONLineFramer {
+nonisolated public struct JSONLineFramer {
     private var buffer = Data()
     public let maximumLineBytes: Int
 
@@ -57,12 +57,18 @@ public struct JSONLineFramer {
     }
 }
 
-public enum AgentProtocol {
+nonisolated public enum AgentProtocol {
     public static func claudeArguments(session: AgentSession?) -> [String] {
         // Text-only turns expose no execution/edit tools and keep normal provider authentication.
-        var arguments = ["--print", "--verbose", "--output-format", "stream-json", "--input-format", "stream-json", "--include-partial-messages", "--tools", ""]
+        // --strict-mcp-config without --mcp-config: user MCP servers/connectors could otherwise act outside this text client.
+        var arguments = ["--print", "--verbose", "--output-format", "stream-json", "--input-format", "stream-json", "--include-partial-messages", "--tools", "", "--strict-mcp-config"]
         if let session { arguments += ["--resume", session.identifier] }
         return arguments
+    }
+
+    // Apps/plugins off and approvals routed to the client (which declines) so Codex connectors cannot act outside this text client.
+    public static func codexArguments() -> [String] {
+        ["app-server", "-c", "features.apps=false", "-c", "features.plugins=false", "-c", "approvals_reviewer=\"user\"", "--listen", "stdio://"]
     }
 
     public static func claudePrompt(_ text: String, image: PNGImageAttachment? = nil) -> JSONValue {

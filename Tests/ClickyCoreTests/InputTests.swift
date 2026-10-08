@@ -44,8 +44,16 @@ final class InputTests: XCTestCase {
             for pointer in [CGPoint(x: display.minX, y: display.minY), CGPoint(x: display.maxX, y: display.maxY), CGPoint(x: display.midX, y: display.midY)] {
                 let result = PopupPlacement.frame(pointer: pointer, size: CGSize(width: 420, height: 260), visibleFrame: display)
                 XCTAssertTrue(display.contains(result))
+                let ghost = PopupPlacement.besideCompanion(pointer: pointer, size: CGSize(width: 300, height: 34), visibleFrame: display)
+                XCTAssertTrue(display.contains(ghost))
             }
         }
+        let display = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let ghost = PopupPlacement.besideCompanion(pointer: CGPoint(x: 500, y: 500), size: CGSize(width: 300, height: 34), visibleFrame: display)
+        XCTAssertEqual(ghost.origin, CGPoint(x: 545, y: 440))
+        let flipped = PopupPlacement.besideCompanion(pointer: CGPoint(x: 1900, y: 20), size: CGSize(width: 300, height: 34), visibleFrame: display)
+        XCTAssertLessThan(flipped.maxX, 1900)
+        XCTAssertGreaterThan(flipped.minY, 20)
     }
 
     func testTypedSpeechDefaultAndDictationExclusion() {

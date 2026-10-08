@@ -24,10 +24,17 @@ final class ProtocolTests: XCTestCase {
         let session = AgentSession(provider: .claude, identifier: "saved", workingDirectory: "/tmp")
         let arguments = AgentProtocol.claudeArguments(session: session)
         XCTAssertTrue(arguments.contains("--resume"))
+        XCTAssertTrue(arguments.contains("--strict-mcp-config"))
         XCTAssertTrue(arguments.contains("saved"))
         XCTAssertFalse(arguments.contains("bypassPermissions"))
         XCTAssertFalse(arguments.contains("--bare"))
         XCTAssertEqual(arguments.suffix(2), ["--resume", "saved"])
+    }
+
+    func testCodexArgumentsDisablePluginsAppsAndAutoReview() {
+        let arguments = AgentProtocol.codexArguments()
+        XCTAssertEqual(arguments, ["app-server", "-c", "features.apps=false", "-c", "features.plugins=false", "-c", "approvals_reviewer=\"user\"", "--listen", "stdio://"])
+        XCTAssertFalse(arguments.contains { $0.contains("bypass") || $0.contains("danger") })
     }
 
     func testClaudeFinalFallbackAvoidsDuplicateStreamingText() throws {
@@ -42,12 +49,24 @@ final class ProtocolTests: XCTestCase {
         let initialized = try conversation.receive(.object(["id": .number(1), "result": .object([:])]))
         XCTAssertEqual(initialized.outgoing.first?["method"].string, "initialized")
         let authenticated = try conversation.receive(.object(["id": .number(2), "result": .object(["account": .object(["type": .string("chatgpt")])])]))
-        XCTAssertEqual(authenticated.outgoing[0]["method"].string, "thread/resume")
-        XCTAssertEqual(authenticated.outgoing[0]["params"]["sandbox"].string, "read-only")
+        XCTAssertEqual(authenticated.outgoing[0]["method"].string, "config/read")
+        XCTAssertEqual(authenticated.outgoing[0]["params"]["cwd"].string, "/tmp")
+        let servers: JSONValue = .object(["plane": .object(["command": .string("x")]), "computer-use": .object(["command": .string("y")])])
+        let configured = try conversation.receive(.object(["id": .number(5), "result": .object(["config": .object(["mcp_servers": servers])])]))
+        XCTAssertEqual(configured.outgoing[0]["method"].string, "thread/resume")
+        XCTAssertEqual(configured.outgoing[0]["params"]["sandbox"].string, "read-only")
+        XCTAssertEqual(configured.outgoing[0]["params"]["approvalsReviewer"].string, "user")
+        XCTAssertEqual(configured.outgoing[0]["params"]["config"]["mcp_servers"]["plane"]["enabled"].bool, false)
+        XCTAssertEqual(configured.outgoing[0]["params"]["config"]["mcp_servers"]["computer-use"]["enabled"].bool, false)
         let started = try conversation.receive(.object(["id": .number(3), "result": .object(["thread": .object(["id": .string("saved")])])]))
         XCTAssertEqual(started.outgoing[0]["method"].string, "turn/start")
         let unrelated: JSONValue = .object(["method": .string("item/agentMessage/delta"), "params": .object(["threadId": .string("other"), "delta": .string("wrong")])])
         XCTAssertTrue(try conversation.receive(unrelated).events.isEmpty)
+    }
+
+    func testCodexConfigWithoutObjectFailsClosed() {
+        var conversation = CodexConversation(request: AskRequest(text: "q", workingDirectory: "/tmp"))
+        XCTAssertThrowsError(try conversation.receive(.object(["id": .number(5), "result": .object([:])])))
     }
 
     func testCodexMissingAuthenticationAndApprovalDenial() throws {

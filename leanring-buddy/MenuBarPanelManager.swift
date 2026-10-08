@@ -33,11 +33,11 @@ final class MenuBarPanelManager: NSObject {
 
     private let companionManager: CompanionManager
     private let askController: AskController
-    private let onOpenQuickAsk: (Bool) -> Void
+    private let onOpenQuickAsk: (QuickAskPresentation) -> Void
     private let panelWidth: CGFloat = 320
     private let panelHeight: CGFloat = 380
 
-    init(companionManager: CompanionManager, askController: AskController, onOpenQuickAsk: @escaping (Bool) -> Void) {
+    init(companionManager: CompanionManager, askController: AskController, onOpenQuickAsk: @escaping (QuickAskPresentation) -> Void) {
         self.companionManager = companionManager
         self.askController = askController
         self.onOpenQuickAsk = onOpenQuickAsk
@@ -148,9 +148,9 @@ final class MenuBarPanelManager: NSObject {
     }
 
     private func createPanel() {
-        let companionPanelView = TextCompanionPanelView(controller: askController, companionManager: companionManager, onOpenQuickAsk: { [weak self] settings in
+        let companionPanelView = TextCompanionPanelView(controller: askController, companionManager: companionManager, onOpenQuickAsk: { [weak self] presentation in
             self?.hidePanel()
-            self?.onOpenQuickAsk(settings)
+            self?.onOpenQuickAsk(presentation)
         })
             .frame(width: panelWidth)
 

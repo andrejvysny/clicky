@@ -22,6 +22,7 @@ final class AskController: ObservableObject {
         }
     }
     @Published var editorGeneration = UUID()
+    @Published private(set) var presentationHasSubmission = false
     @Published var showSettings = false
     @Published var provider: AgentProvider {
         didSet { preferences.set(provider.rawValue, forKey: "askProvider"); refreshSession() }
@@ -31,10 +32,11 @@ final class AskController: ObservableObject {
     }
     @Published var claudeExecutable: String { didSet { preferences.set(claudeExecutable, forKey: "askClaudeExecutable") } }
     @Published var codexExecutable: String { didSet { preferences.set(codexExecutable, forKey: "askCodexExecutable") } }
-    @Published var shortcutKeyCode: UInt32 { didSet { saveShortcut() } }
-    @Published var shortcutModifiers: UInt32 { didSet { saveShortcut() } }
+    @Published private(set) var shortcutKeyCode: UInt32
+    @Published private(set) var shortcutModifiers: UInt32
     @Published var shortcutWarning: String?
-    var onShortcutChanged: (() -> Void)?
+    /// Registers the current shortcut and reports whether macOS accepted it.
+    var onShortcutChanged: (() -> Bool)?
     var onSubmitted: (() -> Void)?
 
     private var inputState = AskInputState()
@@ -84,6 +86,7 @@ final class AskController: ObservableObject {
         let executable = selectedExecutable
         replySpeech.stop()
         isBusy = true
+        presentationHasSubmission = true
         errorMessage = nil
         response = ""
         status = selectedProvider == .preview ? "Local preview" : "Working"
@@ -118,7 +121,14 @@ final class AskController: ObservableObject {
             } catch {
                 guard inputState.activeRequest == request.identifier, inputState.generation == generation else { return }
                 inputState.finish(identifier: request.identifier, generation: generation, succeeded: false)
-                errorMessage = error is CancellationError ? "Reply stopped. Your question is available to retry." : error.localizedDescription
+                if error is CancellationError {
+                    errorMessage = "Reply stopped. Your question is available to retry."
+                } else if request.session != nil {
+                    // Providers report an expired or deleted resumed session as a generic turn failure.
+                    errorMessage = error.localizedDescription + " If the saved conversation is no longer available, choose New conversation in Settings."
+                } else {
+                    errorMessage = error.localizedDescription
+                }
                 status = "Needs attention"
                 if draft.isEmpty { draft = inputState.recoveryDraft }
                 responseOverlay.updateStreamingText(errorMessage ?? "The reply could not complete.")
@@ -145,6 +155,7 @@ final class AskController: ObservableObject {
     func dismissResponse() { responseOverlay.hideOverlay() }
 
     func beginPresentation(target: WindowCaptureTarget?) {
+        presentationHasSubmission = false
         removeAttachment()
         attachmentState.beginPresentation(target: target)
         captureTargetName = target?.applicationName
@@ -221,10 +232,22 @@ final class AskController: ObservableObject {
         }
     }
 
-    private func saveShortcut() {
-        preferences.set(Int(shortcutKeyCode), forKey: "askShortcutKeyCode")
-        preferences.set(Int(shortcutModifiers), forKey: "askShortcutModifiers")
-        onShortcutChanged?()
+    /// Applies key and modifiers together so a half-updated combination is never registered,
+    /// and keeps the previous working binding when the new one is unavailable.
+    func updateShortcut(keyCode: UInt32, modifiers: UInt32) {
+        let previous = (keyCode: shortcutKeyCode, modifiers: shortcutModifiers)
+        shortcutKeyCode = keyCode
+        shortcutModifiers = modifiers
+        if onShortcutChanged?() ?? true {
+            preferences.set(Int(keyCode), forKey: "askShortcutKeyCode")
+            preferences.set(Int(modifiers), forKey: "askShortcutModifiers")
+            return
+        }
+        shortcutKeyCode = previous.keyCode
+        shortcutModifiers = previous.modifiers
+        let restored = onShortcutChanged?() ?? false
+        shortcutWarning = restored ? "That shortcut is unavailable. The previous shortcut is still active."
+            : "Quick Ask shortcut is unavailable. Rebind it in Settings or use the menu bar."
     }
 
     private var sessionKey: String { provider.rawValue + ":" + NSString(string: workingDirectory).expandingTildeInPath }

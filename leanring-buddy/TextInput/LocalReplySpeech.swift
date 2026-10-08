@@ -31,15 +31,19 @@ final class LocalReplySpeech: NSObject, ObservableObject, AVSpeechSynthesizerDel
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor [weak self] in self?.finished(utterance) }
+        let utteranceID = ObjectIdentifier(utterance)
+        Task { @MainActor [weak self] in self?.finished(utteranceID) }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor [weak self] in self?.finished(utterance) }
+        let utteranceID = ObjectIdentifier(utterance)
+        Task { @MainActor [weak self] in self?.finished(utteranceID) }
     }
 
-    private func finished(_ utterance: AVSpeechUtterance) {
-        guard activeUtterance === utterance else { return }
+    // Delegate callbacks compare identity only; AVSpeechUtterance is not Sendable. activeUtterance retains
+    // the current utterance, so its identifier cannot be reused while it is still active.
+    private func finished(_ utteranceID: ObjectIdentifier) {
+        guard let currentUtterance = activeUtterance, ObjectIdentifier(currentUtterance) == utteranceID else { return }
         activeUtterance = nil
         isSpeaking = false
     }
