@@ -43,11 +43,23 @@ struct GhostAskView: View {
             Triangle().fill(Color.blue).frame(width: 9, height: 9).rotationEffect(.degrees(35))
             QuickAskEditor(text: $controller.draft, height: $editorHeight, placeholder: placeholder, compact: true,
                            onAttach: canAttach ? { controller.attachWindowSnapshot() } : nil,
+                           onIncludeScreen: controller.screenInclusion.isAvailable && !controller.isBusy ? { controller.toggleScreenAttachment() } : nil,
                            onSubmit: { _ = controller.submit() }, onCancel: onCancel)
                 .frame(height: editorHeight)
                 .id(controller.editorGeneration)
                 .disabled(controller.isBusy)
-            if let name = controller.captureTargetName, canAttach {
+            if controller.screenInclusion.isAvailable && !controller.isBusy {
+                Button { controller.toggleScreenAttachment() } label: {
+                    Image(systemName: controller.hasScreenAttachment ? "eye.fill" : "eye").font(.system(size: 12))
+                        .foregroundStyle(controller.hasScreenAttachment ? Color.blue : Color.secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(controller.isCapturing)
+                .help(controller.hasScreenAttachment ? "Screen included — click to remove (⌘⇧S)" : "Include your screen (⌘⇧S)")
+                .accessibilityIdentifier("quickAskIncludeScreen")
+                .clickyPointerCursor()
+            }
+            if let name = controller.captureTargetName, canAttach, !controller.hasScreenAttachment {
                 Button { controller.attachWindowSnapshot() } label: {
                     Image(systemName: "paperclip").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
@@ -87,6 +99,7 @@ struct GhostAskView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                         .accessibilityLabel("Attached window screenshot")
                 }
+                Text(image.displayName).font(.caption2)
                 Text("\(image.pixelWidth)×\(image.pixelHeight)").font(.caption2).foregroundStyle(.secondary)
                 Button { controller.removeAttachment() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
                     .buttonStyle(.plain).help("Remove screenshot").clickyPointerCursor()
@@ -102,7 +115,7 @@ struct GhostAskView: View {
         if controller.presentationHasSubmission {
             Text(controller.status).font(.caption).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             if !controller.response.isEmpty {
-                ScrollView { Text(controller.response).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                ScrollView { Text(ReplyMarkdown.attributed(controller.response)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                     .font(.system(size: 12)).foregroundStyle(.white)
                     .frame(maxHeight: 140)
                     .padding(8)

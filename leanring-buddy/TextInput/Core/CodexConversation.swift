@@ -57,7 +57,12 @@ nonisolated public struct CodexConversation {
             threadIdentifier = identifier
             let prompt: JSONValue = .object(["type": .string("text"), "text": .string(request.text)])
             var input = [prompt]
-            if let image = request.image { input.append(.object(["type": .string("image"), "url": .string(image.dataURL)])) }
+            if let image = request.image {
+                input.append(.object(["type": .string("image"), "url": .string(image.dataURL)]))
+                if image.capturedRegion != nil {
+                    input.append(.object(["type": .string("text"), "text": .string(ScreenPointing.instruction(imageWidth: image.pixelWidth, imageHeight: image.pixelHeight))]))
+                }
+            }
             return ([AgentProtocol.rpc(identifier: 4, method: "turn/start", params: .object(["threadId": .string(identifier), "input": .array(input)]))], [.session(AgentSession(provider: .codex, identifier: identifier, workingDirectory: request.workingDirectory))])
         case 4:
             guard let identifier = message["result"]["turn"]["id"].string else { throw AskError.protocolFailure("Codex did not return a turn ID.") }

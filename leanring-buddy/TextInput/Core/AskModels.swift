@@ -104,6 +104,21 @@ nonisolated public struct AskInputState: Sendable {
     }
 }
 
+nonisolated public enum ScreenInclusionPreference: String, Codable, CaseIterable, Sendable {
+    case off, askEachTime, always
+
+    public var displayName: String {
+        switch self {
+        case .off: return "Off"
+        case .askEachTime: return "Ask each time"
+        case .always: return "Always"
+        }
+    }
+
+    public var startsIncluded: Bool { self == .always }
+    public var isAvailable: Bool { self != .off }
+}
+
 nonisolated public enum SpeechReplyPreference: String, Codable, CaseIterable, Sendable {
     case never, voiceOnly, always
 

@@ -21,6 +21,12 @@ final class AskController: ObservableObject {
             if speechPreference != .always { replySpeech.stop() }
         }
     }
+    @Published var screenInclusion: ScreenInclusionPreference {
+        didSet {
+            preferences.set(screenInclusion.rawValue, forKey: "askScreenInclusion")
+            if !screenInclusion.isAvailable, hasScreenAttachment { removeAttachment() }
+        }
+    }
     @Published var editorGeneration = UUID()
     @Published private(set) var presentationHasSubmission = false
     @Published var showSettings = false
@@ -38,6 +44,9 @@ final class AskController: ObservableObject {
     /// Registers the current shortcut and reports whether macOS accepted it.
     var onShortcutChanged: (() -> Bool)?
     var onSubmitted: (() -> Void)?
+    /// Rect is global top-left points; label may be empty.
+    var onPointTarget: ((CGRect, String) -> Void)?
+    var onPointingCleared: (() -> Void)?
 
     private var inputState = AskInputState()
     private let runner = ManagedAgentRunner()
@@ -53,6 +62,7 @@ final class AskController: ObservableObject {
         preferences = defaults
         provider = AgentProvider(rawValue: defaults.string(forKey: "askProvider") ?? "") ?? .preview
         speechPreference = SpeechReplyPreference(rawValue: defaults.string(forKey: "askSpeechPreference") ?? "") ?? .voiceOnly
+        screenInclusion = ScreenInclusionPreference(rawValue: defaults.string(forKey: "askScreenInclusion") ?? "") ?? (testing ? .off : .always)
         workingDirectory = defaults.string(forKey: "askWorkingDirectory") ?? (testing ? NSTemporaryDirectory() : NSHomeDirectory())
         claudeExecutable = defaults.string(forKey: "askClaudeExecutable") ?? Self.discover("claude")
         codexExecutable = defaults.string(forKey: "askCodexExecutable") ?? Self.discover("codex")
@@ -61,7 +71,10 @@ final class AskController: ObservableObject {
         refreshSession()
     }
 
-    var canSubmit: Bool { !isBusy && !isCapturing && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var hasScreenAttachment: Bool { attachment?.context?.applicationIdentifier == "screen" }
+    var canSubmit: Bool { !isBusy && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// Enter pressed while the automatic capture is still running; send once it finishes.
+    private var submitAfterCapture = false
     var selectedExecutable: URL? {
         let path = provider == .claude ? claudeExecutable : codexExecutable
         return path.isEmpty ? nil : URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
@@ -69,7 +82,12 @@ final class AskController: ObservableObject {
 
     @discardableResult
     func submit() -> Bool {
-        guard !isBusy, !isCapturing else { return false }
+        guard !isBusy else { return false }
+        if isCapturing {
+            guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+            submitAfterCapture = true
+            return true
+        }
         let directory = NSString(string: workingDirectory).expandingTildeInPath
         let request = AskRequest(text: draft, workingDirectory: directory, session: session, image: attachment)
         let generation: UInt64
@@ -84,6 +102,10 @@ final class AskController: ObservableObject {
 
         let selectedProvider = provider
         let executable = selectedExecutable
+        let pointing = attachment.flatMap { image in
+            image.capturedRegion.map { (size: CGSize(width: image.pixelWidth, height: image.pixelHeight), region: $0) }
+        }
+        onPointingCleared?()
         replySpeech.stop()
         isBusy = true
         presentationHasSubmission = true
@@ -104,7 +126,7 @@ final class AskController: ObservableObject {
                     case .session(let value): session = value; persistSession(value)
                     case .textDelta(let delta):
                         if inputState.append(delta, identifier: request.identifier, generation: generation) {
-                            response = inputState.response
+                            response = ScreenPointing.visibleStreamingText(inputState.response)
                             responseOverlay.updateStreamingText(response)
                         }
                     case .status(let message): status = message
@@ -114,9 +136,16 @@ final class AskController: ObservableObject {
                 guard inputState.activeRequest == request.identifier, inputState.generation == generation else { return }
                 inputState.finish(identifier: request.identifier, generation: generation, succeeded: completed)
                 status = selectedProvider == .preview ? "Preview complete · no AI request" : "Ready"
+                let parsed = ScreenPointing.parse(inputState.response)
+                response = parsed.text
+                responseOverlay.updateStreamingText(parsed.text)
                 responseOverlay.finishStreaming()
+                if let target = parsed.target, let pointing,
+                   let rect = ScreenPointing.screenRect(for: target, imagePixelSize: pointing.size, capturedRegion: pointing.region) {
+                    onPointTarget?(rect, target.label)
+                }
                 if selectedProvider != .preview, speechPreference.shouldSpeak(voiceInitiated: false, dictation: false) {
-                    replySpeech.speak(response)
+                    replySpeech.speak(parsed.text)
                 }
             } catch {
                 guard inputState.activeRequest == request.identifier, inputState.generation == generation else { return }
@@ -141,6 +170,7 @@ final class AskController: ObservableObject {
     }
 
     func stopReply() {
+        onPointingCleared?()
         replySpeech.stop()
         responseTask?.cancel()
         runner.cancel()
@@ -159,6 +189,7 @@ final class AskController: ObservableObject {
         removeAttachment()
         attachmentState.beginPresentation(target: target)
         captureTargetName = target?.applicationName
+        if screenInclusion.startsIncluded { attachScreenSnapshot() }
     }
 
     func endPresentation() {
@@ -186,9 +217,49 @@ final class AskController: ObservableObject {
                 guard attachmentState.fail(lease: lease) else { return }
                 if !(error is CancellationError) { attachmentError = error.localizedDescription }
             }
-            isCapturing = false
-            captureTask = nil
+            finishCapture()
         }
+    }
+
+    func attachScreenSnapshot() {
+        guard screenInclusion.isAvailable, !isBusy, !isCapturing else { return }
+        let lease: UUID
+        do { lease = try attachmentState.beginDisplayCapture() }
+        catch { attachmentError = error.localizedDescription; return }
+        attachment = nil
+        attachmentError = nil
+        isCapturing = true
+        let location = NSEvent.mouseLocation
+        let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.screens.first)?.frame.height ?? 0
+        let pointer = CGPoint(x: location.x, y: primaryHeight - location.y)
+        captureTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let image = try await WindowSnapshotCapture.captureDisplay(containing: pointer)
+                try Task.checkCancellation()
+                guard attachmentState.acceptDisplay(image, lease: lease) else { throw AttachmentError.targetChanged }
+                attachment = image
+            } catch {
+                guard attachmentState.failDisplay(lease: lease) else { return }
+                if !(error is CancellationError) { attachmentError = error.localizedDescription }
+            }
+            finishCapture()
+        }
+    }
+
+    private func finishCapture() {
+        isCapturing = false
+        captureTask = nil
+        guard submitAfterCapture else { return }
+        submitAfterCapture = false
+        // A failed capture keeps the popup open with its error so the user decides whether to send text only.
+        if attachmentError == nil { _ = submit() }
+    }
+
+    func toggleScreenAttachment() {
+        if hasScreenAttachment { removeAttachment(); return }
+        if attachment != nil { removeAttachment() }
+        attachScreenSnapshot()
     }
 
     func removeAttachment() {
@@ -198,10 +269,12 @@ final class AskController: ObservableObject {
         attachment = nil
         attachmentError = nil
         isCapturing = false
+        submitAfterCapture = false
     }
 
     func newConversation() {
         guard !isBusy else { return }
+        onPointingCleared?()
         var sessions = savedSessions()
         sessions.removeValue(forKey: sessionKey)
         saveSessions(sessions)
@@ -253,6 +326,7 @@ final class AskController: ObservableObject {
     private var sessionKey: String { provider.rawValue + ":" + NSString(string: workingDirectory).expandingTildeInPath }
     private func refreshSession() {
         guard !isBusy else { return }
+        onPointingCleared?()
         session = savedSessions()[sessionKey]
         response = ""
         status = "Ready"

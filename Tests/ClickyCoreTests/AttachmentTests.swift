@@ -1,4 +1,5 @@
 import XCTest
+import CoreGraphics
 @testable import ClickyCore
 
 final class AttachmentTests: XCTestCase {
@@ -90,5 +91,65 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(input[1]["url"].string, "data:image/png;base64," + Self.png.base64EncodedString())
         var next = CodexConversation(request: AskRequest(text: "next", workingDirectory: "/tmp", session: AgentSession(provider: .codex, identifier: "thread", workingDirectory: "/tmp")))
         XCTAssertEqual(try next.receive(start).outgoing[0]["params"]["input"].array.count, 1)
+    }
+
+    private let region = CGRect(x: 0, y: 0, width: 100, height: 100)
+
+    private func displayImage() throws -> PNGImageAttachment {
+        try PNGImageAttachment(data: Self.png, capturedRegion: region)
+    }
+
+    func testCapturedRegionValidation() throws {
+        XCTAssertThrowsError(try PNGImageAttachment(data: Self.png, capturedRegion: CGRect(x: 0, y: 0, width: 0, height: 5))) { XCTAssertEqual($0 as? AttachmentError, .invalidImage) }
+        XCTAssertThrowsError(try PNGImageAttachment(data: Self.png, capturedRegion: CGRect(x: CGFloat.nan, y: 0, width: 5, height: 5)))
+        XCTAssertEqual(try displayImage().capturedRegion, region)
+        XCTAssertNil(try image().capturedRegion)
+    }
+
+    func testDisplayLeaseBusyInterplayAndAcceptance() throws {
+        var state = WindowAttachmentState()
+        state.beginPresentation(target: target())
+        let window = try state.beginCapture()
+        XCTAssertThrowsError(try state.beginDisplayCapture()) { XCTAssertEqual($0 as? AskError, .busy) }
+        XCTAssertTrue(state.fail(lease: window))
+        let display = try state.beginDisplayCapture()
+        XCTAssertThrowsError(try state.beginCapture()) { XCTAssertEqual($0 as? AskError, .busy) }
+        XCTAssertThrowsError(try state.beginDisplayCapture())
+        XCTAssertFalse(state.acceptDisplay(try image(), lease: display))
+        XCTAssertFalse(state.acceptDisplay(try displayImage(), lease: UUID()))
+        XCTAssertTrue(state.acceptDisplay(try displayImage(), lease: display))
+        XCTAssertNil(state.pendingDisplay)
+        XCTAssertNotNil(state.attachment)
+        let second = try state.beginDisplayCapture()
+        XCTAssertNil(state.attachment)
+        XCTAssertTrue(state.failDisplay(lease: second))
+        XCTAssertFalse(state.failDisplay(lease: second))
+    }
+
+    func testDiscardAndPresentationClearPendingDisplay() throws {
+        var state = WindowAttachmentState()
+        let first = try state.beginDisplayCapture()
+        state.discard()
+        XCTAssertNil(state.pendingDisplay)
+        XCTAssertFalse(state.acceptDisplay(try displayImage(), lease: first))
+        let second = try state.beginDisplayCapture()
+        state.beginPresentation(target: nil)
+        XCTAssertNil(state.pendingDisplay)
+        XCTAssertFalse(state.failDisplay(lease: second))
+    }
+
+    func testPointingInstructionOnlyAccompaniesCapturedRegion() throws {
+        let prompt = "  keep\n  exact"
+        let content = AgentProtocol.claudePrompt(prompt, image: try displayImage())["message"]["content"].array
+        XCTAssertEqual(content.count, 3)
+        XCTAssertEqual(content[0]["text"].string, prompt)
+        XCTAssertEqual(content[2]["text"].string, ScreenPointing.instruction(imageWidth: 1, imageHeight: 1))
+        var conversation = CodexConversation(request: AskRequest(text: prompt, workingDirectory: "/tmp", image: try displayImage()))
+        let start: JSONValue = .object(["id": .number(3), "result": .object(["thread": .object(["id": .string("thread")])])])
+        let input = try conversation.receive(start).outgoing[0]["params"]["input"].array
+        XCTAssertEqual(input.count, 3)
+        XCTAssertEqual(input[0]["text"].string, prompt)
+        XCTAssertEqual(input[1]["type"].string, "image")
+        XCTAssertEqual(input[2]["text"].string, ScreenPointing.instruction(imageWidth: 1, imageHeight: 1))
     }
 }

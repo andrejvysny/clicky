@@ -35,6 +35,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private let askController = AskController()
     private var quickAskPanelManager: QuickAskPanelManager?
     private let quickAskHotkey = QuickAskHotkey()
+    private let pointingPresenter = PointingPresenter()
     private var sparkleUpdaterController: SPUStandardUpdaterController?
     #if DEBUG
     private let guidanceStepController = GuidanceStepController()
@@ -47,6 +48,14 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
+        askController.onPointTarget = { [weak self] rect, label in self?.pointingPresenter.show(rect: rect, label: label) }
+        askController.onPointingCleared = { [weak self] in self?.pointingPresenter.hide() }
+        pointingPresenter.onFlyCompanion = { [weak self] point, screenFrame, label in
+            guard let manager = self?.companionManager, manager.detectedElementScreenLocation == nil else { return }
+            manager.detectedElementBubbleText = label.isEmpty ? nil : label
+            manager.detectedElementDisplayFrame = screenFrame
+            manager.detectedElementScreenLocation = point
+        }
         quickAskPanelManager = QuickAskPanelManager(controller: askController)
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager, askController: askController) { [weak self] presentation in
             self?.quickAskPanelManager?.show(presentation)
@@ -74,6 +83,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         askController.stopReply()
+        pointingPresenter.hide()
         quickAskHotkey.unregister()
         quickAskPanelManager?.close(restoreFocus: false)
         companionManager.stopTextMode()

@@ -1,9 +1,8 @@
-#if DEBUG
 import AppKit
 import Combine
 import SwiftUI
 
-/// Debug-only click-through circle + instruction card. Never takes focus or mouse events.
+/// Click-through circle + instruction card. Never takes focus or mouse events.
 @MainActor
 final class GuidanceOverlay {
     enum Tone { case waiting, success, miss, warning }
@@ -153,4 +152,3 @@ private struct GuidanceCardView: View {
         )
     }
 }
-#endif

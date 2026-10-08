@@ -43,10 +43,10 @@ enum WindowSnapshotCapture {
                 area(lhs.frame.intersection(frame)) < area(rhs.frame.intersection(frame))
             }
             guard let display, area(display.frame.intersection(frame)) > 0 else { throw AttachmentError.targetChanged }
-            let ratio = min(2, 1600 / max(frame.width, frame.height))
+            let pixelSize = CaptureSizing.pixelSize(forPointSize: frame.size, backingScale: backingScale(for: display.displayID))
             let configuration = SCStreamConfiguration()
-            configuration.width = max(1, Int(frame.width * ratio))
-            configuration.height = max(1, Int(frame.height * ratio))
+            configuration.width = Int(pixelSize.width)
+            configuration.height = Int(pixelSize.height)
             configuration.showsCursor = false
             // Captures this window only, independent of overlapping Clicky panels and other apps.
             let filter = SCContentFilter(desktopIndependentWindow: window)
@@ -72,11 +72,55 @@ enum WindowSnapshotCapture {
                       let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { throw AttachmentError.captureFailed }
                 CGImageDestinationAddImage(destination, image, nil)
                 guard CGImageDestinationFinalize(destination) else { throw AttachmentError.captureFailed }
-                return try PNGImageAttachment(data: data as Data, displayName: target.applicationName + " window", context: context)
+                return try PNGImageAttachment(data: data as Data, displayName: target.applicationName + " window", context: context, capturedRegion: frame)
             }.value
         } catch is CancellationError { throw CancellationError() }
         catch let error as AttachmentError { throw error }
         catch { throw AttachmentError.captureFailed }
+    }
+
+    /// `pointer` is in global top-left points. Captures the whole display under it, minus Clicky's own windows.
+    static func captureDisplay(containing pointer: CGPoint) async throws -> PNGImageAttachment {
+        // This method is reached only through the explicit screen-inclusion action or the Always preference.
+        if !CGPreflightScreenCaptureAccess() {
+            _ = CGRequestScreenCaptureAccess()
+            guard CGPreflightScreenCaptureAccess() else { throw AttachmentError.permissionRequired }
+        }
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            try Task.checkCancellation()
+            guard let display = content.displays.first(where: { $0.frame.contains(pointer) }) ?? content.displays.first else {
+                throw AttachmentError.captureFailed
+            }
+            let own = content.applications.first { $0.processID == ProcessInfo.processInfo.processIdentifier }
+            // Excluding our own app hides Clicky's companion, popup and bubble from the capture.
+            let filter = SCContentFilter(display: display, excludingApplications: own.map { [$0] } ?? [], exceptingWindows: [])
+            let pixelSize = CaptureSizing.pixelSize(forPointSize: display.frame.size, backingScale: backingScale(for: display.displayID))
+            let configuration = SCStreamConfiguration()
+            configuration.width = Int(pixelSize.width)
+            configuration.height = Int(pixelSize.height)
+            configuration.showsCursor = false
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+            try Task.checkCancellation()
+            let context = ScreenContextIdentity(applicationIdentifier: "screen", windowIdentifier: 0,
+                                                displayIdentifier: display.displayID, capturedAt: Date())
+            let region = display.frame
+            return try await Task.detached(priority: .userInitiated) {
+                guard let data = CFDataCreateMutable(nil, 0),
+                      let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { throw AttachmentError.captureFailed }
+                CGImageDestinationAddImage(destination, image, nil)
+                guard CGImageDestinationFinalize(destination) else { throw AttachmentError.captureFailed }
+                return try PNGImageAttachment(data: data as Data, displayName: "Screen", context: context, capturedRegion: region)
+            }.value
+        } catch is CancellationError { throw CancellationError() }
+        catch let error as AttachmentError { throw error }
+        catch { throw AttachmentError.captureFailed }
+    }
+
+    private static func backingScale(for displayID: CGDirectDisplayID) -> CGFloat {
+        NSScreen.screens.first {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayID
+        }?.backingScaleFactor ?? 2
     }
 
     private static func area(_ rect: CGRect) -> CGFloat { rect.isNull ? 0 : rect.width * rect.height }

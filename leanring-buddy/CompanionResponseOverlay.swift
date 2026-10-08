@@ -202,7 +202,7 @@ private struct CompanionResponseOverlayView: View {
 
     var body: some View {
         if viewModel.isShowingResponse {
-            Text(viewModel.streamingResponseText.isEmpty ? "..." : viewModel.streamingResponseText)
+            Text(ReplyMarkdown.attributed(viewModel.streamingResponseText.isEmpty ? "..." : viewModel.streamingResponseText))
                 .font(.system(size: 13, weight: .regular))
                 .foregroundColor(DS.Colors.textPrimary)
                 .lineSpacing(3)

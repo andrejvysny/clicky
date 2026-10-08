@@ -155,3 +155,13 @@ Use **Cmd+U** or the Test navigator to run `QuickAskUITests` (four tests), along
 Legacy voice/provider files and `worker/` are retained for reference but are not called by the text-first startup. PostHog is removed from app dependencies, and legacy telemetry methods are no-ops. Retire remaining legacy code only as each replacement is integrated and tested.
 
 Record Mac model, macOS/Xcode/agent versions, test name, pass/fail, and reproduction steps. All performance and ASR quality targets in the specification remain unmeasured.
+
+## Screen sharing and pointing acceptance
+
+1. Settings → Screen sharing defaults to **Always**: each Quick Ask opening captures the display under the pointer automatically (filled eye + Screen chip). Pressing Enter immediately still sends with the screen once the capture finishes. With **Off**, the eye button and Command+Shift+S are absent and no screen is captured; with **Ask each time**, only the eye/Command+Shift+S captures.
+2. Open the ghost input, press the eye button or Command+Shift+S. The chip shows "Screen" with pixel size (≤1568 px long side). The preview must not contain the companion, ghost input, or reply bubble.
+3. Ask "Circle the <visible item>" with Claude, then Codex. Expect a reply without the tag, the companion flying to the item, and a blue circle with a label there. Click inside: green ✓ then it disappears. Click elsewhere: it disappears. No click: gone after 45 s.
+4. Test a desktop icon, a Dock icon, a menu-bar item, a toolbar button, and an item on the second display (cursor on that display when capturing). Record hits (circle center inside the element) per provider.
+5. Ask a question that needs no pointing; no circle should appear and no `[POINT` text should flash in the bubble while streaming.
+6. Move or close the target window between asking and the reply; the circle may be stale (staleness detection is planned, not implemented).
+7. In **Always** mode, removing the chip before sending sends text only. Deny Screen Recording: the popup must stay open with the permission error, not send silently.

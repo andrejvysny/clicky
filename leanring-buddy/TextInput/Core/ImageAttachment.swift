@@ -1,4 +1,8 @@
 import Foundation
+// Darwin Foundation does not re-export CGRect geometry members to this module.
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
 nonisolated public enum AttachmentError: Error, LocalizedError, Equatable {
     case noTarget, targetChanged, permissionRequired, invalidImage, imageTooLarge, captureFailed
@@ -23,11 +27,17 @@ nonisolated public struct PNGImageAttachment: Equatable, Sendable {
     public let pixelHeight: Int
     public let displayName: String
     public let context: ScreenContextIdentity?
+    /// Screen area the image shows, in global top-left Core Graphics points. Required for pointing; nil for user-supplied PNGs.
+    public let capturedRegion: CGRect?
     public var mediaType: String { "image/png" }
     public var dataURL: String { "data:image/png;base64," + data.base64EncodedString() }
 
-    public init(data: Data, displayName: String = "PNG attachment", context: ScreenContextIdentity? = nil) throws {
+    public init(data: Data, displayName: String = "PNG attachment", context: ScreenContextIdentity? = nil, capturedRegion: CGRect? = nil) throws {
         guard data.count <= Self.maximumBytes else { throw AttachmentError.imageTooLarge }
+        if let region = capturedRegion {
+            guard region.origin.x.isFinite, region.origin.y.isFinite, region.size.width.isFinite, region.size.height.isFinite,
+                  region.size.width > 0, region.size.height > 0 else { throw AttachmentError.invalidImage }
+        }
         // Validate the bounded PNG header here; native capture uses ImageIO to produce the image.
         let header = Array(data.prefix(24))
         guard data.count >= 45, Array(data.prefix(8)) == [137, 80, 78, 71, 13, 10, 26, 10],
@@ -43,6 +53,7 @@ nonisolated public struct PNGImageAttachment: Equatable, Sendable {
         pixelHeight = height
         self.displayName = String(displayName.replacingOccurrences(of: "\n", with: " ").prefix(120))
         self.context = context
+        self.capturedRegion = capturedRegion
     }
 }
 
@@ -70,18 +81,20 @@ nonisolated public struct WindowAttachmentState: Sendable {
     public private(set) var target: WindowCaptureTarget?
     public private(set) var pending: WindowCaptureLease?
     public private(set) var attachment: PNGImageAttachment?
+    public private(set) var pendingDisplay: UUID?
 
     public init() {}
 
     public mutating func beginPresentation(target: WindowCaptureTarget?) {
         self.target = target
         pending = nil
+        pendingDisplay = nil
         attachment = nil
     }
 
     public mutating func beginCapture() throws -> WindowCaptureLease {
         guard let target else { throw AttachmentError.noTarget }
-        guard pending == nil else { throw AskError.busy }
+        guard pending == nil, pendingDisplay == nil else { throw AskError.busy }
         let lease = WindowCaptureLease(identifier: UUID(), target: target)
         pending = lease
         attachment = nil
@@ -106,6 +119,29 @@ nonisolated public struct WindowAttachmentState: Sendable {
         return true
     }
 
-    public mutating func discard() { pending = nil; attachment = nil }
+    public mutating func beginDisplayCapture() throws -> UUID {
+        guard pending == nil, pendingDisplay == nil else { throw AskError.busy }
+        let lease = UUID()
+        pendingDisplay = lease
+        attachment = nil
+        return lease
+    }
+
+    @discardableResult
+    public mutating func acceptDisplay(_ image: PNGImageAttachment, lease: UUID) -> Bool {
+        guard pendingDisplay == lease, image.capturedRegion != nil else { return false }
+        pendingDisplay = nil
+        attachment = image
+        return true
+    }
+
+    @discardableResult
+    public mutating func failDisplay(lease: UUID) -> Bool {
+        guard pendingDisplay == lease else { return false }
+        pendingDisplay = nil
+        return true
+    }
+
+    public mutating func discard() { pending = nil; pendingDisplay = nil; attachment = nil }
     public mutating func endPresentation() { beginPresentation(target: nil) }
 }

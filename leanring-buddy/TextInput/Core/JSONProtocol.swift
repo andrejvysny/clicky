@@ -77,6 +77,9 @@ nonisolated public enum AgentProtocol {
             content.append(.object(["type": .string("image"), "source": .object([
                 "type": .string("base64"), "media_type": .string(image.mediaType), "data": .string(image.data.base64EncodedString()),
             ])]))
+            if image.capturedRegion != nil {
+                content.append(.object(["type": .string("text"), "text": .string(ScreenPointing.instruction(imageWidth: image.pixelWidth, imageHeight: image.pixelHeight))]))
+            }
         }
         return .object(["type": .string("user"), "session_id": .string(""), "parent_tool_use_id": .null, "message": .object(["role": .string("user"), "content": .array(content)])])
     }

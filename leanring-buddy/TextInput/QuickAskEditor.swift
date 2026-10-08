@@ -8,6 +8,8 @@ struct QuickAskEditor: NSViewRepresentable {
     var compact: Bool = false
     /// Command+Shift+A; the cursor-following ghost pill cannot be reached with the mouse.
     var onAttach: (() -> Void)? = nil
+    /// Command+Shift+S toggles including the whole screen.
+    var onIncludeScreen: (() -> Void)? = nil
     let onSubmit: () -> Void
     let onCancel: () -> Void
 
@@ -25,6 +27,7 @@ struct QuickAskEditor: NSViewRepresentable {
         editor.onSubmit = onSubmit
         editor.onCancel = onCancel
         editor.onAttach = onAttach
+        editor.onIncludeScreen = onIncludeScreen
         editor.isRichText = false
         editor.isAutomaticQuoteSubstitutionEnabled = false
         editor.isAutomaticDashSubstitutionEnabled = false
@@ -57,6 +60,7 @@ struct QuickAskEditor: NSViewRepresentable {
         editor.onSubmit = onSubmit
         editor.onCancel = onCancel
         editor.onAttach = onAttach
+        editor.onIncludeScreen = onIncludeScreen
         if editor.string != text, !editor.hasMarkedText() { editor.string = text }
     }
 
@@ -84,6 +88,7 @@ private final class PromptTextView: NSTextView {
     var onSubmit: (() -> Void)?
     var onCancel: (() -> Void)?
     var onAttach: (() -> Void)?
+    var onIncludeScreen: (() -> Void)?
     var placeholder = ""
 
     override func draw(_ dirtyRect: NSRect) {
@@ -104,6 +109,8 @@ private final class PromptTextView: NSTextView {
             if event.keyCode == 53 { onCancel?(); return }
             if let onAttach, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
                event.charactersIgnoringModifiers?.lowercased() == "a" { onAttach(); return }
+            if let onIncludeScreen, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
+               event.charactersIgnoringModifiers?.lowercased() == "s" { onIncludeScreen(); return }
         }
         super.keyDown(with: event)
     }

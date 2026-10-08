@@ -58,7 +58,7 @@ struct QuickAskView: View {
             if let error = controller.errorMessage { Text(error).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
             Text(controller.status).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             if !controller.response.isEmpty {
-                ScrollView { Text(controller.response).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                ScrollView { Text(ReplyMarkdown.attributed(controller.response)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                     .frame(maxHeight: 160)
                     .accessibilityIdentifier("quickAskResponse")
             }
@@ -123,6 +123,11 @@ struct AskSettingsView: View {
             Picker("Speak replies", selection: $controller.speechPreference) {
                 ForEach(SpeechReplyPreference.allCases, id: \.self) { Text($0.displayName).tag($0) }
             }
+            Picker("Screen sharing", selection: $controller.screenInclusion) {
+                ForEach(ScreenInclusionPreference.allCases, id: \.self) { Text($0.displayName).tag($0) }
+            }
+            Text("Your screen is captured only when you include it (eye button or ⌘⇧S), or on every ask with Always. It is sent only to the selected agent and never saved.")
+                .font(.caption2).foregroundStyle(.secondary)
             Text("Voice input, dictation, and guided steps are prepared for a later build.").font(.caption2).foregroundStyle(.secondary)
             Button("New conversation") { controller.newConversation() }.clickyPointerCursor()
         }.disabled(controller.isBusy)
