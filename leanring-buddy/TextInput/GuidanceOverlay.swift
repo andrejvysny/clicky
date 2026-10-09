@@ -8,7 +8,7 @@ struct GuideCardProgress: Equatable {
     var stepNumber: Int { completed.count + 1 }
 }
 
-/// Click-through circle + instruction card. Never takes focus or mouse events.
+/// Debug guidance: circle (via AnnotationOverlay) + instruction card. Never takes focus or mouse events.
 @MainActor
 final class GuidanceOverlay {
     enum Tone { case waiting, verifying, success, miss, warning, stale }
@@ -21,18 +21,17 @@ final class GuidanceOverlay {
         @Published var shortcutHints = false
     }
 
-    private static let circleInset: CGFloat = 14
     /// The card keeps 12 pt clear of the mark.
     private static let cardGap: CGFloat = 12
 
     private let model = Model()
-    private var circlePanel: NSPanel?
+    private let annotation = AnnotationOverlay()
     private var cardPanel: NSPanel?
     private var cardHost: NSHostingController<AnyView>?
     private var circleFrame: NSRect = .zero
 
     var windowNumbers: Set<Int> {
-        Set([circlePanel, cardPanel].compactMap { $0 }.filter { $0.windowNumber > 0 }.map(\.windowNumber))
+        annotation.windowNumbers.union([cardPanel].compactMap { $0 }.filter { $0.windowNumber > 0 }.map(\.windowNumber))
     }
 
     /// `target` is global top-left Core Graphics points.
@@ -42,17 +41,11 @@ final class GuidanceOverlay {
         model.tone = .waiting
         model.progress = progress
         model.shortcutHints = shortcutHints
-        let primaryHeight = (NSScreen.screens.first(where: { $0.frame.origin == .zero }) ?? NSScreen.screens.first)?.frame.height ?? 0
-        circleFrame = NSRect(x: target.minX, y: primaryHeight - target.maxY, width: target.width, height: target.height)
-            .insetBy(dx: -Self.circleInset, dy: -Self.circleInset)
+        // The card docks around the same ellipse bounds the annotation draws.
+        let circle = AnnotationGeometry.circleRect(around: target)
+        circleFrame = NSRect(x: circle.minX, y: AnnotationScreens.primaryHeight - circle.maxY, width: circle.width, height: circle.height)
+        annotation.show(AnnotationOverlay.AnnotationSpec(mark: .circle, target: target))
 
-        if circlePanel == nil {
-            let panel = makePanel()
-            let host = NSHostingController(rootView: AnyView(GuidanceCircleView(model: model)))
-            host.sizingOptions = []
-            panel.contentView = host.view
-            circlePanel = panel
-        }
         if cardPanel == nil {
             let panel = makePanel()
             let host = NSHostingController(rootView: AnyView(GuidanceCardView(model: model)))
@@ -61,28 +54,27 @@ final class GuidanceOverlay {
             cardPanel = panel
             cardHost = host
         }
-        circlePanel?.setFrame(circleFrame, display: true)
-        circlePanel?.contentView?.frame = NSRect(origin: .zero, size: circleFrame.size)
         layoutCard()
-        circlePanel?.orderFrontRegardless()
         cardPanel?.orderFrontRegardless()
     }
 
     func update(status: String, tone: Tone) {
         model.status = status
         model.tone = tone
+        annotation.update(tone: tone)
         layoutCard()
     }
 
     func hide() {
-        circlePanel?.orderOut(nil)
+        annotation.hide()
         cardPanel?.orderOut(nil)
     }
 
     private func makePanel() -> NSPanel {
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 10, height: 10),
                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.level = .statusBar
+        // Above the annotation mark (popUpMenu + 1) so a clamped card stays readable.
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 2)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
@@ -115,7 +107,7 @@ final class GuidanceOverlay {
     }
 }
 
-private extension GuidanceOverlay.Tone {
+extension GuidanceOverlay.Tone {
     var color: Color {
         switch self {
         case .waiting, .verifying: return DS.Colors.overlayCursorBlue
@@ -130,25 +122,6 @@ private extension GuidanceOverlay.Tone {
         case .warning, .miss: return DS.Colors.warning.opacity(0.4)
         default: return DS.Colors.borderSubtle.opacity(0.5)
         }
-    }
-}
-
-private struct GuidanceCircleView: View {
-    @ObservedObject var model: GuidanceOverlay.Model
-    @State private var pulsing = false
-
-    var body: some View {
-        let tone = model.tone
-        Ellipse()
-            .stroke(tone == .verifying ? tone.color.opacity(0.45) : (tone == .stale ? tone.color.opacity(0.55) : tone.color),
-                    style: StrokeStyle(lineWidth: tone == .stale ? 2 : 3, dash: tone == .stale ? [5, 4] : []))
-            .shadow(color: [.verifying, .stale].contains(tone) ? .clear : tone.color.opacity(0.6), radius: 8)
-            .padding(8)
-            // Only the waiting mark pulses; other states hold still so a change reads as a state change.
-            .scaleEffect(pulsing && tone == .waiting ? 1.06 : 1.0)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { pulsing = true }
-            }
     }
 }
 

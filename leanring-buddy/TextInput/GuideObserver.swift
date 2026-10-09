@@ -74,7 +74,9 @@ final class GuideObserver {
         schedule(delay: 350_000_000)
     }
     private func activationChanged() {
-        guard let target, NSWorkspace.shared.frontmostApplication?.processIdentifier != target.processIdentifier else { return }
+        // Clicking the desktop activates Finder; a display target is not tied to any app.
+        guard let target, target.displayIdentifier == nil,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier != target.processIdentifier else { return }
         onUnavailable?()
     }
     private func schedule(delay: UInt64) {

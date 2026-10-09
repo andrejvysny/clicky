@@ -67,9 +67,45 @@ final class ScreenPointingTests: XCTestCase {
     }
 
     func testScreenInclusionPreference() {
-        XCTAssertEqual(ScreenInclusionPreference.allCases.map(\.displayName), ["Off", "Confirm per task", "Task window"])
+        XCTAssertEqual(ScreenInclusionPreference.allCases.map(\.displayName), ["Off", "Automatic"])
         XCTAssertTrue(ScreenInclusionPreference.always.startsIncluded)
-        XCTAssertFalse(ScreenInclusionPreference.askEachTime.startsIncluded)
+        XCTAssertFalse(ScreenInclusionPreference.off.startsIncluded)
+        XCTAssertEqual(ScreenInclusionPreference.stored("askEachTime"), .always)
+        XCTAssertEqual(ScreenInclusionPreference.stored("off"), .off)
+        XCTAssertNil(ScreenInclusionPreference.stored(nil))
         XCTAssertFalse(ScreenInclusionPreference.off.isAvailable)
+    }
+}
+
+final class GuidePixelMappingTests: XCTestCase {
+    private let region = CGRect(x: 100, y: 50, width: 800, height: 400)
+
+    func testEdgeOvershootIsClampedNotRejected() throws {
+        // A close button 6 px past the right edge of a 1600x800 capture (2% slack is 32 px).
+        let rect = try XCTUnwrap(GuidePixelMapping.screenRect(GuideRect(CGRect(x: 1570, y: 10, width: 36, height: 20)),
+                                                            pixelWidth: 1600, pixelHeight: 800, region: region))
+        XCTAssertEqual(rect.maxX, region.maxX, accuracy: 0.001)
+        XCTAssertEqual(rect.minX, 100 + 1570 / 2, accuracy: 0.001)
+    }
+
+    func testTargetsOutsideSlackAreRejected() {
+        XCTAssertNil(GuidePixelMapping.screenRect(GuideRect(CGRect(x: -40, y: 10, width: 20, height: 20)),
+                                                  pixelWidth: 1600, pixelHeight: 800, region: region))
+        XCTAssertNil(GuidePixelMapping.screenRect(GuideRect(CGRect(x: 10, y: 790, width: 20, height: 40)),
+                                                  pixelWidth: 1600, pixelHeight: 800, region: region))
+    }
+
+    func testRetinaPixelsMapToPoints() throws {
+        let rect = try XCTUnwrap(GuidePixelMapping.screenRect(GuideRect(CGRect(x: 200, y: 100, width: 40, height: 20)),
+                                                            pixelWidth: 1600, pixelHeight: 800, region: region))
+        XCTAssertEqual(rect, CGRect(x: 200, y: 100, width: 20, height: 10))
+    }
+}
+
+final class DisplayTargetTests: XCTestCase {
+    func testDisplayTargetRoundTripsItsIdentifier() {
+        XCTAssertEqual(WindowCaptureTarget.display(69_734_208).displayIdentifier, 69_734_208)
+        XCTAssertNil(WindowCaptureTarget(processIdentifier: 42, windowIdentifier: 7, applicationIdentifier: "display:1",
+                                         applicationName: "Spoof").displayIdentifier, "a real window is never a display")
     }
 }

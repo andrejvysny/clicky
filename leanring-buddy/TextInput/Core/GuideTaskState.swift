@@ -36,12 +36,24 @@ nonisolated public struct GuideCaptureContext: Codable, Equatable, Sendable {
     }
 
     public func screenRect(_ target: GuideRect) -> CGRect? {
-        guard target.isValid, target.x >= 0, target.y >= 0,
-              target.rect.maxX <= Double(pixelWidth), target.rect.maxY <= Double(pixelHeight) else { return nil }
-        return CGRect(x: region.x + target.x * region.width / Double(pixelWidth),
-                      y: region.y + target.y * region.height / Double(pixelHeight),
-                      width: target.width * region.width / Double(pixelWidth),
-                      height: target.height * region.height / Double(pixelHeight))
+        GuidePixelMapping.screenRect(target, pixelWidth: pixelWidth, pixelHeight: pixelHeight, region: region.rect)
+    }
+}
+
+nonisolated public enum GuidePixelMapping {
+    /// Models overshoot edge controls by a few pixels, so targets may exceed the image by 2% and are clamped;
+    /// a target outside that slack, or with nothing left inside the image, is rejected.
+    public static func screenRect(_ target: GuideRect, pixelWidth: Int, pixelHeight: Int, region: CGRect) -> CGRect? {
+        guard target.isValid, pixelWidth > 0, pixelHeight > 0 else { return nil }
+        let width = Double(pixelWidth), height = Double(pixelHeight)
+        let slackX = width * 0.02, slackY = height * 0.02
+        let rect = target.rect
+        guard rect.minX >= -slackX, rect.minY >= -slackY, rect.maxX <= width + slackX, rect.maxY <= height + slackY else { return nil }
+        let clamped = rect.intersection(CGRect(x: 0, y: 0, width: width, height: height))
+        guard !clamped.isNull, clamped.width > 0, clamped.height > 0 else { return nil }
+        let scaleX = region.width / width, scaleY = region.height / height
+        return CGRect(x: region.minX + clamped.minX * scaleX, y: region.minY + clamped.minY * scaleY,
+                      width: clamped.width * scaleX, height: clamped.height * scaleY)
     }
 }
 

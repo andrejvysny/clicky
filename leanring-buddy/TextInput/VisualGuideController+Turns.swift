@@ -4,7 +4,7 @@ import OSLog
 
 extension VisualGuideController {
     func launch(message: String, captureFirst: Bool = false, verifying: Bool = false,
-                crop: GuideRect? = nil, broaderOnce: Bool = false) {
+                crop: GuideRect? = nil) {
         transaction &+= 1; let current = transaction
         activeEffort = pendingEffort; pendingEffort = .low
         isBusy = true; error = nil; status = verifying ? "Checking result" : "Inspecting request"
@@ -18,7 +18,6 @@ extension VisualGuideController {
                     var turn = GuideAgentTurn(message: message, purpose: sideQuestion ? .sideQuestion : .planning,
                                               taskContext: task.map(GuideHostTaskContext.init))
                     if captureFirst { turn = try await captureTurn(message: message, crop: crop, current: current) }
-                    if broaderOnce { turn = try await broaderTurn(message: message, current: current) }
                     try await presentationLoop(turn, current: current)
                 }
             } catch {
@@ -28,8 +27,12 @@ extension VisualGuideController {
                 Logger(subsystem: "clicky", category: "guide").error(
                     "turn failed in phase \(String(describing: self.task?.phase), privacy: .public): \(String(describing: error), privacy: .public)")
                 #endif
-                self.error = error.localizedDescription; task?.pause(); onClearTarget?()
-                lastImage = nil; lastContext = nil; closeAgent(); status = "Needs attention · Retry explicitly"
+                self.error = error.localizedDescription; onClearTarget?()
+                // Only a visible walkthrough is kept for Retry; anything else starts fresh on the next question.
+                if walkthroughActive { task?.pause() } else { task = nil; currentTarget = nil }
+                lastImage = nil; lastContext = nil; status = "Needs attention · Retry explicitly"
+                // Host-side rejections leave the conversation intact; process or protocol-transport failures do not.
+                if !(error is AttachmentError), !(error is GuideHostRejection) { closeAgent() }
             }
             guard current == transaction else { return }
             isBusy = false; work = nil; publish()
@@ -68,38 +71,48 @@ extension VisualGuideController {
 
     private func presentationLoop(_ initial: GuideAgentTurn, current: UInt64) async throws {
         var turn = initial
-        var displayShared = false
+        var markRelocated = false
+        var textOnlyNudged = false
         while true {
             let result = try await request(turn, current: current)
             if result.kind == .context_request {
-                if result.crop != nil, result.captureID != lastContext?.captureID { throw AttachmentError.targetChanged }
-                // No identifiable window: the whole display needs one approval per session, then it is automatic.
-                if currentTarget == nil, sharingPreference != .off, !displayShared {
-                    if displayDeclined {
-                        onResponse?("I need to see your screen for that. Focus the window and ask again, or share the display.")
-                        status = "Ready"; return
-                    }
-                    guard displayApprovedThisSession else {
-                        pendingContextRequest = result; needsDisplayApproval = true
-                        status = "Share this display?"; return
-                    }
-                    displayShared = true
-                    broaderPointer = Self.pointerInTopLeftPoints()
-                    turn = try await broaderTurn(message: "Requested context. No window was focused; this is the display overview.", current: current)
+                guard let next = try await contextTurn(for: result, current: current) else {
+                    // No screen allowed: one text-only nudge, then stop rather than loop.
+                    guard !textOnlyNudged else { throw AskError.protocolFailure("This question needs the screen. " + Self.sharingOffHint) }
+                    textOnlyNudged = true; sharingHint = Self.sharingOffHint
+                    turn = GuideAgentTurn(message: "Screen sharing is off. Answer from text alone; do not request context again.",
+                                          purpose: turn.purpose, taskContext: task.map(GuideHostTaskContext.init))
                     continue
                 }
-                if task?.grant == nil, sharingPreference == .always, let currentTarget { task?.authorize(currentTarget) }
-                if task?.grant == nil || sharingPreference == .off {
-                    pendingContextRequest = result; needsSharingApproval = sharingPreference != .off
-                    status = sharingPreference == .off ? "Window sharing is Off. Enable it to inspect this task." : "Approve window sharing to continue"
-                    return
-                }
-                turn = try await captureTurn(message: "Requested approved context. " + recoveryMessage(), crop: result.crop, current: current)
+                turn = next
+                continue
+            }
+            // A mark or step against an older capture gets one fresh look instead of failing the question.
+            let staleMark = result.kind == .annotation && annotationRect(result) == nil
+            let staleStep = result.kind == .guide_step && (lastContext == nil || result.captureID != lastContext?.captureID)
+            if staleMark || staleStep, !markRelocated, screenAvailable {
+                markRelocated = true
+                if task?.grant == nil, let currentTarget { task?.authorize(currentTarget) }
+                turn = try await captureTurn(message: "Your reply referenced an older capture or fell outside it. "
+                                             + "Locate the target again in this capture and use its captureID.", current: current)
                 continue
             }
             try await present(result, current: current)
             return
         }
+    }
+
+    static let sharingOffHint = "Screen sharing is off — turn it on in Settings › Screen."
+
+    private var screenAvailable: Bool { sharingPreference != .off && currentTarget != nil }
+
+    /// Fresh context for the agent, or nil when sharing does not allow any. Never prompts: consent was given at setup.
+    private func contextTurn(for result: GuidePresentation, current: UInt64) async throws -> GuideAgentTurn? {
+        guard screenAvailable, let currentTarget else { return nil }
+        if task?.grant == nil { task?.authorize(currentTarget) }
+        // A crop is only meaningful against the window capture it names.
+        let crop = result.crop != nil && result.captureID == lastContext?.captureID ? result.crop : nil
+        return try await captureTurn(message: "Requested approved context. " + recoveryMessage(), crop: crop, current: current)
     }
 
     private func captureTurn(message: String, crop: GuideRect? = nil, current: UInt64) async throws -> GuideAgentTurn {
@@ -138,8 +151,8 @@ extension VisualGuideController {
     }
 
     private func present(_ result: GuidePresentation, current: UInt64) async throws {
-        if sideQuestion, ![.explanation, .clarification, .task_proposal].contains(result.kind) {
-            throw AskError.protocolFailure("A side question cannot advance the active walkthrough.")
+        if sideQuestion, ![.explanation, .clarification, .task_proposal, .annotation].contains(result.kind) {
+            throw GuideHostRejection(message: "A side question cannot advance the active walkthrough.")
         }
         switch result.kind {
         case .guide_step:
@@ -161,7 +174,9 @@ extension VisualGuideController {
             try task?.show(result); status = "Waiting for you"
             walkthroughPresented = true
             axOutcomeWasSatisfied = result.outcome.flatMap { ScopedAccessibility.matches($0, target: target) }
-            onTarget?(rect, result.text)
+            onTarget?(GuideMark(mark: result.mark ?? .circle, target: rect, label: nil,
+                                value: result.mark == .value ? result.value : nil,
+                                ghost: result.ghost.flatMap(context.screenRect), within: context.region.rect))
             if !composerOpen {
                 observer.start(step: result, target: target, rect: rect)
                 startTargetGuard(image: image, context: context, pixelTarget: pixelTarget)
@@ -169,13 +184,17 @@ extension VisualGuideController {
             #endif
         case .annotation:
             // Points only: no observation, verification or milestone; a click or 45 s clears it.
-            guard let context = lastContext, result.captureID == context.captureID, let pixelTarget = result.target,
-                  let rect = context.screenRect(pixelTarget), windowsStillCurrent(context) else { throw AttachmentError.targetChanged }
-            onAnnotate?(rect, result.text); status = "Ready"
-            if sideQuestion || walkthroughPresented { task?.pause(); status = "Pointed · walkthrough preserved" }
+            guard let rect = annotationRect(result) else {
+                throw GuideHostRejection(message: "Couldn't place that mark — the screen changed. Ask again.")
+            }
+            onResponse?(result.text)
+            onAnnotate?(GuideMark(mark: result.mark ?? .circle, target: rect, label: result.markLabel,
+                                  value: result.mark == .value ? result.value : nil, ghost: nil, within: annotationBounds(result)))
+            status = "Ready"
+            if sideQuestion { task?.pause(); status = "Pointed · walkthrough preserved" }
             else { task = nil; currentTarget = nil; lastImage = nil; lastContext = nil }
         case .explanation, .clarification:
-            onResponse?(result.text); status = "Ready"
+            onResponse?(sharingHint.map { result.text + "\n\n" + $0 } ?? result.text); sharingHint = nil; status = "Ready"
             awaitingClarification = result.kind == .clarification && !sideQuestion
             if sideQuestion || (result.kind == .explanation && walkthroughPresented) {
                 task?.pause(); status = "Answer ready · walkthrough preserved"
@@ -191,6 +210,7 @@ extension VisualGuideController {
                 throw AskError.protocolFailure("Task completion lacks fresh verified evidence.")
             }
             onClearTarget?(); status = "Task complete · verified"; closeAgent(); lastImage = nil; lastContext = nil
+            walkthroughPresented = false
         default: throw AskError.protocolFailure("The agent returned a presentation inappropriate for this task phase.")
         }
     }
@@ -218,14 +238,14 @@ extension VisualGuideController {
         status = "I could not confirm that · Retry or manual Next"
     }
 
-    private func broaderTurn(message: String, current: UInt64) async throws -> GuideAgentTurn {
-        guard let pointer = broaderPointer else { throw AttachmentError.noTarget }
-        broaderPointer = nil
-        let image = try await WindowSnapshotCapture.captureDisplay(containing: pointer)
-        try check(current)
-        // No task envelope means this one-off image cannot authorize grounded steps or completion.
-        return GuideAgentTurn(message: message, image: image, purpose: .oneOffContext, taskContext: task.map(GuideHostTaskContext.init))
+    /// Maps an annotation against the latest capture of the shared window or display.
+    func annotationRect(_ result: GuidePresentation) -> CGRect? {
+        guard let pixelTarget = result.target, let context = lastContext,
+              result.captureID == nil || result.captureID == context.captureID, windowsStillCurrent(context) else { return nil }
+        return context.screenRect(pixelTarget)
     }
+
+    private func annotationBounds(_ result: GuidePresentation) -> CGRect? { lastContext?.region.rect }
 
     func fingerprint(_ image: PNGImageAttachment, rect: CGRect) -> Data? {
         guard let source = CGImageSourceCreateWithData(image.data as CFData, nil), let decoded = CGImageSourceCreateImageAtIndex(source, 0, nil),
@@ -250,4 +270,10 @@ extension VisualGuideController {
         else { task?.finishManually() }
         publish()
     }
+}
+
+/// The host declined a well-formed reply (stale target, wrong phase); the agent conversation stays usable.
+struct GuideHostRejection: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
 }

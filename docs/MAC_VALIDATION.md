@@ -66,7 +66,7 @@ Use scratch data only. Test both providers and record OS/CLI/prompt versions, pe
 | Open/close Quick Ask without sending | No capture/provider request; popup stays beside its opening position |
 | Screen-independent answer | Text only, even with Task window enabled |
 | First visual task | Text-first request, fresh exact originating-window evidence when requested |
-| Confirm per task / Off | Explicit approval / no automatic sharing; preserve migrated preferences |
+| Setup consent / Off | One alert at first launch (Allow = Automatic + display, Not now = Off); never prompted mid-task; Confirm per task migrates to Automatic |
 | Menus/sheets/dialogs | Include only established related windows; explicit window list, child inclusion off |
 | Unrelated same-app window | Excluded; selecting another window requires one grant |
 | Another app or ambiguous relationship | Pause; choose/approve exact target |

@@ -11,7 +11,7 @@ nonisolated public enum AttachmentError: Error, LocalizedError, Equatable {
         switch self {
         case .noTarget: return "Open Quick Ask while the window you want to attach is active."
         case .targetChanged: return "The original window is no longer available. Reopen Quick Ask in that window."
-        case .permissionRequired: return "Allow Screen Recording for Clicky in System Settings, then reopen Quick Ask."
+        case .permissionRequired: return "Clicky needs Screen Recording. Turn it on in System Settings › Privacy & Security › Screen & System Audio Recording (Settings has a shortcut)."
         case .invalidImage: return "The attachment must be a PNG image with dimensions up to 4096 pixels."
         case .imageTooLarge: return "The screenshot exceeds the 3 MiB limit. Try a smaller window or attach a smaller PNG."
         case .captureFailed: return "The window could not be captured. Check Screen Recording access and try again."
@@ -68,6 +68,16 @@ nonisolated public struct WindowCaptureTarget: Codable, Equatable, Sendable {
         self.windowIdentifier = windowIdentifier
         self.applicationIdentifier = applicationIdentifier
         self.applicationName = applicationName
+    }
+
+    /// The whole display as a shared target, used when no window is focused (e.g. the desktop). Consent comes from setup.
+    public static func display(_ identifier: UInt32) -> Self {
+        Self(processIdentifier: 0, windowIdentifier: 0, applicationIdentifier: "display:\(identifier)", applicationName: "Display")
+    }
+
+    public var displayIdentifier: UInt32? {
+        guard processIdentifier == 0, windowIdentifier == 0, applicationIdentifier.hasPrefix("display:") else { return nil }
+        return UInt32(applicationIdentifier.dropFirst("display:".count))
     }
 }
 

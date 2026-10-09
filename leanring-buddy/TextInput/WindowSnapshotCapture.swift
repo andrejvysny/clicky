@@ -6,6 +6,65 @@ import UniformTypeIdentifiers
 
 @MainActor
 enum WindowSnapshotCapture {
+    private static let requestedKey = "screenCaptureAccessRequested"
+    private static let setupVersionKey = "clickySetupVersion"
+    private static let setupVersion = 1
+
+    /// Asks for Screen Recording once per installation; macOS keeps the grant for this signed app.
+    static func requestAccessOnFirstLaunch() {
+        guard !CGPreflightScreenCaptureAccess(), !UserDefaults.standard.bool(forKey: requestedKey) else { return }
+        UserDefaults.standard.set(true, forKey: requestedKey)
+        _ = CGRequestScreenCaptureAccess()
+    }
+
+    /// All screen consent is asked here, once per setup version, so nothing prompts while the user works.
+    static func runFirstLaunchSetup(apply: (_ shareScreen: Bool) -> Void) {
+        requestAccessOnFirstLaunch()
+        let defaults = UserDefaults.standard
+        guard defaults.integer(forKey: setupVersionKey) < setupVersion else { return }
+        defaults.set(setupVersion, forKey: setupVersionKey)
+        let alert = NSAlert()
+        alert.messageText = "Let Clicky look at your screen when a question needs it?"
+        alert.informativeText = "Clicky shares the window you asked from, or the display under the pointer when no window is focused. Images stay in memory. You can change this anytime in Settings."
+        alert.addButton(withTitle: "Allow"); alert.addButton(withTitle: "Not now")
+        NSApp.activate(ignoringOtherApps: true)
+        let allowed = alert.runModal() == .alertFirstButtonReturn
+        defaults.set(allowed, forKey: VisualGuideController.displaySharingKey)
+        apply(allowed)
+        // Accessibility identifies the focused window and selection; asked once here instead of mid-task.
+        if allowed, !AXIsProcessTrusted() {
+            _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
+        }
+    }
+
+    /// The app the user was last in; Quick Ask opened while Clicky itself is frontmost falls back to it.
+    private(set) static var lastExternalApplication: NSRunningApplication?
+    private static var activationObserver: NSObjectProtocol?
+    static func trackExternalActivation() {
+        guard activationObserver == nil else { return }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != ownPID { lastExternalApplication = front }
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.processIdentifier != ownPID else { return }
+            MainActor.assumeIsolated { lastExternalApplication = app }
+        }
+    }
+
+    /// Frontmost app unless it is Clicky, in which case the app the user came from.
+    static func originatingApplication() -> NSRunningApplication? {
+        let front = NSWorkspace.shared.frontmostApplication
+        guard front?.processIdentifier == ProcessInfo.processInfo.processIdentifier else { return front }
+        return lastExternalApplication.flatMap { $0.isTerminated ? nil : $0 }
+    }
+
+    static func openScreenRecordingSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     private struct CapturePlan {
         let window: SCWindow
         let related: [SCWindow]
@@ -47,11 +106,12 @@ enum WindowSnapshotCapture {
     static func capture(_ target: WindowCaptureTarget, region requestedRegion: CGRect? = nil,
                         relatedTargets: [WindowCaptureTarget] = [], outputSize: CGSize? = nil) async throws -> PNGImageAttachment {
         guard target.processIdentifier != ProcessInfo.processInfo.processIdentifier else { throw AttachmentError.noTarget }
-        // Only an explicit attachment or an active task grant reaches this capture path.
-        if !CGPreflightScreenCaptureAccess() {
-            _ = CGRequestScreenCaptureAccess()
-            guard CGPreflightScreenCaptureAccess() else { throw AttachmentError.permissionRequired }
+        if let displayID = target.displayIdentifier {
+            return try await captureDisplay(target, displayID: displayID, region: requestedRegion, outputSize: outputSize)
         }
+        // Only an explicit attachment or an active task grant reaches this capture path.
+        // The system prompt is shown once at first launch; capture never re-prompts.
+        guard CGPreflightScreenCaptureAccess() else { throw AttachmentError.permissionRequired }
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             try Task.checkCancellation()
@@ -65,7 +125,7 @@ enum WindowSnapshotCapture {
                 let identity = WindowCaptureTarget(processIdentifier: pid, windowIdentifier: capturedWindow.windowID,
                                                    applicationIdentifier: capturedWindow.owningApplication?.bundleIdentifier ?? "pid:\(pid)",
                                                    applicationName: target.applicationName)
-                return ScopedAccessibility.bounds(identity) == capturedWindow.frame
+                return ScopedAccessibility.bounds(identity).map { framesMatch($0, capturedWindow.frame) } ?? false
             }) else { throw AttachmentError.targetChanged }
             let context = ScreenContextIdentity(applicationIdentifier: target.applicationIdentifier,
                                                 windowIdentifier: target.windowIdentifier,
@@ -80,6 +140,7 @@ enum WindowSnapshotCapture {
             }.value
         } catch is CancellationError { throw CancellationError() }
         catch let error as AttachmentError { throw error }
+        catch let error as SCStreamError where error.code == .userDeclined { throw AttachmentError.permissionRequired }
         catch { throw AttachmentError.captureFailed }
     }
 
@@ -133,31 +194,42 @@ enum WindowSnapshotCapture {
     }
 
     /// `pointer` is in global top-left points. Captures the whole display under it, minus Clicky's own windows.
-    static func captureDisplay(containing pointer: CGPoint) async throws -> PNGImageAttachment {
-        // The task guide invokes this only after a one-transmission display approval.
-        if !CGPreflightScreenCaptureAccess() {
-            _ = CGRequestScreenCaptureAccess()
-            guard CGPreflightScreenCaptureAccess() else { throw AttachmentError.permissionRequired }
-        }
+    /// The display under a global top-left point, as a shareable target. Closed on the max edges.
+    static func displayTarget(containing pointer: CGPoint) -> WindowCaptureTarget? {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return nil }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &displays, &count) == .success else { return nil }
+        let id = displays.first {
+            let frame = CGDisplayBounds($0)
+            return pointer.x >= frame.minX && pointer.x <= frame.maxX && pointer.y >= frame.minY && pointer.y <= frame.maxY
+        } ?? CGMainDisplayID()
+        return .display(id)
+    }
+
+    /// The shared display, or a region of it (global top-left points). Clicky's own windows are excluded.
+    private static func captureDisplay(_ target: WindowCaptureTarget, displayID: CGDirectDisplayID, region requestedRegion: CGRect?,
+                                       outputSize: CGSize?) async throws -> PNGImageAttachment {
+        guard CGPreflightScreenCaptureAccess() else { throw AttachmentError.permissionRequired }
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             try Task.checkCancellation()
-            guard let display = content.displays.first(where: { $0.frame.contains(pointer) }) else {
-                throw AttachmentError.captureFailed
-            }
+            guard let display = content.displays.first(where: { $0.displayID == displayID }) else { throw AttachmentError.targetChanged }
             let own = content.applications.first { $0.processID == ProcessInfo.processInfo.processIdentifier }
-            // Excluding our own app hides Clicky's companion, popup and bubble from the capture.
             let filter = SCContentFilter(display: display, excludingApplications: own.map { [$0] } ?? [], exceptingWindows: [])
-            let pixelSize = CaptureSizing.pixelSize(forPointSize: display.frame.size, backingScale: backingScale(for: display.displayID))
+            let region = requestedRegion.map { $0.intersection(display.frame) } ?? display.frame
+            guard !region.isNull, region.width >= 1, region.height >= 1 else { throw AttachmentError.targetChanged }
+            let pixelSize = outputSize ?? CaptureSizing.pixelSize(forPointSize: region.size, backingScale: backingScale(for: display.displayID))
             let configuration = SCStreamConfiguration()
+            // sourceRect is display-local points.
+            configuration.sourceRect = region.offsetBy(dx: -display.frame.minX, dy: -display.frame.minY)
             configuration.width = Int(pixelSize.width)
             configuration.height = Int(pixelSize.height)
             configuration.showsCursor = false
             let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
             try Task.checkCancellation()
-            let context = ScreenContextIdentity(applicationIdentifier: "screen", windowIdentifier: 0,
+            let context = ScreenContextIdentity(applicationIdentifier: target.applicationIdentifier, windowIdentifier: 0,
                                                 displayIdentifier: display.displayID, capturedAt: Date())
-            let region = display.frame
             return try await Task.detached(priority: .userInitiated) {
                 guard let data = CFDataCreateMutable(nil, 0),
                       let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { throw AttachmentError.captureFailed }
@@ -167,7 +239,14 @@ enum WindowSnapshotCapture {
             }.value
         } catch is CancellationError { throw CancellationError() }
         catch let error as AttachmentError { throw error }
+        catch let error as SCStreamError where error.code == .userDeclined { throw AttachmentError.permissionRequired }
         catch { throw AttachmentError.captureFailed }
+    }
+
+    /// Window Server and ScreenCaptureKit frames can differ by sub-point rounding on scaled displays.
+    private static func framesMatch(_ first: CGRect, _ second: CGRect) -> Bool {
+        abs(first.minX - second.minX) < 1 && abs(first.minY - second.minY) < 1
+            && abs(first.width - second.width) < 1 && abs(first.height - second.height) < 1
     }
 
     private static func backingScale(for displayID: CGDirectDisplayID) -> CGFloat {

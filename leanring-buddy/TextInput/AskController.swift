@@ -58,8 +58,7 @@ final class AskController: ObservableObject {
     @Published private(set) var shortcutModifiers: UInt32
     @Published var shortcutWarning: String?
     var onShortcutChanged: (() -> Bool)?
-    var onSubmitted: (() -> Void)?
-    var onPointTarget: ((CGRect, String) -> Void)?
+    var onPointTarget: ((GuideMark) -> Void)?
     var onPointingCleared: (() -> Void)?
     var onGuideStateChanged: (() -> Void)?
     private var presentationTarget: WindowCaptureTarget?
@@ -76,7 +75,7 @@ final class AskController: ObservableObject {
         provider = AgentProvider(rawValue: defaults.string(forKey: "askProvider") ?? "") ?? .preview
         speechPreference = SpeechReplyPreference(rawValue: defaults.string(forKey: "askSpeechPreference") ?? "") ?? .voiceOnly
         let savedSharing = defaults.string(forKey: "askTaskSharing") ?? defaults.string(forKey: "askScreenInclusion") ?? ""
-        screenInclusion = ScreenInclusionPreference(rawValue: savedSharing) ?? (testing ? .off : .always)
+        screenInclusion = ScreenInclusionPreference.stored(savedSharing) ?? (testing ? .off : .always)
         claudeExecutable = defaults.string(forKey: "askClaudeExecutable") ?? Self.discover("claude")
         codexExecutable = defaults.string(forKey: "askCodexExecutable") ?? Self.discover("codex")
         attachSelection = defaults.bool(forKey: "askAttachSelection")
@@ -86,7 +85,8 @@ final class AskController: ObservableObject {
         defaults.removeObject(forKey: "askWorkingDirectory")
         syncGuideSettings()
         guide.onResponse = { [weak self] value in self?.showResponse(value) }
-        guide.onTarget = { [weak self] rect, text in self?.onPointTarget?(rect, text) }
+        guide.defaults = defaults
+        guide.onTarget = { [weak self] mark in self?.onPointTarget?(mark) }
         guide.onClearTarget = { [weak self] in self?.onPointingCleared?() }
         guide.onStateChanged = { [weak self] in self?.syncGuideState() }
     }
@@ -113,7 +113,7 @@ final class AskController: ObservableObject {
             try guide.ask(message, target: presentationTarget, explicitlyVisual: attachment != nil, effort: effort)
             draft = ""; response = ""; errorMessage = nil; presentationHasSubmission = true
             selection = nil; snippets = []; effort = .low
-            removeAttachment(); onSubmitted?(); return true
+            removeAttachment(); return true
         } catch { errorMessage = error.localizedDescription; return false }
     }
     func stopReply() {
@@ -135,6 +135,8 @@ final class AskController: ObservableObject {
     }
     func guideNextShortcut() { guide.nextManually() }
     func guideRetryShortcut() { guide.task?.phase == .uncertain ? guide.checkNow() : guide.retry() }
+    func guideBackShortcut() { guide.back() }
+    func guideEndShortcut() { guide.endTask() }
     func speakResponse() { if !response.isEmpty { replySpeech.speak(response) } }
     func cycleEffort() { if effortAdjustable { effort = effort.next } }
     func removeSelection() { selection = nil }

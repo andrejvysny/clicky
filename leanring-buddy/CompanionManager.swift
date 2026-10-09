@@ -23,6 +23,10 @@ enum CompanionVoiceState {
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
+    /// Text mode: the last request failed; the buddy turns red until the next request or dismissal.
+    @Published private(set) var hasTextError = false
+    /// Start of the running Quick Ask request; the cursor shows elapsed seconds beside the spinner.
+    @Published private(set) var textActivitySince: Date?
     @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
     @Published private(set) var hasAccessibilityPermission = false
@@ -178,6 +182,14 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
         }
+    }
+
+    /// Text mode reuses the original spinner for a running Quick Ask request instead of a separate loader.
+    func setTextActivity(working: Bool, failed: Bool) {
+        if voiceState == .idle || voiceState == .processing { voiceState = working ? .processing : .idle }
+        if working, textActivitySince == nil { textActivitySince = Date() }
+        if !working, textActivitySince != nil { textActivitySince = nil }
+        if hasTextError != failed { hasTextError = failed }
     }
 
     func startTextMode() {

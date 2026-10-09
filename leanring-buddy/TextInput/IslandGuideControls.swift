@@ -5,6 +5,8 @@ import SwiftUI
 struct IslandGuideControls: View {
     @ObservedObject var controller: VisualGuideController
     let onCollapse: (() -> Void)?
+    /// False when an IslandStepCard above already shows the instruction and status.
+    var showsHeadline = true
     @State private var detailsShown = false
 
     var body: some View {
@@ -16,10 +18,12 @@ struct IslandGuideControls: View {
                 Button(detailsShown ? "Less" : "Details") { detailsShown.toggle() }.islandButton(.quiet)
                 if let onCollapse { Button("Hide", action: onCollapse).islandButton(.quiet) }
             }
-            Text(headline)
-                .font(.system(size: 12, weight: .medium)).foregroundStyle(DS.Colors.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-            if !uncertain {
+            if showsHeadline {
+                Text(headline)
+                    .font(.system(size: 12, weight: .medium)).foregroundStyle(DS.Colors.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if showsHeadline && !uncertain {
                 HStack(spacing: 6) {
                     if controller.isBusy { SpinnerRing(size: 8) }
                     Text(controller.status).font(.system(size: 11)).foregroundStyle(DS.Colors.textSecondary)
@@ -44,11 +48,7 @@ struct IslandGuideControls: View {
 
     @ViewBuilder private var actions: some View {
         HStack(spacing: 6) {
-            if controller.needsSharingApproval, let target = controller.currentTarget {
-                Button("Share \(target.applicationName) window") { controller.authorizeWindow(target) }.islandButton(.warning)
-            } else if controller.needsSharingApproval {
-                Button("Choose window") { controller.chooseTarget() }.islandButton(.warning)
-            } else if controller.proposal != nil {
+            if controller.proposal != nil {
                 Button("Start new task") { controller.acceptProposal() }.islandButton(.primary)
                 Button("Keep current task") { controller.keepTask() }.islandButton(.secondary)
             } else if controller.task?.phase == .completed || controller.demo?.completed == true {
@@ -70,7 +70,7 @@ struct IslandGuideControls: View {
             Spacer(minLength: 0)
             Button("End") { controller.endTask() }.islandButton(.quiet)
         }
-        .disabled(controller.isBusy && !uncertain && controller.proposal == nil && !controller.needsSharingApproval)
+        .disabled(controller.isBusy && !uncertain && controller.proposal == nil)
     }
 
     private var details: some View {

@@ -1,28 +1,36 @@
 import AppKit
 
-/// Draws the click-through target circle for a pointed-at screen location and flies the companion there.
+/// Draws a click-through annotation (circle, underline, highlight, arrow, value) for a pointed-at screen
+/// location and flies the companion there. Instruction cards live in the notch island, not here.
 @MainActor
 final class PointingPresenter {
-    private let overlay = GuidanceOverlay()
+    private let overlay = AnnotationOverlay()
     private var generation: UInt64 = 0
     private var monitor: Any?
     private var timeout: DispatchWorkItem?
     /// AppKit global point, NSScreen frame, label.
     var onFlyCompanion: ((CGPoint, CGRect, String) -> Void)?
+    /// Called from `hide()` so the caller can clear the companion location.
+    var onHidden: (() -> Void)?
 
-    private var primaryHeight: CGFloat {
-        (NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.screens.first)?.frame.height ?? 0
+    var windowNumbers: Set<Int> { overlay.windowNumbers }
+
+    private var primaryHeight: CGFloat { AnnotationScreens.primaryHeight }
+
+    /// `rect` is global top-left points. Draws a circle; `progress` belongs to the island now and is ignored.
+    func show(rect: CGRect, label: String, persistent: Bool = false, progress: GuideCardProgress? = nil) {
+        show(AnnotationOverlay.AnnotationSpec(mark: .circle, target: rect, label: label.isEmpty ? nil : label), persistent: persistent)
     }
 
-    /// `rect` is global top-left points.
-    func show(rect: CGRect, label: String, persistent: Bool = false, progress: GuideCardProgress? = nil) {
-        hide()
+    func show(_ spec: AnnotationOverlay.AnnotationSpec, persistent: Bool) {
+        // Clearing the old companion target first lets the companion fly to the new mark instead of staying parked.
+        dismiss(notify: true)
         let current = generation
-        overlay.show(target: rect, instruction: label.isEmpty ? "Here" : label, progress: progress, shortcutHints: persistent)
-        overlay.update(status: persistent ? "Waiting for your action" : "Click it, or click anywhere to dismiss", tone: .waiting)
+        let rect = spec.target
+        overlay.show(spec, tone: .waiting)
         let center = CGPoint(x: rect.midX, y: primaryHeight - rect.midY)
         if let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) ?? NSScreen.main {
-            onFlyCompanion?(center, screen.frame, label)
+            onFlyCompanion?(center, screen.frame, spec.label ?? "")
         }
         if persistent { return }
         monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
@@ -31,7 +39,7 @@ final class PointingPresenter {
                 let location = NSEvent.mouseLocation
                 let point = CGPoint(x: location.x, y: self.primaryHeight - location.y)
                 if rect.insetBy(dx: -8, dy: -8).contains(point) {
-                    self.overlay.update(status: "✓ Clicked", tone: .success)
+                    self.overlay.update(tone: .success)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
                         MainActor.assumeIsolated {
                             guard let self, self.generation == current else { return }
@@ -53,12 +61,21 @@ final class PointingPresenter {
         DispatchQueue.main.asyncAfter(deadline: .now() + 45, execute: work)
     }
 
+    func update(tone: GuidanceOverlay.Tone) {
+        overlay.update(tone: tone)
+    }
+
     func hide() {
+        dismiss(notify: true)
+    }
+
+    private func dismiss(notify: Bool) {
         generation &+= 1
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
         timeout?.cancel()
         timeout = nil
         overlay.hide()
+        if notify { onHidden?() }
     }
 }

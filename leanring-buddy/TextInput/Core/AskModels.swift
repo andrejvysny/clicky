@@ -105,14 +105,18 @@ nonisolated public struct AskInputState: Sendable {
 }
 
 nonisolated public enum ScreenInclusionPreference: String, Codable, CaseIterable, Sendable {
-    case off, askEachTime, always
+    case off, always
 
     public var displayName: String {
         switch self {
         case .off: return "Off"
-        case .askEachTime: return "Confirm per task"
-        case .always: return "Task window"
+        case .always: return "Automatic"
         }
+    }
+
+    /// Consent is given once at setup; the retired per-task confirmation migrates to Automatic.
+    public static func stored(_ raw: String?) -> Self? {
+        raw == "askEachTime" ? .always : raw.flatMap(Self.init(rawValue:))
     }
 
     public var startsIncluded: Bool { self == .always }

@@ -1,11 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// Quick Ask as the expanded island (design M9): one input row under the notch, attachments inline as
-/// icons, effort pips in the right wing. An existing reply is pushed below the input, unchanged.
-struct IslandAskView: View {
+/// Quick Ask beside the pointer, in the island's black style: one input row with attachments as icons
+/// and effort dots by the send button. An existing reply is pushed below the input, unchanged.
+struct CursorAskView: View {
     @ObservedObject var controller: AskController
-    let metrics: IslandMetrics
     let onCancel: () -> Void
     let onLayoutChanged: () -> Void
     @State private var editorHeight: CGFloat = 22
@@ -23,29 +22,41 @@ struct IslandAskView: View {
     }
 
     var body: some View {
-        IslandShell(metrics: metrics, width: IslandLayout.askWidth, expanded: true) {
-            IslandGlyph.ask()
-        } right: {
-            effortPips
-        } content: {
-            IslandBody {
-                if controller.isBusy { busyRow } else { inputRow }
-                if let error = controller.attachmentError ?? controller.errorMessage {
-                    Text(error).font(.system(size: 11)).foregroundStyle(DS.Colors.destructiveText)
-                        .fixedSize(horizontal: false, vertical: true)
+        // Ghost layout: no surrounding card. The input pill and the answer float as separate translucent pieces.
+        VStack(alignment: .leading, spacing: 6) {
+            inputRow
+            if hasMessage {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let error = controller.attachmentError ?? controller.errorMessage {
+                        Text(error).font(.system(size: 11)).foregroundStyle(DS.Colors.destructiveText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if showsStatus {
+                        Text(controller.status).font(.system(size: 11)).foregroundStyle(DS.Colors.textTertiary).lineLimit(2)
+                    }
+                    if !controller.response.isEmpty {
+                        IslandReplyText(text: controller.response, lineLimit: 8)
+                            .accessibilityIdentifier(controller.presentationHasSubmission ? "quickAskResponse" : "quickAskLastReply")
+                    }
                 }
-                if controller.presentationHasSubmission {
-                    Text(controller.status).font(.system(size: 11)).foregroundStyle(DS.Colors.textTertiary).lineLimit(2)
-                }
-                if !controller.response.isEmpty {
-                    IslandReplyText(text: controller.response, lineLimit: 8)
-                        .accessibilityIdentifier(controller.presentationHasSubmission ? "quickAskResponse" : "quickAskLastReply")
-                }
+                .padding(.horizontal, 12).padding(.vertical, 9)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .ghostPill()
             }
         }
+        .frame(width: IslandLayout.cursorAskWidth, alignment: .leading)
+        .environment(\.colorScheme, .dark)
         .background(GeometryReader { Color.clear.preference(key: AskHeightKey.self, value: $0.size.height) })
         .onPreferenceChange(AskHeightKey.self) { _ in onLayoutChanged() }
         .onChange(of: editorHeight) { _ in onLayoutChanged() }
+    }
+
+    private var showsStatus: Bool {
+        controller.presentationHasSubmission && !controller.isBusy && controller.status != "Ready"
+    }
+
+    private var hasMessage: Bool {
+        controller.attachmentError != nil || controller.errorMessage != nil || showsStatus || !controller.response.isEmpty
     }
 
     private var effortPips: some View {
@@ -73,6 +84,7 @@ struct IslandAskView: View {
                            onSubmit: { _ = controller.submit() }, onCancel: onCancel)
                 .frame(height: editorHeight)
                 .id(controller.editorGeneration)
+            effortPips
             Button { _ = controller.submit() } label: {
                 ZStack {
                     Circle().fill(controller.canSubmit ? ClickyChrome.ask : ClickyChrome.ask.opacity(0.35)).frame(width: 18, height: 18)
@@ -84,7 +96,7 @@ struct IslandAskView: View {
             .accessibilityLabel("Send").accessibilityIdentifier("quickAskSend").clickyPointerCursor()
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
-        .background(DS.Colors.surface1, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .ghostPill()
     }
 
     /// Icons only; hovering spells out what each one is. ⌫ in an empty prompt removes the newest.
@@ -109,26 +121,6 @@ struct IslandAskView: View {
             IslandGlyph.window(attached: false)
                 .help("Clicky may look at the \(name) window if your question needs it · ⌘⇧A attaches now")
         }
-    }
-
-    private var busyRow: some View {
-        HStack(spacing: 8) {
-            SpinnerRing(size: 10)
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                let seconds = controller.busySince.map { max(0, Int(context.date.timeIntervalSince($0))) } ?? 0
-                Text("Working · \(seconds) s").font(.system(size: 12)).foregroundStyle(DS.Colors.textSecondary)
-            }
-            Spacer(minLength: 4)
-            Button { controller.stopReply() } label: {
-                ZStack {
-                    Circle().fill(DS.Colors.textPrimary).frame(width: 18, height: 18)
-                    RoundedRectangle(cornerRadius: 1).fill(Color.black).frame(width: 6, height: 6)
-                }
-            }
-            .buttonStyle(.plain).help("Stop").accessibilityLabel("Stop reply").clickyPointerCursor()
-        }
-        .padding(.horizontal, 8).padding(.vertical, 7)
-        .background(DS.Colors.surface1, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
     private func deleteNewestContext() {

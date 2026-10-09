@@ -16,7 +16,8 @@ def emit(message: dict) -> None:
 def presentation(text: str) -> dict:
     return dict(kind='explanation', text=text, captureID=None, target=None,
                 action=None, outcome=None, matches=None, evidence=None,
-                proposedGoal=None, crop=None)
+                proposedGoal=None, crop=None, mark=None, label=None,
+                detail=None, value=None, ghost=None, estimatedSteps=None)
 
 
 def answer(prompt: str, number: int) -> dict:

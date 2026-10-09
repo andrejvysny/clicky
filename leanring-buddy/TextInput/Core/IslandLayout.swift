@@ -10,7 +10,8 @@ nonisolated public enum IslandLayout {
     /// Width of the black tab on displays without a notch.
     public static let tabWidth: CGFloat = 120
     public static let replyWidth: CGFloat = 420
-    public static let askWidth: CGFloat = 460
+    /// Quick Ask beside the pointer.
+    public static let cursorAskWidth: CGFloat = 380
 
     /// Compact footprint: 60 pt wings around the notch, or a 120 pt tab without one.
     public static func compactWidth(notchWidth: CGFloat) -> CGFloat {

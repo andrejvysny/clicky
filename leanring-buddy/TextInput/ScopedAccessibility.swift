@@ -33,6 +33,8 @@ enum ScopedAccessibility {
         return CGRect(origin: point, size: dimensions)
     }
     static func bounds(_ target: WindowCaptureTarget) -> CGRect? {
+        // CGDisplayBounds is already global top-left points, like window bounds.
+        if let display = target.displayIdentifier { return CGDisplayBounds(display).isEmpty ? nil : CGDisplayBounds(display) }
         let windows =
             CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
             as? [[String: Any]] ?? []
@@ -45,7 +47,9 @@ enum ScopedAccessibility {
         return CGRect(dictionaryRepresentation: raw as CFDictionary)
     }
     static func window(_ target: WindowCaptureTarget) -> AXUIElement? {
-        read {
+        // A display has no AX window, so related UI, AX outcomes and field reads all stay off for it.
+        if target.displayIdentifier != nil { return nil }
+        return read {
             guard AXIsProcessTrusted(), let bounds = bounds(target) else { return nil }
             let application = AXUIElementCreateApplication(target.processIdentifier)
             let windows = value(application, kAXWindowsAttribute) as? [AXUIElement] ?? []
@@ -58,7 +62,9 @@ enum ScopedAccessibility {
         }
     }
     static func focused(_ target: WindowCaptureTarget) -> Bool {
-        read {
+        // A display cannot lose focus; changes on it are caught by the target guard's pixel comparison.
+        if target.displayIdentifier != nil { return bounds(target) != nil }
+        return read {
             guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier
             else { return false }
             guard AXIsProcessTrusted() else {

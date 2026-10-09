@@ -2,6 +2,18 @@ import AppKit
 import Combine
 import ImageIO
 
+/// A located mark in global top-left points, ready for the overlay.
+struct GuideMark {
+    let mark: GuidePresentation.Mark
+    let target: CGRect
+    /// Drawn beside the mark; nil for walkthrough steps, whose instruction lives in the island.
+    let label: String?
+    let value: String?
+    let ghost: CGRect?
+    /// The shared window or display; labels stay inside it.
+    let within: CGRect?
+}
+
 @MainActor
 final class VisualGuideController: ObservableObject {
     @Published var task: GuideTaskState?
@@ -10,20 +22,24 @@ final class VisualGuideController: ObservableObject {
     @Published var isBusy = false
     @Published var lastSent: Date?
     @Published var proposal: GuidePresentation?
-    @Published var needsSharingApproval = false
     @Published var currentTarget: WindowCaptureTarget?
     @Published var session: AgentSession?
     @Published var demo: GuidePreviewFixture?
     var onResponse: ((String) -> Void)?
-    var onTarget: ((CGRect, String) -> Void)?
+    var onTarget: ((GuideMark) -> Void)?
     var onClearTarget: (() -> Void)?
-    /// One-off pointer annotation (global top-left rect, label); never part of task provenance.
-    var onAnnotate: ((CGRect, String) -> Void)?
-    @Published var needsDisplayApproval = false
-    /// Session-scoped consent to send the display under the pointer when no window is focused.
-    var displayApprovedThisSession = false
-    /// Declined for the current request only; the next question may ask again.
-    var displayDeclined = false
+    /// One-off pointer annotation; never part of task provenance.
+    var onAnnotate: ((GuideMark) -> Void)?
+    var onClearAnnotation: (() -> Void)?
+    var defaults = UserDefaults.standard
+    /// Consent given once at setup to share the display under the pointer when no window is focused; revocable in Settings.
+    var displaySharingApproved: Bool {
+        get { defaults.bool(forKey: Self.displaySharingKey) }
+        set { defaults.set(newValue, forKey: Self.displaySharingKey) }
+    }
+    static let displaySharingKey = "displaySharingApproved"
+    /// Appended once to a text-only answer when the question needed the screen but sharing is off.
+    var sharingHint: String?
     var onStateChanged: (() -> Void)?
     var provider: AgentProvider = .preview
     var executable: URL?
@@ -41,7 +57,6 @@ final class VisualGuideController: ObservableObject {
     var transaction: UInt64 = 0
     var composerOpen = false
     var sideQuestion = false
-    var broaderPointer: CGPoint?
     var axOutcomeWasSatisfied: Bool?
     var walkthroughPresented = false
     var awaitingClarification = false
@@ -74,22 +89,35 @@ final class VisualGuideController: ObservableObject {
         guard !isBusy else { throw AskError.busy }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AskError.emptyPrompt }
         guard text.utf8.count <= 65_536 else { throw AskError.promptTooLarge }
-        lastUserText = text; error = nil; proposal = nil
+        lastUserText = text; error = nil; proposal = nil; pendingContextRequest = nil; sharingHint = nil
+        onClearAnnotation?()
+        // With no focused window (e.g. the desktop) the display under the pointer at ask time is the shared target.
+        let target = target ?? (sharingPreference != .off && displaySharingApproved
+            ? WindowSnapshotCapture.displayTarget(containing: Self.pointerInTopLeftPoints()) : nil)
         let continuingClarification = awaitingClarification
-        sideQuestion = task != nil && task?.phase != .completed && task?.phase != .canceled && !continuingClarification
+        // Only a walkthrough the user can see is preserved; a task left paused by an error is simply replaced.
+        sideQuestion = walkthroughActive && !continuingClarification
         awaitingClarification = false
-        if task == nil || task?.phase == .completed || task?.phase == .canceled {
+        if !sideQuestion && !continuingClarification {
             // Only an explicit raise restarts Claude; the default Low after a send keeps the conversation.
             if provider == .claude, agent != nil, effort != .low, effort != agentEffort { closeAgent() }
-            task = GuideTaskState(goal: text); currentTarget = target
+            walkthroughPresented = false
+            task = GuideTaskState(goal: text); currentTarget = target; lastImage = nil; lastContext = nil
+        } else if task?.grant == nil, let target {
+            currentTarget = target
         }
         if task?.grant == nil, explicitlyVisual, let currentTarget { task?.authorize(currentTarget) }
         if task?.phase == .paused { task?.resume() }
-        task?.beginRequest(); displayDeclined = false
+        task?.beginRequest()
         pendingEffort = effort
         let purpose = sideQuestion ? "Related user question; preserve active task. A different goal must be task_proposal."
             : (continuingClarification ? "User reply to clarification; continue the existing goal or propose a different task." : "User goal; choose presentation.")
         launch(message: purpose + "\n" + text, captureFirst: explicitlyVisual)
+    }
+
+    var walkthroughActive: Bool {
+        guard walkthroughPresented, let phase = task?.phase else { return false }
+        return phase != .completed && phase != .canceled
     }
 
     func composerWillOpen() {
@@ -117,7 +145,6 @@ final class VisualGuideController: ObservableObject {
     }
     func retry() {
         guard !isBusy, task != nil else { return }
-        if needsSharingApproval { return }
         if task?.phase == .paused { task?.resume() }
         task?.beginRequest(); sideQuestion = false
         launch(message: recoveryMessage() + "\nLocate the current step again against fresh context.", captureFirst: true)
@@ -135,10 +162,19 @@ final class VisualGuideController: ObservableObject {
         task?.manualNext(); task?.beginRequest(); sideQuestion = false
         launch(message: recoveryMessage() + "\nUser manually acknowledged the last step; it is NOT verified. Locate the next step.", captureFirst: true)
     }
+    /// Re-locates the previous milestone against fresh context. The model presents it again; it is never marked verified.
+    func back() {
+        guard demo == nil, !isBusy, let previous = task?.milestones.last else { return }
+        stopObservation(); onClearTarget?()
+        if task?.phase == .paused { task?.resume() }
+        task?.beginRequest(); sideQuestion = false
+        launch(message: recoveryMessage() + "\nUser went back to the previous step: \"" + previous.instruction
+               + "\". Present that step again against fresh context.", captureFirst: true)
+    }
     func finishManually() {
         if demo != nil { while demo?.completed == false { demo?.resume(); demo?.next() }; status = "Demo finished manually · no verification"; publish(); return }
         transaction &+= 1; work?.cancel(); work = nil
-        task?.finishManually(); closeAgent(); stopObservation(); onClearTarget?()
+        task?.finishManually(); closeAgent(); stopObservation(); onClearTarget?(); walkthroughPresented = false
         lastImage = nil; lastContext = nil; isBusy = false; status = "Finished manually · not verified"; publish()
     }
     func endTask() {
@@ -148,12 +184,12 @@ final class VisualGuideController: ObservableObject {
         transaction &+= 1; work?.cancel(); work = nil
         task?.cancel(); closeAgent(); stopObservation(); onClearTarget?()
         task = nil; currentTarget = nil; proposal = nil; pendingContextRequest = nil
-        lastImage = nil; lastContext = nil; session = nil; isBusy = false; needsSharingApproval = false; needsDisplayApproval = false
+        lastImage = nil; lastContext = nil; session = nil; isBusy = false; sharingHint = nil
         status = "Ready"; error = nil; publish()
     }
     func authorizeWindow(_ target: WindowCaptureTarget) {
         guard !isBusy, task != nil else { return }
-        task?.authorize(target, replace: true); currentTarget = target; needsSharingApproval = false
+        task?.authorize(target, replace: true); currentTarget = target
         if task?.phase == .paused { task?.resume() }
         if let pendingContextRequest {
             self.pendingContextRequest = nil
@@ -170,29 +206,6 @@ final class VisualGuideController: ObservableObject {
         list.addItems(withTitles: targets.map(\.label))
         picker.accessoryView = list; picker.addButton(withTitle: "Share selected window"); picker.addButton(withTitle: "Cancel")
         if picker.runModal() == .alertFirstButtonReturn { authorizeWindow(targets[list.indexOfSelectedItem].target) }
-    }
-    func shareBroaderOnce() {
-        guard !isBusy, task != nil else { return }
-        let pointer = NSEvent.mouseLocation
-        let height = (NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.screens.first)?.frame.height ?? 0
-        let approvedPointer = CGPoint(x: pointer.x, y: height - pointer.y)
-        let alert = NSAlert(); alert.messageText = "Share the display under the pointer once?"
-        alert.informativeText = "Other applications on that display will be visible to the selected provider. This does not expand the task's window grant."
-        alert.addButton(withTitle: "Share display once"); alert.addButton(withTitle: "Cancel")
-        if alert.runModal() != .alertFirstButtonReturn { return }
-        broaderPointer = approvedPointer
-        lastImage = nil; lastContext = nil
-        launch(message: "One explicitly authorized display overview. Explain what is needed; request the approved window before guiding.", broaderOnce: true)
-    }
-    func approveDisplay() {
-        guard needsDisplayApproval else { return }
-        needsDisplayApproval = false; displayApprovedThisSession = true; pendingContextRequest = nil
-        broaderPointer = Self.pointerInTopLeftPoints()
-        launch(message: "User shared the display. Answer using this overview.", broaderOnce: true)
-    }
-    func declineDisplay() {
-        needsDisplayApproval = false; pendingContextRequest = nil; displayDeclined = true
-        launch(message: "User declined screen sharing. Answer from text alone; do not request context again.")
     }
     static func pointerInTopLeftPoints() -> CGPoint {
         let pointer = NSEvent.mouseLocation
@@ -224,9 +237,13 @@ final class VisualGuideController: ObservableObject {
     }
     func recoveryMessage() -> String {
         guard let task else { return "" }
-        return "Task: " + task.goal + "\nCompleted milestones: " + task.milestones.map {
-            $0.instruction + " (" + $0.completion.rawValue + ")"
-        }.joined(separator: "; ") + "\nCurrent step: " + (task.step?.text ?? "locate next action")
+        var message = "Task: " + task.goal
+        if !task.milestones.isEmpty {
+            message += "\nCompleted milestones: " + task.milestones.map { $0.instruction + " (" + $0.completion.rawValue + ")" }.joined(separator: "; ")
+        }
+        // Naming a step only when one exists keeps pointing questions from being read as walkthroughs.
+        if let step = task.step { message += "\nCurrent step: " + step.text }
+        return message
     }
     private func availableTargets() -> [(target: WindowCaptureTarget, label: String)] {
         let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []

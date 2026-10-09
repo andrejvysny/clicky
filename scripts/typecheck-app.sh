@@ -14,7 +14,10 @@ SWIFT
 xcrun swiftc -emit-module -target arm64-apple-macos14.2 -module-name Sparkle -o "$clicky_stub_dir/Sparkle.swiftmodule" "$clicky_stub_dir/Sparkle.swift"
 cd "$clicky_root"
 clicky_sources=()
-while IFS= read -r clicky_source; do clicky_sources+=("$clicky_source"); done < <(rg --files leanring-buddy -g '*.swift' | sort)
+# ripgrep is optional; fall back to find so a stock macOS install can typecheck.
+if command -v rg >/dev/null 2>&1; then clicky_list_sources() { rg --files leanring-buddy -g '*.swift'; }
+else clicky_list_sources() { find leanring-buddy -name '*.swift' -type f; }; fi
+while IFS= read -r clicky_source; do clicky_sources+=("$clicky_source"); done < <(clicky_list_sources | sort)
 clicky_defines=(-D CLICKY_TYPECHECK)
 if [[ "${1:-}" == "--debug" ]]; then clicky_defines+=(-D DEBUG); fi
 xcrun swiftc -typecheck -module-name Clicky -sdk "$(xcrun --show-sdk-path --sdk macosx)" \

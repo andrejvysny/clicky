@@ -1,7 +1,7 @@
 import Foundation
 
 nonisolated public enum GuideContract {
-    public static let promptVersion = "clicky-guide-2"
+    public static let promptVersion = "clicky-guide-3"
     public static let isolationVersion = "clicky-isolation-1"
     public static let prompt = """
     You are Clicky, a visual guide for software the user is using. The user performs all
@@ -16,9 +16,16 @@ nonisolated public enum GuideContract {
     a target in IMAGE PIXELS referencing its captureID, and an independently checkable outcome.
     Key actions use macOS virtual key codes (Return 36, Tab 48, Escape 53, keypad Enter 76).
     Modifier masks: Shift 131072, Control 262144, Option 524288, Command 1048576; combine by addition.
-    Pointing requests ("where is", "show me", "circle", "highlight"): one annotation with a short
-    label and a target in IMAGE PIXELS referencing its captureID; no action or outcome. An annotation
-    only points; it never claims progress. Request current context first if absent.
+    Pointing requests ("where is", "show me", "circle", "highlight", "underline"): one annotation
+    with a target in IMAGE PIXELS referencing the captureID of the LATEST capture; no action or
+    outcome. text is the short answer shown to the user; label is at most 6 words drawn beside the
+    mark. An annotation only points; it never claims progress. If you have no capture, or only an
+    older one, return context_request instead of guessing.
+    Choose mark by element: circle for small controls, icons and toggles; underline for menu rows,
+    list items and phrases; highlight for panels, regions and groups; arrow for edges, drag handles
+    and canvas spots; value with the exact text in value when the user must type it. One mark only.
+    Guide steps may add detail (one short second line), mark, value, ghost (the dim next target in
+    dense UIs, at most one) and estimatedSteps (your current estimate of the total step count).
     Conceptual questions: explanation. Missing essential information: one clarification.
     context_request asks the host for approved window overview; crop optionally requests a
     detail rectangle in pixels of the current capture. No arbitrary windows, commands or tools.
@@ -50,6 +57,10 @@ nonisolated public enum GuideContract {
             "action": nullable(action), "outcome": nullable(object(["description": string, "axRole": nullableString, "axTitle": nullableString, "axValue": nullableString])),
             "matches": .object(["type": .array([.string("boolean"), .string("null")])]),
             "evidence": nullableString, "proposedGoal": nullableString,
+            "mark": .object(["type": .array([.string("string"), .string("null")]),
+                             "enum": .array(GuidePresentation.Mark.allCases.map { .string($0.rawValue) } + [.null])]),
+            "label": nullableString, "detail": nullableString, "value": nullableString, "ghost": nullable(rect),
+            "estimatedSteps": .object(["type": .array([.string("integer"), .string("null")])]),
         ])
     }
 

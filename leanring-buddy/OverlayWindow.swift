@@ -181,6 +181,9 @@ struct BlueCursorView: View {
         "found it!"
     ]
 
+    /// Red while a text request failed; the original blue otherwise.
+    private var buddyColor: Color { companionManager.hasTextError ? DS.Colors.destructive : DS.Colors.overlayCursorBlue }
+
     var body: some View {
         ZStack {
             // Nearly transparent background (helps with compositing)
@@ -303,10 +306,10 @@ struct BlueCursorView: View {
             // During navigation: NO implicit animation — the frame-by-frame bezier
             // timer controls position directly at 60fps for a smooth arc flight.
             Triangle()
-                .fill(DS.Colors.overlayCursorBlue)
+                .fill(buddyColor)
                 .frame(width: 16, height: 16)
                 .rotationEffect(.degrees(triangleRotationDegrees))
-                .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
+                .shadow(color: buddyColor, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale)
                 .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
                 .position(cursorPosition)
@@ -335,6 +338,14 @@ struct BlueCursorView: View {
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
+
+            // Faded elapsed seconds beside the spinner while a typed request runs; the only loader.
+            if let since = companionManager.textActivitySince {
+                CursorElapsedSecondsView(since: since)
+                    .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0)
+                    .position(x: cursorPosition.x + 22, y: cursorPosition.y)
+                    .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
+            }
 
         }
         .frame(width: screenFrame.width, height: screenFrame.height)
@@ -743,6 +754,23 @@ private struct BlueCursorWaveformView: View {
         let reactiveHeight = easedAudioPowerLevel * 10 * listeningBarProfile[barIndex]
         let idlePulse = (sin(animationPhase) + 1) / 2 * 1.5
         return 3 + reactiveHeight + idlePulse
+    }
+}
+
+// MARK: - Elapsed Seconds
+
+private struct CursorElapsedSecondsView: View {
+    let since: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: since, by: 1)) { context in
+            Text("\(max(0, Int(context.date.timeIntervalSince(since))))")
+                .font(.system(size: 10, weight: .medium).monospacedDigit())
+                .foregroundColor(DS.Colors.overlayCursorBlue.opacity(0.45))
+                .fixedSize()
+                // Left-aligned at the anchor so growing digits extend away from the spinner.
+                .frame(width: 24, alignment: .leading)
+        }
     }
 }
 

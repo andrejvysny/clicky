@@ -87,7 +87,7 @@ final class AnnotationPresentationTests: XCTestCase {
     func testAnnotationRequiresTargetAndForbidsStepFields() {
         let rect = GuideRect(CGRect(x: 1, y: 2, width: 30, height: 20))
         XCTAssertNoThrow(try GuidePresentation(kind: .annotation, text: "Here", captureID: UUID(), target: rect).validate())
-        XCTAssertThrowsError(try GuidePresentation(kind: .annotation, text: "Here", captureID: UUID()).validate())
+        XCTAssertThrowsError(try GuidePresentation(kind: .annotation, text: "Here", captureID: UUID()).validate(), "target required")
         XCTAssertThrowsError(try GuidePresentation(kind: .annotation, text: "Here", captureID: UUID(), target: rect,
                                                    action: GuideAction(kind: .click)).validate())
         XCTAssertTrue(GuideRequestPurpose.sideQuestion.permits(.annotation))
@@ -96,5 +96,95 @@ final class AnnotationPresentationTests: XCTestCase {
 
     func testExplanationMayEchoCaptureID() {
         XCTAssertNoThrow(try GuidePresentation(kind: .explanation, text: "It is Terminal.", captureID: UUID()).validate())
+    }
+}
+
+final class PresentationNormalizationTests: XCTestCase {
+    /// Observed from Claude Haiku 5.5: an explanation of a screenshot carrying evidence and the captureID.
+    func testExplanationWithEchoedEvidenceParses() throws {
+        var fields: [String: JSONValue] = ["kind": .string("explanation"), "text": .string("I can see a Terminal window."),
+                                           "captureID": .string(UUID().uuidString), "evidence": .string("Capture shows a terminal")]
+        for key in ["target", "crop", "action", "outcome", "matches", "proposedGoal",
+                    "mark", "label", "detail", "value", "ghost", "estimatedSteps"] { fields[key] = .null }
+        let result = try GuidePresentation.parse(JSONEncoder().encode(JSONValue.object(fields)))
+        XCTAssertEqual(result.kind, .explanation)
+        XCTAssertNil(result.evidence)
+    }
+
+    func testIrrelevantStepFieldsAreDroppedNotTrusted() {
+        let rect = GuideRect(CGRect(x: 1, y: 1, width: 5, height: 5))
+        let prose = GuidePresentation(kind: .clarification, text: "Answer", captureID: UUID(), target: rect,
+                                      action: GuideAction(kind: .click), matches: true, mark: .arrow, detail: "x").normalized()
+        XCTAssertNil(prose.target); XCTAssertNil(prose.action); XCTAssertNil(prose.matches); XCTAssertNil(prose.mark)
+        XCTAssertNoThrow(try prose.validate())
+        // A step still needs its own fields; normalization never invents them.
+        XCTAssertThrowsError(try GuidePresentation(kind: .guide_step, text: "Click", captureID: UUID(), evidence: "x").normalized().validate())
+    }
+}
+
+final class AnnotationWithoutCaptureTests: XCTestCase {
+    func testAnnotationMayOmitCaptureID() {
+        let rect = GuideRect(CGRect(x: 10, y: 10, width: 40, height: 20))
+        XCTAssertNoThrow(try GuidePresentation(kind: .annotation, text: "Here", target: rect).validate())
+    }
+}
+
+final class AnnotationMarkTests: XCTestCase {
+    private let rect = GuideRect(CGRect(x: 10, y: 10, width: 40, height: 20))
+
+    func testEveryMarkRoundTripsThroughSchema() throws {
+        for mark in GuidePresentation.Mark.allCases {
+            let value = GuidePresentation(kind: .annotation, text: "The Wi-Fi menu is here.", captureID: UUID(), target: rect,
+                                          mark: mark, label: "Wi-Fi", value: mark == .value ? "0.02 m" : nil)
+            // Models fill every schema key; JSONEncoder omits nils, so add them back as null.
+            guard case .object(var fields) = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(value)),
+                  case .object(let properties) = GuideContract.schema["properties"] else { return XCTFail("object") }
+            for key in properties.keys where fields[key] == nil { fields[key] = .null }
+            let parsed = try GuidePresentation.parse(JSONEncoder().encode(JSONValue.object(fields)))
+            XCTAssertEqual(parsed.mark, mark)
+            XCTAssertEqual(parsed.label, "Wi-Fi")
+        }
+    }
+
+    func testLocatedExplanationBecomesAnnotation() {
+        let result = GuidePresentation(kind: .explanation, text: "It is the wrench icon.", captureID: UUID(), target: rect,
+                                       action: GuideAction(kind: .click), mark: .circle).normalized()
+        XCTAssertEqual(result.kind, .annotation)
+        XCTAssertNil(result.action)
+        XCTAssertNoThrow(try result.validate())
+        // Without a capture the target cannot be mapped, so prose stays prose.
+        XCTAssertEqual(GuidePresentation(kind: .explanation, text: "x", target: rect).normalized().kind, .explanation)
+    }
+
+    func testInvalidMarkCombinationsAreRejected() {
+        XCTAssertThrowsError(try GuidePresentation(kind: .annotation, text: "Type", target: rect, mark: .value).validate())
+        XCTAssertThrowsError(try GuidePresentation(kind: .annotation, text: "x", target: rect, ghost: rect).validate())
+        XCTAssertThrowsError(try GuidePresentation(kind: .annotation, text: "x", target: rect, estimatedSteps: 3).validate())
+        XCTAssertThrowsError(try GuidePresentation(kind: .annotation, text: "x", target: rect,
+                                                   label: String(repeating: "a", count: 61)).validate())
+        let step = { (steps: Int) in
+            GuidePresentation(kind: .guide_step, text: "Click", captureID: UUID(), target: self.rect,
+                              action: GuideAction(kind: .click), outcome: GuideOutcome(description: "Opens"), estimatedSteps: steps)
+        }
+        XCTAssertNoThrow(try step(4).validate())
+        XCTAssertThrowsError(try step(0).validate())
+        XCTAssertThrowsError(try step(51).validate())
+    }
+
+    func testMalformedExtrasAreDroppedNotFatal() {
+        let step = GuidePresentation(kind: .guide_step, text: "Click Save", captureID: UUID(), target: rect,
+                                     action: GuideAction(kind: .click), outcome: GuideOutcome(description: "Saved"),
+                                     mark: .value, label: String(repeating: "a", count: 80), detail: "",
+                                     ghost: GuideRect(CGRect(x: 0, y: 0, width: 0, height: 0)), estimatedSteps: 0).normalized()
+        XCTAssertNoThrow(try step.validate())
+        XCTAssertEqual(step.mark, .circle)
+        XCTAssertNil(step.ghost); XCTAssertNil(step.estimatedSteps); XCTAssertNil(step.detail)
+        XCTAssertEqual(step.label?.utf8.count, 60)
+    }
+
+    func testMarkLabelFallsBackToLeadingWords() {
+        XCTAssertEqual(GuidePresentation(kind: .annotation, text: "Open the wrench icon in the Properties sidebar", target: rect).markLabel,
+                       "Open the wrench icon in the…")
+        XCTAssertEqual(GuidePresentation(kind: .annotation, text: "Long answer", target: rect, label: "Wrench").markLabel, "Wrench")
     }
 }

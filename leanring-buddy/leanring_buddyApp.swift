@@ -50,20 +50,22 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
-        askController.onPointTarget = { [weak self] rect, label in
-            // The island shows progress; the label at the target carries only the instruction.
-            self?.pointingPresenter.show(rect: rect, label: label, persistent: true)
+        askController.onPointTarget = { [weak self] mark in
+            // The island carries the instruction; the target shows only the mark.
+            // A walkthrough step needs the user in their app, so Quick Ask steps aside.
+            self?.quickAskPanelManager?.close(restoreFocus: true)
+            self?.pointingPresenter.show(Self.spec(mark), persistent: true)
         }
-        askController.onPointingCleared = { [weak self] in
-            self?.pointingPresenter.hide(); self?.companionManager.clearDetectedElementLocation()
-        }
+        askController.onPointingCleared = { [weak self] in self?.pointingPresenter.hide() }
+        pointingPresenter.onHidden = { [weak self] in self?.companionManager.clearDetectedElementLocation() }
         pointingPresenter.onFlyCompanion = { [weak self] point, screenFrame, label in
             guard let manager = self?.companionManager, manager.detectedElementScreenLocation == nil else { return }
             manager.detectedElementBubbleText = label.isEmpty ? nil : label
             manager.detectedElementDisplayFrame = screenFrame
             manager.detectedElementScreenLocation = point
         }
-        askController.guide.onAnnotate = { [weak self] rect, label in self?.pointingPresenter.show(rect: rect, label: label) }
+        askController.guide.onAnnotate = { [weak self] mark in self?.pointingPresenter.show(Self.spec(mark), persistent: false) }
+        askController.guide.onClearAnnotation = { [weak self] in self?.pointingPresenter.hide() }
         quickAskPanelManager = QuickAskPanelManager(controller: askController)
         island.refresh()
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager, askController: askController) { [weak self] presentation in
@@ -75,6 +77,10 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         quickAskHotkey.onPressed = { [weak self] in self?.quickAskPanelManager?.show() }
+        WindowSnapshotCapture.trackExternalActivation()
+        WindowSnapshotCapture.runFirstLaunchSetup { [weak self] shareScreen in
+            self?.askController.screenInclusion = shareScreen ? .always : .off
+        }
         installScopedShortcuts()
         askController.onShortcutChanged = { [weak self] in self?.registerQuickAskShortcut() ?? false }
         registerQuickAskShortcut()
@@ -107,17 +113,24 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         companionManager.stopTextMode()
     }
 
+    private static func spec(_ mark: GuideMark) -> AnnotationOverlay.AnnotationSpec {
+        AnnotationOverlay.AnnotationSpec(mark: mark.mark, target: mark.target, label: mark.label,
+                                         value: mark.value, ghost: mark.ghost, within: mark.within)
+    }
+
     private func installScopedShortcuts() {
         scopedShortcuts.onNext = { [weak self] in self?.askController.guideNextShortcut() }
         scopedShortcuts.onRetry = { [weak self] in self?.askController.guideRetryShortcut() }
+        scopedShortcuts.onBack = { [weak self] in self?.askController.guideBackShortcut() }
+        scopedShortcuts.onEnd = { [weak self] in self?.askController.guideEndShortcut() }
         scopedShortcuts.onCopy = { [weak self] in self?.askController.copyResponse() }
         scopedShortcuts.onSpeak = { [weak self] in self?.askController.speakResponse() }
         askController.onGuideStateChanged = { [weak self] in
             guard let self else { return }
             scopedShortcuts.setGuideActive(askController.guideStepActive)
         }
-        scopedShortcuts.onToggleReply = { [weak self] in self?.island.toggleReply() }
         island.onReplyAvailabilityChanged = { [weak self] available in self?.scopedShortcuts.setReplyActive(available) }
+        island.onCompanionState = { [weak self] working, failed in self?.companionManager.setTextActivity(working: working, failed: failed) }
     }
 
     @discardableResult

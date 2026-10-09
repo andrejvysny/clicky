@@ -160,3 +160,31 @@ struct IslandButtonStyle: ButtonStyle {
 extension View {
     func islandButton(_ kind: IslandButtonStyle.Kind) -> some View { buttonStyle(IslandButtonStyle(kind: kind)).clickyPointerCursor() }
 }
+
+/// Cursor-side surfaces (Quick Ask, reply) share the island's black material but float beside the pointer.
+private struct CursorCardModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(Color.black.opacity(0.92), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.1), lineWidth: 1))
+            .environment(\.colorScheme, .dark)
+    }
+}
+
+extension View {
+    func cursorCard() -> some View { modifier(CursorCardModifier()) }
+}
+
+/// Ghost surface for the cursor-side Quick Ask: translucent blur, no card border, readable on any wallpaper.
+private struct GhostPillModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .environment(\.colorScheme, .dark)
+    }
+}
+
+extension View {
+    func ghostPill() -> some View { modifier(GhostPillModifier()) }
+}

@@ -73,6 +73,8 @@ private struct ComposerHeightKey: PreferenceKey {
 struct AskSettingsView: View {
     @ObservedObject var controller: AskController
     @State private var recordingShortcut = false
+    @State private var displaySharing = false
+    @State private var screenRecordingAllowed = CGPreflightScreenCaptureAccess()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -113,13 +115,28 @@ struct AskSettingsView: View {
                     }.frame(height: 22)
                 }
                 if let warning = controller.shortcutWarning { Text(warning).font(.system(size: 11)).foregroundStyle(DS.Colors.warningText) }
-                note("In Quick Ask: ⌥⇧E effort · ⌘N new conversation. Open reply: ⌥⇧C copy · ⌥⇧V speak · ⌥⇧↓ hide; click the blue dot to reopen. Guide step: ⌥⇧→ Next · ⌥⇧R Retry.")
+                note("In Quick Ask: ⌥⇧E effort · ⌘N new conversation · Esc stops a running reply, then closes. Reply: ⌥⇧C copy · ⌥⇧V speak. Guide step: ⌥⇧← back · ⌥⇧→ skip · ⌥⇧R retry · ⌥⇧⌫ end.")
             }
             section("Screen") {
                 Picker("Sharing", selection: $controller.screenInclusion) {
                     ForEach(ScreenInclusionPreference.allCases, id: \.self) { Text($0.displayName).tag($0) }
                 }
-                note("When a question needs the screen, Clicky shares the window you were in automatically. With no focused window it asks once per session before sharing the display. Images stay in memory.")
+                note("When a question needs the screen, Clicky shares the window you asked from automatically; consent was given once at setup and is never asked mid-task. Images stay in memory.")
+                HStack(spacing: 6) {
+                    Text(screenRecordingAllowed ? "Screen Recording: allowed" : "Screen Recording: not allowed")
+                        .font(.system(size: 12))
+                        .foregroundStyle(screenRecordingAllowed ? DS.Colors.textSecondary : DS.Colors.warningText)
+                    Spacer()
+                    if !screenRecordingAllowed {
+                        Button("Open System Settings") { WindowSnapshotCapture.openScreenRecordingSettings() }.islandButton(.secondary)
+                        // macOS applies a new Screen Recording grant only after relaunch.
+                        Button("Quit & Reopen") { Self.relaunch() }.islandButton(.secondary)
+                    }
+                }
+                Toggle("Look at the display when no window is focused", isOn: Binding(
+                    get: { displaySharing },
+                    set: { displaySharing = $0; controller.guide.displaySharingApproved = $0 }))
+                    .font(.system(size: 12))
                 Toggle("Attach selected text when Quick Ask opens", isOn: $controller.attachSelection).font(.system(size: 12))
                 note("Reads only the selection in the focused, non-secure field through Accessibility. ⌫ in an empty prompt removes it.")
             }
@@ -131,6 +148,18 @@ struct AskSettingsView: View {
             Button("New conversation") { controller.newConversation() }.islandButton(.secondary)
         }
         .disabled(controller.isBusy)
+        .onAppear {
+            displaySharing = controller.guide.displaySharingApproved
+            screenRecordingAllowed = CGPreflightScreenCaptureAccess()
+        }
+    }
+
+    private static func relaunch() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {

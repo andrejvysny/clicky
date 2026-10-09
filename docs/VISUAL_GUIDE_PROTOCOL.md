@@ -4,16 +4,17 @@ The development app uses one Clicky-owned task and one provider process. The use
 
 ## Contracts and ownership
 
-`GuideContract` packages prompt `clicky-guide-1`, isolation profile `clicky-isolation-1`, and the shared strict JSON schema. All portable contracts are explicitly `nonisolated`. The app compiles these sources directly; it does not link another copy of ClickyCore.
+`GuideContract` packages prompt `clicky-guide-3`, isolation profile `clicky-isolation-1`, and the shared strict JSON schema. All portable contracts are explicitly `nonisolated`. The app compiles these sources directly; it does not link another copy of ClickyCore.
 
-`GuideAgentTurn` sends a JSON host request containing `protocolVersion`, `purpose`, `text`, optional `task`, and optional `capture`. Purposes are planning, sideQuestion, verification, continuation, recovery, and oneOffContext. Task context contains the goal, task ID, step/context revisions, current step, and milestone provenance. Images accompany the request as Claude image blocks or Codex image data URLs over stdin.
+`GuideAgentTurn` sends a JSON host request containing `protocolVersion`, `purpose`, `text`, optional `task`, and optional `capture` (window or display). Purposes are planning, sideQuestion, verification, continuation, recovery, and oneOffContext. Task context contains the goal, task ID, step/context revisions, current step, and milestone provenance. Images accompany the request as Claude image blocks or Codex image data URLs over stdin.
 
 Responses are exactly one of:
 
 | Variant | Required meaning |
 |---|---|
 | `context_request` | Approved window overview, or a detail crop referencing the current capture ID |
-| `guide_step` | Short instruction, capture ID, pixel target, expected action, independently checkable outcome |
+| `guide_step` | Short instruction, capture ID, pixel target, expected action, independently checkable outcome; optional `detail`, `mark`, `value`, dim `ghost` target and `estimatedSteps` |
+| `annotation` | Answer `text` (shown under the input), pixel target, `mark` (circle, underline, highlight, arrow, value + `value`), short `label`; points only, never progress |
 | `explanation` | Readable conceptual answer |
 | `clarification` | One necessary question |
 | `verification_result` | Current capture ID, Boolean verdict, concrete outcome evidence |
@@ -24,19 +25,23 @@ Every schema field is required, with nullable fields for unused values. Unknown 
 
 The host owns locating, waiting, verifying, uncertain, paused, completed, and canceled states. It serializes provider turns and captures. Task/step/context revisions, transaction generations, and capture leases reject late work after cancellation, replacement, movement, or revocation. Each planning request permits two evidence acquisitions, including an initial image and any detail crop. Verification permits one fresh check and one fresh recheck; persistent uncertainty stops automatic turns.
 
-An action attempt, a verified outcome, and manual acknowledgement are separate. Next records a manual milestone. A different route can satisfy the same independently checked outcome. Final verified completion requires fresh evidence; Finished manually explicitly records manual completion. A side question preserves the task and cannot produce a step or completion. Resume and Retry relocate against fresh evidence. Failed/canceled user turns restore text only.
+An action attempt, a verified outcome, and manual acknowledgement are separate. Next records a manual milestone. A different route can satisfy the same independently checked outcome. Final verified completion requires fresh evidence; Finished manually explicitly records manual completion. A side question (only while a walkthrough is visible) preserves the task and cannot produce a step or completion; it may point with an annotation. An `explanation` carrying a capture ID and valid target is normalized to an annotation. An annotation or step whose capture is stale (or whose mark falls outside the 2% edge slack) gets one automatic fresh capture before failing. Resume and Retry relocate against fresh evidence. Failed/canceled user turns restore text only.
 
 ## Sharing boundary
 
-Quick Ask resolves the originating PID/application/window before taking focus. Opening it captures nothing and sends nothing. The popup remains beside its original opening position; it no longer tracks the pointer. Text is submitted first. A context request grants the originating window under Task window preference, or presents confirmation under Confirm per task. Off prevents automatic walkthrough sharing. An explicitly attached image can still support an explanation.
+Quick Ask resolves the originating PID/application/window before taking focus. Opening it captures nothing and sends nothing. The popup remains beside its original opening position; it no longer tracks the pointer. Text is submitted first. A context request grants the originating window under Automatic sharing; consent was given once at setup and nothing prompts mid-task. Off prevents sharing and the answer is text-only with a Settings hint. An explicitly attached image can still support an explanation.
 
 Legacy Always migrates by its saved raw value to Task window. Legacy Off and Ask each time retain their intent. Saved project directories and coding-session bindings are retired. Preferences and isolated authentication persist; task content, responses, snapshots, and milestones are in memory.
 
-A grant identifies an exact window and process. Independent capture uses `SCContentFilter(desktopIndependentWindow:)`. Established AX-related sheets, dialogs, and menus can be included through explicit window inclusion; `includeChildWindows` and shadows are disabled. A same-app unrelated window is not included. Without a reliable relationship, use Change target and explicitly select the window. There is no application-wide or implicit display fallback. Share broader once requires a separate display approval, fixes the approved pointer before showing the dialog, and carries no task grounding envelope. It does not expand the task grant.
+A grant identifies an exact window and process. Independent capture uses `SCContentFilter(desktopIndependentWindow:)`. Established AX-related sheets, dialogs, and menus can be included through explicit window inclusion; `includeChildWindows` and shadows are disabled. A same-app unrelated window is not included. Without a reliable relationship, use Change target and explicitly select the window. There is no application-wide fallback. With no identifiable window (e.g. the desktop), the display under the pointer at ask time becomes the task's grant target (`WindowCaptureTarget.display`), only when the setup consent allows it. It uses the same capture envelope, observation, target guard and verification as a window; it has no AX window, so AX outcomes and field reads are unavailable and app activation does not pause it.
 
 Capture envelopes contain capture/time, task/step/context revisions, grant, PID/application/window/display identities, included window identities, image dimensions, global top-left captured region, and pixel-to-desktop scale/translation. Detail captures have their own envelope and transform. PNG limits are 3 MiB and 4096 pixels per axis; overview sizing is at most 1568 pixels on the long side and 1.15 MP. A capture failure never silently sends text without the requested evidence.
 
 Pause cancels queued captures/transmissions and invalidates leases. Closing/minimizing the target or activating another window pauses guidance. Returning requires fresh validation. Screen Recording is requested only through an authorized capture. Accessibility is optional: denied/custom controls use vision and manual Check now.
+
+## Presentation
+
+Chat answers, errors and annotation text appear under the Quick Ask input. Walkthrough instructions appear in the notch island: n/N (N is the model's estimate), segmented progress (verified filled, user-confirmed outlined), title, detail, waiting status and ⌥⇧← back · ⌥⇧→ skip · ⌥⇧R retry · ⌥⇧⌫ end. The target carries only the mark (and a label for one-off annotations) plus the companion. Marks are drawn on one click-through panel per display above open menus; one bright mark at a time, at most one dim ghost, the label never overlaps the target and stays inside its window. Captures exclude Clicky's own windows.
 
 ## Observation and freshness
 

@@ -2,27 +2,27 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// Notch-anchored status surface. Derives one mode from Ask/guide state; grows only for a reply,
-/// an uncertain or blocked step, a display-sharing question, or an expanded error.
+/// The notch island appears only for walkthrough instructions: the current step, or a blocked or uncertain one.
+/// Conversation stays in Quick Ask under the input; the companion spins while working and turns red on error.
 @MainActor
 final class IslandController: ObservableObject {
-    enum Mode: Equatable { case hidden, working, reply, replyTucked, guide, guideAttention, displayApproval, error }
+    enum Mode: Equatable { case hidden, guide, guideAttention }
 
     @Published private(set) var mode: Mode = .hidden
     @Published private(set) var metrics = IslandMetrics()
-    @Published var errorExpanded = false
-    @Published var guideExpanded = false
+    /// User hid the step card; reset when the step changes or the walkthrough ends.
+    @Published var guideCollapsed = false
     let ask: AskController
     var guide: VisualGuideController { ask.guide }
-    /// Reply shortcuts exist only while the reply is expanded, so they never shadow editor bindings otherwise.
+    /// Reply shortcuts exist only while Quick Ask shows a reply, so they never shadow editor bindings otherwise.
     var onReplyAvailabilityChanged: ((Bool) -> Void)?
+    /// Companion cursor state: (working, failed).
+    var onCompanionState: ((Bool, Bool) -> Void)?
 
-    private var replyExpanded = false
-    private var seenReply: Date?
     private var cancellables: Set<AnyCancellable> = []
     private var panel: NSPanel?
-    private var clickMonitor: Any?
     private var refreshScheduled = false
+    private var lastStepCount = 0
 
     init(ask: AskController) {
         self.ask = ask
@@ -30,13 +30,7 @@ final class IslandController: ObservableObject {
         ask.guide.objectWillChange.sink { [weak self] in self?.scheduleRefresh() }.store(in: &cancellables)
     }
 
-    func toggleReply() {
-        guard !ask.response.isEmpty else { return }
-        replyExpanded.toggle(); refresh()
-    }
-    func tuckReply() { if replyExpanded { replyExpanded = false; refresh() } }
-    func toggleGuide() { guideExpanded.toggle(); refresh() }
-    func toggleError() { errorExpanded.toggle(); refresh() }
+    func toggleGuide() { guideCollapsed.toggle(); refresh() }
 
     /// objectWillChange fires before the value changes; read state on the next turn of the run loop.
     private func scheduleRefresh() {
@@ -46,16 +40,16 @@ final class IslandController: ObservableObject {
     }
 
     func refresh() {
-        if ask.lastReplyAt != seenReply { seenReply = ask.lastReplyAt; replyExpanded = ask.lastReplyAt != nil }
-        if ask.response.isEmpty || ask.isComposing { replyExpanded = false }
-        if ask.errorMessage == nil { errorExpanded = false }
-        if !walkthroughVisible { guideExpanded = false }
+        let stepCount = guide.task?.milestones.count ?? 0
+        if !walkthroughVisible || stepCount != lastStepCount { guideCollapsed = false }
+        lastStepCount = stepCount
         let next = computeMode()
         if next != mode { mode = next }
-        onReplyAvailabilityChanged?(next == .reply)
+        onReplyAvailabilityChanged?(ask.isComposing && !ask.response.isEmpty)
+        // A walkthrough reports its own errors in the island; other failures show under the input.
+        onCompanionState?(ask.isBusy, !ask.isBusy && !walkthroughVisible && ask.errorMessage != nil)
         // SwiftUI applies the new mode on the next pass; measure after it.
         DispatchQueue.main.async { [weak self] in self?.layoutPanel() }
-        updateClickMonitor()
     }
 
     private var walkthroughVisible: Bool {
@@ -63,26 +57,23 @@ final class IslandController: ObservableObject {
         return task.phase != .completed && task.phase != .canceled
     }
 
+    /// A condition that needs the user, so the island stays expanded and cannot be hidden.
+    var isBlocked: Bool {
+        let phase = guide.task?.phase
+        return guide.proposal != nil
+            || (walkthroughVisible && (phase == .paused || phase == .uncertain || guide.error != nil))
+    }
+
     private func computeMode() -> Mode {
         if ask.isComposing { return .hidden }
-        if guide.needsDisplayApproval { return .displayApproval }
-        let phase = guide.task?.phase
-        let blocked = guide.needsSharingApproval || guide.proposal != nil
-            || (walkthroughVisible && (phase == .paused || phase == .uncertain || guide.error != nil))
-        if guide.demo != nil || blocked { return .guideAttention }
-        if ask.isBusy { return .working }
-        if replyExpanded { return .reply }
-        if walkthroughVisible { return guideExpanded ? .guideAttention : .guide }
-        if ask.errorMessage != nil { return .error }
-        if !ask.response.isEmpty { return .replyTucked }
+        if guide.demo != nil || isBlocked { return .guideAttention }
+        if walkthroughVisible { return guideCollapsed ? .guide : .guideAttention }
         return .hidden
     }
 
     var width: CGFloat {
         switch mode {
-        case .reply, .guideAttention, .displayApproval: return IslandLayout.replyWidth
-        case .error where errorExpanded: return IslandLayout.replyWidth
-        case .error: return metrics.compactWidth + 40
+        case .guideAttention: return IslandLayout.replyWidth
         default: return metrics.compactWidth
         }
     }
@@ -116,18 +107,6 @@ final class IslandController: ObservableObject {
         panel.contentView = host
         self.panel = panel
         return panel
-    }
-
-    /// An expanded reply tucks to a dot as soon as the user clicks in their app, without a timer.
-    private func updateClickMonitor() {
-        let wanted = mode == .reply
-        if wanted, clickMonitor == nil {
-            clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-                MainActor.assumeIsolated { self?.tuckReply() }
-            }
-        } else if !wanted, let monitor = clickMonitor {
-            NSEvent.removeMonitor(monitor); clickMonitor = nil
-        }
     }
 
     /// Overlays to exclude from any capture.
