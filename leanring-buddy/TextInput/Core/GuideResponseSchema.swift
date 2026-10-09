@@ -63,6 +63,7 @@ nonisolated extension GuideContract {
         case .annotation: return ["captureID", "target", "mark", "label", "value"]
         case .verification_result, .task_completed: return ["captureID", "matches", "evidence", "evidenceTarget"]
         case .task_proposal: return ["proposedGoal"]
+        case .writing_draft: return ["subject"]
         case .explanation, .clarification: return []
         }
     }

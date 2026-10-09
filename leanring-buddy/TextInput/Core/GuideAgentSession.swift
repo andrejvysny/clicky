@@ -7,13 +7,15 @@ nonisolated public struct GuideAgentTurn: Sendable {
     public let purpose: GuideRequestPurpose
     public let taskContext: GuideHostTaskContext?
     public var effort: AskEffort
+    public let writing: WritingHostPayload?
     public init(message: String, image: PNGImageAttachment? = nil, context: GuideCaptureContext? = nil,
-                purpose: GuideRequestPurpose = .planning, taskContext: GuideHostTaskContext? = nil, effort: AskEffort = .low) {
+                purpose: GuideRequestPurpose = .planning, taskContext: GuideHostTaskContext? = nil, effort: AskEffort = .low,
+                writing: WritingHostPayload? = nil) {
         self.message = message; self.image = image; self.context = context
-        self.purpose = purpose; self.taskContext = taskContext; self.effort = effort
+        self.purpose = purpose; self.taskContext = taskContext; self.effort = effort; self.writing = writing
     }
     public var text: String {
-        let request = GuideHostRequest(purpose: purpose, text: message, task: taskContext, capture: context)
+        let request = GuideHostRequest(purpose: purpose, text: message, task: taskContext, capture: context, writing: writing)
         return String(decoding: try! JSONEncoder().encode(request), as: UTF8.self)
     }
     public var codexInput: [JSONValue] {
@@ -32,7 +34,8 @@ nonisolated public protocol GuideAgentRunning: Sendable {
 
 extension GuideAgentRunning {
     /// Sends the turn; a reply of a kind the purpose forbids gets exactly one text-only corrective turn on the same
-    /// capture (the provider already has the image). Returns the presentation and whether a correction was needed.
+    /// capture (the provider already has the image and any writing source, which is never resent). Returns the
+    /// presentation and whether a correction was needed.
     public func turnAllowingOneCorrection(_ request: GuideAgentTurn) async throws -> (GuidePresentation, corrected: Bool) {
         do { return (try await turn(request), false) }
         catch let wrong as GuideWrongPurpose {
@@ -69,7 +72,7 @@ public actor GuideAgentSession: GuideAgentRunning {
         self.profile = profile; self.executable = executable; self.validateProfile = validateProfile
         self.timeoutNanoseconds = timeoutNanoseconds
         self.onUnexpectedExit = onUnexpectedExit
-        codex = GuideCodexProtocol(directory: profile.workingDirectory.path)
+        codex = GuideCodexProtocol(directory: profile.workingDirectory.path, contract: profile.contract)
     }
 
     public func turn(_ request: GuideAgentTurn) async throws -> GuidePresentation {

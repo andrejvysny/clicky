@@ -2,7 +2,7 @@ import Foundation
 
 nonisolated extension GuidePresentation {
     public func validate() throws {
-        try requireText(text, field: "text", limit: 16_384)
+        try requireText(text, field: "text", limit: kind == .writing_draft ? WritingPrompt.maximumDraftBytes : 16_384)
         for (field, rectangle) in [("target", target), ("crop", crop), ("ghost", ghost), ("evidenceTarget", evidenceTarget)] {
             if rectangle?.isValid == false { throw failure(.invalidRect, field) }
         }
@@ -49,6 +49,7 @@ nonisolated extension GuidePresentation {
             ("goalChecks", goalChecks != nil, kind == .guide_step),
             ("outcomeState", outcomeState != nil, kind == .verification_result),
             ("warning", warning != nil, kind == .guide_step),
+            ("subject", subject != nil, kind == .writing_draft),
         ]
         if let invalid = fields.first(where: { $0.1 && !$0.2 }) { throw failure(.forbiddenField, invalid.0) }
     }

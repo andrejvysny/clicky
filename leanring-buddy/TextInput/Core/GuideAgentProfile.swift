@@ -19,9 +19,10 @@ nonisolated public struct GuideAgentProfile: Sendable {
     public let environment: [String: String]
     /// Claude fixes effort when the process starts, so it applies to the whole task session.
     public let effort: AskEffort
+    public let contract: AgentContract
 
-    public init(provider: AgentProvider, root: URL, taskID: UUID, effort: AskEffort = .low) throws {
-        self.provider = provider; self.effort = effort
+    public init(provider: AgentProvider, root: URL, taskID: UUID, effort: AskEffort = .low, contract: AgentContract = .guide) throws {
+        self.provider = provider; self.effort = effort; self.contract = contract
         profileDirectory = root.appendingPathComponent(provider.rawValue, isDirectory: true)
         workingDirectory = root.appendingPathComponent("tasks/" + taskID.uuidString, isDirectory: true)
         promptFile = workingDirectory.appendingPathComponent("guide-prompt.txt")
@@ -30,7 +31,7 @@ nonisolated public struct GuideAgentProfile: Sendable {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                    attributes: [.posixPermissions: 0o700])
         }
-        try Data(GuideContract.prompt.utf8).write(to: promptFile, options: .atomic)
+        try Data(contract.prompt.utf8).write(to: promptFile, options: .atomic)
         try Data("{\"autoMemoryEnabled\":false,\"disableAllHooks\":true,\"claudeMdExcludes\":[\"**\"]}".utf8)
             .write(to: settingsFile, options: .atomic)
         var child = ProcessInfo.processInfo.environment
@@ -43,7 +44,7 @@ nonisolated public struct GuideAgentProfile: Sendable {
 
     public var arguments: [String] {
         if provider == .claude {
-            let schema = String(data: try! JSONEncoder().encode(GuideContract.responseSchema), encoding: .utf8)!
+            let schema = String(data: try! JSONEncoder().encode(contract.claudeSchema), encoding: .utf8)!
             return ["--print", "--verbose", "--input-format", "stream-json", "--output-format", "stream-json",
                     "--model", Self.claudeModel, "--effort", effort.rawValue,
                     "--safe-mode", "--setting-sources", "", "--settings", settingsFile.path,

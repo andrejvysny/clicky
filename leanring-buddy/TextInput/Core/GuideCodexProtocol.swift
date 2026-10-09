@@ -10,7 +10,8 @@ nonisolated public struct GuideCodexProtocol: Sendable {
     private var candidateThreadID: String?
     public var disabledSkillPaths: [String] { disabledSkills.compactMap { $0["path"].string } }
     private let directory: String
-    public init(directory: String) { self.directory = directory }
+    private let contract: AgentContract
+    public init(directory: String, contract: AgentContract = .guide) { self.directory = directory; self.contract = contract }
 
     public mutating func initialize() -> JSONValue {
         rpc("initialize", .object(["clientInfo": .object(["name": .string("clicky"), "version": .string("0.2.0")]),
@@ -102,7 +103,7 @@ nonisolated public struct GuideCodexProtocol: Sendable {
         .object(["cwd": .string(directory), "ephemeral": .bool(true), "sandbox": .string("read-only"),
                  "model": .string(GuideAgentProfile.codexModel),
                  "approvalPolicy": .string("untrusted"), "approvalsReviewer": .string("user"),
-                 "baseInstructions": .string(GuideContract.prompt),
+                 "baseInstructions": .string(contract.prompt),
                  "developerInstructions": .string("Only emit the Clicky presentation schema. No tools or desktop actions."),
                  "config": .object(["mcp_servers": .object(disabledServers), "skills": .object(["config": .array(disabledSkills)])])])
     }
