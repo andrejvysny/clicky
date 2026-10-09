@@ -57,11 +57,12 @@ extension VisualGuideController {
         agent = value; agentEffort = effort; return value
     }
 
-    private func request(_ original: GuideAgentTurn, current: UInt64) async throws -> GuidePresentation {
+    func request(_ original: GuideAgentTurn, current: UInt64) async throws -> GuidePresentation {
         try check(current)
         var turn = original; turn.effort = activeEffort
         let value = try getAgent(effort: activeEffort)
         if turn.image != nil { lastSent = environment.now() }
+        metrics.count(.providerTurns)
         let result = try await value.turn(turn)
         try check(current)
         guard turn.purpose.permits(result.kind) else {
@@ -73,7 +74,7 @@ extension VisualGuideController {
         return result
     }
 
-    private func presentationLoop(_ initial: GuideAgentTurn, current: UInt64) async throws {
+    func presentationLoop(_ initial: GuideAgentTurn, current: UInt64) async throws {
         var turn = initial
         var markRelocated = false
         var textOnlyNudged = false
@@ -135,7 +136,7 @@ extension VisualGuideController {
         }
     }
 
-    private func captureTurn(message: String, crop: GuideRect? = nil, current: UInt64) async throws -> GuideAgentTurn {
+    func captureTurn(message: String, crop: GuideRect? = nil, current: UInt64) async throws -> GuideAgentTurn {
         try check(current)
         guard let target = currentTarget, let task, task.grant?.paused == false else { throw AttachmentError.noTarget }
         guard displayGranted else { throw AttachmentError.noTarget }
@@ -156,7 +157,7 @@ extension VisualGuideController {
         guard bounds.count == windows.count else { throw AttachmentError.targetChanged }
         for child in related { self.task?.authorizeRelated(child) }
         guard let lease = try self.task?.beginCapture() else { throw AttachmentError.noTarget }
-        status = "Inspecting approved window"; publish()
+        metrics.count(.captures)
         let image = try await environment.capture(target, region, related, nil)
         try check(current)
         guard let state = self.task else { throw AttachmentError.targetChanged }
@@ -193,7 +194,9 @@ extension VisualGuideController {
                   image.pixelWidth == currentImage.pixelWidth, image.pixelHeight == currentImage.pixelHeight else {
                 throw AskError.protocolFailure("The target changed while the agent was locating it. Retry with fresh context.")
             }
-            try task?.show(result); status = "Waiting for you"
+            try task?.show(result); status = waitingStatus(result)
+            stepScreenRect = rect; stepWindowBounds = environment.bounds(target)
+            if let completedAt = lastAdvanceAt { metrics.sample(.nextStep, seconds: environment.now().timeIntervalSince(completedAt)); lastAdvanceAt = nil }
             walkthroughPresented = true
             axOutcomeWasSatisfied = result.outcome.flatMap { environment.outcomeMatches($0, target) }
             onTarget?(GuideMark(mark: result.mark ?? .circle, target: rect, label: nil,
@@ -230,37 +233,10 @@ extension VisualGuideController {
             proposal = result; task?.pause(); status = "Start a new task or keep this walkthrough?"
         case .task_completed:
             guard try await evidenceStillCurrent(current: current, evidenceTarget: result.evidenceTarget) else { throw AttachmentError.targetChanged }
-            guard task?.finish(matches: result.matches == true, captureID: result.captureID) == true else {
-                throw AskError.protocolFailure("Task completion lacks fresh verified evidence.")
-            }
-            onClearTarget?(); status = "Task complete · verified"; closeAgent(); lastImage = nil; lastContext = nil
-            onResponse?(status + "\n\n" + result.text)
-            walkthroughPresented = false
+            // The proposal alone never completes the task: the stored goal checks are verified on fresh evidence.
+            try await verifyGoal(proposal: result, current: current)
         default: throw AskError.protocolFailure("The agent returned a presentation inappropriate for this task phase.")
         }
-    }
-
-    private func verificationLoop(current: UInt64) async throws {
-        guard let step = task?.step, let outcome = step.outcome, let target = currentTarget else { throw AttachmentError.noTarget }
-        for _ in 0..<2 {
-            let turn = try await captureTurn(message: "Verify this intended outcome only: " + outcome.description, current: current)
-            guard let context = turn.context else { throw AttachmentError.targetChanged }
-            let matches: Bool
-            if let local = environment.outcomeMatches(outcome, target), axOutcomeWasSatisfied != true { matches = local }
-            else {
-                let result = try await request(turn, current: current)
-                guard result.kind == .verification_result, result.captureID == context.captureID,
-                      let verdict = result.matches else { throw AskError.protocolFailure("Verification lacks current outcome evidence.") }
-                let fresh = try await evidenceStillCurrent(current: current, evidenceTarget: result.evidenceTarget)
-                matches = verdict && fresh
-            }
-            if task?.checked(matches: matches, context: context) == true {
-                task?.beginRequest()
-                let next = try await captureTurn(message: recoveryMessage() + "\nHost verified the outcome. Locate the next useful step or verify task completion.", current: current)
-                try await presentationLoop(next, current: current); return
-            }
-        }
-        status = "I could not confirm that · Retry or manual Next"
     }
 
     /// Maps an annotation against the latest capture of the shared window or display.
@@ -289,7 +265,7 @@ extension VisualGuideController {
         }
         return rendered ? bytes : nil
     }
-    private func check(_ current: UInt64) throws {
+    func check(_ current: UInt64) throws {
         try Task.checkCancellation()
         guard transaction == current else { throw CancellationError() }
     }

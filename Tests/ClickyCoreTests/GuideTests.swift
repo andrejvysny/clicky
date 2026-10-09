@@ -58,6 +58,9 @@ final class GuideTests: XCTestCase {
         let verification = try capture(&state)
         XCTAssertTrue(state.checked(matches: true, context: verification))
         XCTAssertEqual(state.milestones.first?.completion, .verified)
+        let unverified = try capture(&state)
+        XCTAssertFalse(state.finish(matches: true, captureID: unverified.captureID), "completion needs goal verification")
+        XCTAssertTrue(state.beginGoalVerification())
         let final = try capture(&state)
         XCTAssertTrue(state.finish(matches: true, captureID: final.captureID))
     }

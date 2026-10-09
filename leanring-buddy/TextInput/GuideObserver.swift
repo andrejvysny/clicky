@@ -26,8 +26,12 @@ final class GuideObserver {
     private var expectedField: AXUIElement?
     private var expectedFieldFrame: CGRect?
     private var hadFieldFocus = false
+    /// Event time of the last accepted attempt, for acknowledgement latency.
+    private(set) var lastAttemptTimestamp: Double?
 
     /// Optional so the default is resolved on the main actor rather than in a nonisolated default argument.
+    static let mouseSettleNanoseconds: UInt64 = 300_000_000
+
     init(environment: GuideEnvironment? = nil) { self.environment = environment ?? .live }
 
     var isEditingExpectedField: Bool {
@@ -86,14 +90,18 @@ final class GuideObserver {
         }
         guard let releaseCount = mouseRelease?.released(button: event.button, count: event.count, point: point, timestamp: event.timestamp),
               matcher?.mouse(button: event.button, count: releaseCount, point: point, timestamp: event.timestamp) == true else { return }
+        lastAttemptTimestamp = event.timestamp
         onAction?()
-        schedule(delay: UInt64((NSEvent.doubleClickInterval + 0.15) * 1_000_000_000))
+        // The matched release already completes the gesture (a double-click arrives as one count-2 release),
+        // so only a short settle for the application's own response precedes verification.
+        schedule(delay: Self.mouseSettleNanoseconds)
     }
     func receiveKey(code: UInt16, modifiers: UInt64, timestamp: Double, repeated: Bool) {
         guard let target, environment.focused(target) else { return }
         if matcher?.action.kind == .field_commit, expectedField != nil,
            !hadFieldFocus, !isEditingExpectedField { return }
         guard matcher?.key(code: code, modifiers: modifiers, timestamp: timestamp, repeated: repeated) == true else { return }
+        lastAttemptTimestamp = timestamp
         onAction?()
         schedule(delay: 350_000_000)
     }

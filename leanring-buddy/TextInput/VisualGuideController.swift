@@ -95,24 +95,29 @@ final class VisualGuideController: ObservableObject {
     let observer: GuideObserver
     var targetGuard: Task<Void, Never>?
     var targetGuardSuspendedUntil = Date.distantPast
+    /// Where the current step was presented, so uncertainty can keep observing the same target.
+    var stepScreenRect: CGRect?
+    var stepWindowBounds: CGRect?
+    var attemptAt: Date?
+    var lastAdvanceAt: Date?
+    /// Content-free cost and latency counters for this Clicky process.
+    var metrics = GuideMetrics()
 
     init(environment: GuideEnvironment? = nil) {
         let environment = environment ?? .live
         self.environment = environment
         observer = GuideObserver(environment: environment)
-        observer.onAction = { [weak self] in
-            guard let self, let context = lastContext, task?.phase == .waiting, task?.isCurrent(context) == true else { return }
-            targetGuard?.cancel(); targetGuard = nil
-            task?.recordAttempt(); status = "Action detected · checking outcome"; publish()
-        }
+        observer.onAction = { [weak self] in self?.attemptObserved() }
         observer.onInteractionBegan = { [weak self] in
             // Button press/hover feedback is expected until the corresponding mouse-up is observed.
             guard let self else { return }
             targetGuardSuspendedUntil = environment.now().addingTimeInterval(NSEvent.doubleClickInterval + 0.25)
         }
-        observer.onEvidence = { [weak self] in self?.checkNow() }
-        observer.onInvalidated = { [weak self] in self?.invalidateTarget() }
-        observer.onUnavailable = { [weak self] in self?.pause(message: "Target unavailable or another window is active. Resume or change target.") }
+        observer.onEvidence = { [weak self] in self?.evidenceObserved() }
+        observer.onInvalidated = { [weak self] in self?.relocateTarget(reason: "observed_change") }
+        observer.onUnavailable = { [weak self] in
+            self?.pause(message: "Target unavailable or another window is active. Resume or change target.", reason: .appSwitch)
+        }
     }
 
     /// Claude fixes effort per process, so it can change only before a task session starts.
@@ -165,6 +170,8 @@ final class VisualGuideController: ObservableObject {
         if !submitted, task?.step != nil { status = "Guide paused · Resume to refresh"; publish() }
     }
     func pause(message: String = "Sharing paused", reason: GuideInterruption = .explicitPause) {
+        let started = environment.uptime()
+        defer { metrics.sample(.cancellation, seconds: environment.uptime() - started) }
         if demo != nil { demo?.pause(); status = "Demo paused · no AI"; publish(); return }
         let active = isBusy
         transaction &+= 1; work?.cancel(); work = nil; isBusy = false
@@ -188,8 +195,34 @@ final class VisualGuideController: ObservableObject {
         task?.beginRequest(); sideQuestion = false
         launch(message: recoveryMessage() + "\nLocate the current step again against fresh context.", captureFirst: true)
     }
-    func checkNow() {
-        guard !isBusy, !composerOpen, task?.beginVerification() == true else { return }
+    /// A matched interaction is an attempt, acknowledged locally before any provider latency; it is never success.
+    func attemptObserved() {
+        guard let phase = task?.phase, phase == .waiting || phase == .uncertain else { return }
+        if phase == .waiting { guard let context = lastContext, task?.isCurrent(context) == true else { return } }
+        guard task?.recordAttempt() == true else { return }
+        targetGuard?.cancel(); targetGuard = nil
+        attemptAt = environment.now(); metrics.count(.attempts)
+        status = "Got it · checking"; publish()
+        if let eventTime = observer.lastAttemptTimestamp {
+            metrics.sample(.acknowledgement, seconds: environment.uptime() - eventTime)
+        }
+    }
+    /// Settled attempt or relevant AX change. Without an attempt only a local AX predicate may check,
+    /// so focus changes and notification noise never trigger captures or provider calls.
+    func evidenceObserved() {
+        guard let task, let step = task.step, let target = currentTarget else { return }
+        if !task.actionDetected {
+            guard axOutcomeWasSatisfied != true, let outcome = step.outcome,
+                  environment.outcomeMatches(outcome, target) == true else { return }
+        }
+        checkNow(automatic: true)
+    }
+    /// Starts a verification episode. Automatic episodes are budgeted per step; an explicit Re-check is not.
+    func checkNow(automatic: Bool = false) {
+        guard !isBusy, !composerOpen, task?.beginVerification(automatic: automatic) == true else {
+            if automatic, task?.phase == .uncertain { status = "I couldn't confirm that · Re-check"; publish() }
+            return
+        }
         sideQuestion = false; stopObservation(); onClearTarget?()
         launch(message: "Verify only the current intended outcome.", verifying: true)
     }
@@ -198,7 +231,7 @@ final class VisualGuideController: ObservableObject {
         guard !isBusy, task?.step != nil else { return }
         stopObservation(); onClearTarget?()
         if task?.phase == .paused { task?.resume() }
-        task?.manualNext(); task?.beginRequest(); sideQuestion = false
+        task?.manualNext(); task?.beginRequest(); sideQuestion = false; metrics.count(.manualAcknowledgements)
         launch(message: recoveryMessage() + "\nUser manually acknowledged the last step; it is NOT verified. Locate the next step.", captureFirst: true)
     }
     /// Re-locates the previous milestone against fresh context. The model presents it again; it is never marked verified.
@@ -213,11 +246,17 @@ final class VisualGuideController: ObservableObject {
     func finishManually() {
         if demo != nil { while demo?.completed == false { demo?.resume(); demo?.next() }; status = "Demo finished manually · no verification"; publish(); return }
         transaction &+= 1; work?.cancel(); work = nil
+        metrics.count(.manualAcknowledgements)
         task?.finishManually(); closeAgent(); stopObservation(); onClearTarget?(); walkthroughPresented = false
         lastImage = nil; lastContext = nil; isBusy = false; status = "Finished manually · not verified"; publish()
         onResponse?(status)
     }
     func endTask() {
+        let started = environment.uptime()
+        defer { metrics.sample(.cancellation, seconds: environment.uptime() - started) }
+        #if DEBUG
+        if task != nil { Logger(subsystem: "clicky", category: "guide").info("task metrics \(self.metrics.summary, privacy: .public)") }
+        #endif
         demo = nil
         walkthroughPresented = false
         awaitingClarification = false
@@ -253,8 +292,26 @@ final class VisualGuideController: ObservableObject {
         let target = currentTarget; endTask()
         do { try ask(goal, target: target) } catch { self.error = error.localizedDescription; publish() }
     }
-    func invalidateTarget(reason: String = "observed_change") {
+    /// Genuine movement or replacement: drop stale coordinates and re-ground the same semantic step against
+    /// fresh evidence, within the step's relocation budget. Never assumes the old control is still there.
+    func relocateTarget(reason: String) {
         observer.cancelPendingMousePress()
+        guard !isBusy, !composerOpen, task?.phase == .waiting, task?.spendRelocation() == true else {
+            if task?.phase == .waiting { invalidateTarget(reason: reason) }
+            return
+        }
+        #if DEBUG
+        Logger(subsystem: "clicky", category: "guide").info("relocating target reason=\(reason, privacy: .public)")
+        #endif
+        metrics.count(.relocations)
+        stopObservation(); onClearTarget?(); lastImage = nil; lastContext = nil
+        task?.changed(); task?.beginRequest(); sideQuestion = false
+        launch(message: recoveryMessage() + "\nThe target moved or changed. Locate the same current step again in this fresh capture.",
+               captureFirst: true)
+        status = "Finding the control"; publish()
+    }
+    func invalidateTarget(reason: String = "observed_change") {
+        observer.cancelPendingMousePress(); observer.stop()
         #if DEBUG
         Logger(subsystem: "clicky", category: "guide").info("target invalidated reason=\(reason, privacy: .public)")
         #endif

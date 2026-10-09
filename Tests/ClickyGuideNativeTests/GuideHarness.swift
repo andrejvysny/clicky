@@ -83,6 +83,8 @@ final class FakeScreen {
     var frontmost: Int32? = 4242
     var related: [WindowCaptureTarget] = []
     var outcome: Bool?
+    /// Global pointer position; far from every target unless a test hovers.
+    var pointer = CGPoint(x: -500, y: -500)
     /// Content-free counters for capture cost and ordering.
     private(set) var captures = 0
     var captureGate: CheckedContinuation<Void, Never>?
@@ -156,6 +158,8 @@ final class GuideHarness {
         let clock = clock, screen = screen, agent = agent
         var environment = GuideEnvironment.live
         environment.now = { clock.now }
+        // Synthetic event timestamps are not on the boot clock; acknowledgement samples are native-only.
+        environment.uptime = { 0 }
         environment.sleep = { try await clock.sleep($0) }
         environment.capture = { target, _, _, _ in try await screen.capture(target) }
         environment.focused = { _ in screen.focused }
@@ -167,7 +171,7 @@ final class GuideHarness {
         let consent = consent
         environment.displayTarget = { _ in consent.display }
         environment.requestDisplayConsent = { _, _ in consent.prompts += 1; return consent.answer }
-        environment.pointer = { .zero }
+        environment.pointer = { screen.pointer }
         environment.accessibilityTrusted = { false }
         environment.field = { _, _ in nil }
         environment.focusedElement = { _ in nil }
@@ -218,6 +222,14 @@ final class GuideHarness {
         controller.observer.receiveMouse(GuideMouseEvent(point: point, button: 0, count: count, timestamp: time + 0.05))
     }
 
+    /// Click (or double-click), let the observer settle, and answer the verification with a verdict.
+    func act(_ count: Int = 1, at pixel: CGPoint = CGPoint(x: 15, y: 14), time: Double,
+             verdict state: GuidePresentation.OutcomeState = .confirmed) async throws {
+        click(at: pixel, count: count, time: time)
+        await clock.advance(0.5)
+        try await reply { GuideHarness.verdict($0, matches: state == .confirmed, state: state) }
+    }
+
     static func contextRequest() -> GuidePresentation { GuidePresentation(kind: .context_request, text: "Need the window") }
 
     static func step(_ turn: GuideAgentTurn, pixel: CGRect = CGRect(x: 10, y: 10, width: 12, height: 8),
@@ -227,10 +239,11 @@ final class GuideHarness {
                           milestone: text, plan: [text], goalChecks: ["Settings panel is open"])
     }
 
-    static func verdict(_ turn: GuideAgentTurn, matches: Bool, evidence: CGRect = CGRect(x: 30, y: 20, width: 20, height: 20)) -> GuidePresentation {
+    static func verdict(_ turn: GuideAgentTurn, matches: Bool, state: GuidePresentation.OutcomeState? = nil,
+                        evidence: CGRect = CGRect(x: 30, y: 20, width: 20, height: 20)) -> GuidePresentation {
         GuidePresentation(kind: .verification_result, text: matches ? "Opened" : "Not opened", captureID: turn.context?.captureID,
                           matches: matches, evidence: "Panel title visible", evidenceTarget: GuideRect(evidence),
-                          outcomeState: matches ? .confirmed : .contradicted)
+                          outcomeState: state ?? (matches ? .confirmed : .contradicted))
     }
 
     static func completed(_ turn: GuideAgentTurn, evidence: CGRect = CGRect(x: 30, y: 20, width: 20, height: 20)) -> GuidePresentation {

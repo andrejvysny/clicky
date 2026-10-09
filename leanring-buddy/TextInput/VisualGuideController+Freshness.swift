@@ -34,43 +34,65 @@ extension VisualGuideController {
         targetGuard?.cancel(); targetGuard = nil; observer.stop()
     }
 
+    /// Local freshness watch for the presented target (local captures only, never provider turns). Pointer hover
+    /// and press feedback are expected appearance changes; a pixel change must persist with the pointer away
+    /// before it counts as real replacement. Geometry changes re-ground immediately. Pixels never prove success.
     func startTargetGuard(image: PNGImageAttachment, context: GuideCaptureContext, pixelTarget: GuideRect) {
         targetGuard?.cancel()
         targetGuardSuspendedUntil = .distantPast
         guard let pixels = GuidePixelMapping.comparisonRect(pixelTarget, pixelWidth: image.pixelWidth, pixelHeight: image.pixelHeight),
-              let target = currentTarget,
+              let target = currentTarget, let screenRect = context.screenRect(pixelTarget),
               let expected = fingerprint(image, rect: pixels) else { invalidateTarget(reason: "comparison_region"); return }
         let bounds = environment.bounds(target)
         targetGuard = Task { [weak self] in
+            var mismatches = 0
             while !Task.isCancelled {
-                do { try await self?.environment.sleep(1_000_000_000) } catch { return }
+                do { try await self?.environment.sleep(Self.guardIntervalNanoseconds) } catch { return }
                 guard let self, task?.phase == .waiting, task?.isCurrent(context) == true, !composerOpen else { return }
-                guard environment.focused(target) else { pause(message: "Target no longer active · Resume to refresh"); return }
-                guard environment.bounds(target) != nil else { pause(message: "Target closed or minimized · Choose a window to resume"); return }
-                guard environment.bounds(target) == bounds, windowsStillCurrent(context) else { invalidateTarget(reason: "window_geometry"); return }
-                guard observer.expectedFieldGeometryIsCurrent else { invalidateTarget(reason: "field_geometry"); return }
+                guard environment.focused(target) else {
+                    pause(message: "Target no longer active · Resume to refresh", reason: .appSwitch); return
+                }
+                guard environment.bounds(target) != nil else {
+                    pause(message: "Target closed or minimized · Choose a window to resume", reason: .targetClosed); return
+                }
+                guard environment.bounds(target) == bounds, windowsStillCurrent(context) else { relocateTarget(reason: "window_geometry"); return }
+                guard observer.expectedFieldGeometryIsCurrent else { relocateTarget(reason: "field_geometry"); return }
                 // Editing the requested value changes its pixels by design; verify only on commit.
-                if environment.now() < targetGuardSuspendedUntil || observer.isPressingExpectedTarget || observer.isEditingExpectedField { continue }
+                if suspendedForInteraction || pointerNear(screenRect) { mismatches = 0; continue }
                 do {
                     // Cropping before ScreenCaptureKit resamples produces different edge/text pixels.
                     // Capture with the original transform, then compare the same local pixel rectangle.
                     let fresh = try await matchingCapture(target, context: context)
                     try Task.checkCancellation()
                     guard task?.phase == .waiting, task?.isCurrent(context) == true else { return }
-                    guard observer.expectedFieldGeometryIsCurrent else { invalidateTarget(reason: "field_geometry"); return }
-                    if environment.now() < targetGuardSuspendedUntil || observer.isPressingExpectedTarget || observer.isEditingExpectedField { continue }
-                    guard fresh.pixelWidth == image.pixelWidth, fresh.pixelHeight == image.pixelHeight,
-                          fingerprint(fresh, rect: pixels) == expected else {
-                        invalidateTarget(reason: "target_pixels"); return
-                    }
+                    guard observer.expectedFieldGeometryIsCurrent else { relocateTarget(reason: "field_geometry"); return }
+                    if suspendedForInteraction || pointerNear(screenRect) { mismatches = 0; continue }
+                    let same = fresh.pixelWidth == image.pixelWidth && fresh.pixelHeight == image.pixelHeight
+                        && fingerprint(fresh, rect: pixels) == expected
+                    mismatches = same ? 0 : mismatches + 1
+                    if mismatches >= Self.guardMismatchLimit { relocateTarget(reason: "target_pixels"); return }
                 } catch is CancellationError { return }
                 catch { invalidateTarget(reason: "capture_failed"); return }
             }
         }
     }
 
+    static let guardIntervalNanoseconds: UInt64 = 1_000_000_000
+    /// Consecutive pointer-away mismatches before the target counts as changed (about two seconds).
+    static let guardMismatchLimit = 2
+    /// Margin around the target within which the pointer may cause hover/press feedback.
+    static let hoverMargin: CGFloat = 12
+
+    private var suspendedForInteraction: Bool {
+        environment.now() < targetGuardSuspendedUntil || observer.isPressingExpectedTarget || observer.isEditingExpectedField
+    }
+    private func pointerNear(_ rect: CGRect) -> Bool {
+        rect.insetBy(dx: -Self.hoverMargin, dy: -Self.hoverMargin).contains(environment.pointer())
+    }
+
     func matchingCapture(_ target: WindowCaptureTarget, context: GuideCaptureContext) async throws -> PNGImageAttachment {
-        try await environment.capture(target, context.region.rect, environment.related(target),
+        metrics.count(.captures)
+        return try await environment.capture(target, context.region.rect, environment.related(target),
                                       CGSize(width: context.pixelWidth, height: context.pixelHeight))
     }
 }

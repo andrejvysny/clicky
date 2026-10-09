@@ -97,6 +97,23 @@ nonisolated public struct GuideMilestone: Encodable, Identifiable, Equatable, Se
     public var intent: String? = nil
 }
 
+/// Automatic recovery for one semantic step, reset only when the step advances, so noise, duplicate
+/// callbacks and re-located targets cannot reset the bounds indefinitely. Explicit user actions are not budgeted.
+nonisolated public struct GuideStepBudget: Equatable, Sendable {
+    /// Automatic verification episodes (initial check plus one fresh recheck each) started by attempts or AX evidence.
+    public static let episodes = 3
+    /// Automatic re-grounding after genuine target movement or replacement.
+    public static let relocations = 2
+    /// Automatic re-planning after a contradicted outcome (detour or user ahead).
+    public static let recoveries = 1
+    public private(set) var episodesUsed = 0
+    public private(set) var relocationsUsed = 0
+    public private(set) var recoveriesUsed = 0
+    mutating func spendEpisode() -> Bool { guard episodesUsed < Self.episodes else { return false }; episodesUsed += 1; return true }
+    mutating func spendRelocation() -> Bool { guard relocationsUsed < Self.relocations else { return false }; relocationsUsed += 1; return true }
+    mutating func spendRecovery() -> Bool { guard recoveriesUsed < Self.recoveries else { return false }; recoveriesUsed += 1; return true }
+}
+
 nonisolated public struct GuideTaskState: Sendable {
     public enum Phase: String, Sendable { case locating, waiting, verifying, uncertain, paused, completed, canceled }
     public let identifier = UUID()
@@ -112,6 +129,11 @@ nonisolated public struct GuideTaskState: Sendable {
     public private(set) var contextRequests = 0
     public private(set) var verificationChecks = 0
     public private(set) var actionDetected = false
+    /// Increments once per accepted attempt; an attempt is never success by itself.
+    public private(set) var attemptEpoch: UInt64 = 0
+    public private(set) var budget = GuideStepBudget()
+    /// One automatic continuation after the stored goal checks fail final verification.
+    public private(set) var goalRecoveriesUsed = 0
     public private(set) var plan = GuidePlan()
     /// Every reason guidance is held. Only temporary reasons may clear without a deliberate user action.
     public private(set) var interruptions: Set<GuideInterruption> = []
@@ -157,10 +179,39 @@ nonisolated public struct GuideTaskState: Sendable {
         plan.adopt(milestone: presentation.milestone, route: presentation.plan, goalChecks: presentation.goalChecks)
         step = presentation; phase = .waiting; verificationChecks = 0; actionDetected = false
     }
-    public mutating func recordAttempt() { if phase == .waiting || phase == .uncertain { actionDetected = true } }
-    public mutating func beginVerification() -> Bool {
+    @discardableResult
+    public mutating func recordAttempt() -> Bool {
+        guard step != nil, phase == .waiting || phase == .uncertain else { return false }
+        actionDetected = true; attemptEpoch &+= 1; return true
+    }
+    /// Starts a verification episode. Automatic episodes (attempts, AX evidence) are budgeted per step;
+    /// an explicit Re-check is the user's choice and always allowed.
+    public mutating func beginVerification(automatic: Bool = false) -> Bool {
         guard step != nil, phase == .waiting || phase == .uncertain, grant?.paused == false else { return false }
+        if automatic, !budget.spendEpisode() { return false }
         phase = .verifying; verificationChecks = 0; lastVerificationCaptureID = nil; invalidate(); return true
+    }
+    /// Fresh, directly bound Accessibility state established the outcome without a capture.
+    public mutating func confirmLocally() -> Bool {
+        guard phase == .verifying, step != nil, grant?.paused == false else { return false }
+        advance(.verified); return true
+    }
+    public mutating func spendRelocation() -> Bool { budget.spendRelocation() }
+    /// After a contradicted outcome, look again from the current state while keeping the step's context.
+    public mutating func beginRecovery() -> Bool {
+        guard step != nil, phase == .uncertain || phase == .verifying, budget.spendRecovery() else { return false }
+        phase = .locating; contextRequests = 0; invalidate(); return true
+    }
+    /// The provider proposed completion; the stored goal checks are verified against fresh evidence first.
+    public mutating func beginGoalVerification() -> Bool {
+        guard phase == .locating || phase == .waiting || phase == .uncertain, grant?.paused == false else { return false }
+        phase = .verifying; verificationChecks = 0; lastVerificationCaptureID = nil; invalidate(); return true
+    }
+    /// Final verification failed. True when one automatic continuation toward the remaining checks is allowed.
+    public mutating func goalVerificationFailed() -> Bool {
+        guard phase == .verifying else { return false }
+        if goalRecoveriesUsed < 1 { goalRecoveriesUsed += 1; phase = .locating; contextRequests = 0; invalidate(); return true }
+        phase = .uncertain; return false
     }
     public mutating func checked(matches: Bool, context: GuideCaptureContext) -> Bool {
         guard phase == .verifying, isCurrent(context), capture?.captureID == context.captureID,
@@ -175,9 +226,15 @@ nonisolated public struct GuideTaskState: Sendable {
         guard step != nil, phase == .waiting || phase == .uncertain || phase == .paused else { return }
         advance(.manuallyAcknowledged)
     }
+    /// Completion only after the stored goal checks were verified on this exact fresh capture. A step still
+    /// shown at that point is recorded as satisfied by the present state, not as an observed action.
     public mutating func finish(matches: Bool, captureID: UUID?) -> Bool {
-        guard matches, step == nil, let capture, isCurrent(capture), capture.captureID == captureID,
+        guard matches, phase == .verifying, let capture, isCurrent(capture), capture.captureID == captureID,
               grant?.paused == false else { return false }
+        if let step {
+            milestones.append(GuideMilestone(instruction: step.text, completion: .satisfied, intent: plan.current?.intent ?? step.milestone))
+            plan.completeCurrent(); self.step = nil
+        }
         phase = .completed; generation &+= 1; return true
     }
     public mutating func finishManually() {
@@ -208,7 +265,7 @@ nonisolated public struct GuideTaskState: Sendable {
     private mutating func advance(_ completion: GuideCompletion) {
         if let step { milestones.append(GuideMilestone(instruction: step.text, completion: completion, intent: plan.current?.intent ?? step.milestone)) }
         plan.completeCurrent()
-        step = nil; stepRevision &+= 1; phase = .locating; invalidate()
+        step = nil; stepRevision &+= 1; phase = .locating; budget = GuideStepBudget(); invalidate()
     }
     private mutating func invalidate() { generation &+= 1; contextRevision &+= 1; captureLease = nil; capture = nil }
 }

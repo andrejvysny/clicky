@@ -10,6 +10,8 @@ import ClickyCore
 /// while exercising the same `VisualGuideController` and `GuideObserver` code paths.
 struct GuideEnvironment {
     var now: () -> Date
+    /// Seconds since boot, the clock NSEvent timestamps use; for local acknowledgement latency only.
+    var uptime: () -> TimeInterval
     /// Suspends for the given nanoseconds; throws CancellationError when the waiting task is cancelled.
     var sleep: (UInt64) async throws -> Void
     var capture: (_ target: WindowCaptureTarget, _ region: CGRect?, _ related: [WindowCaptureTarget],
@@ -36,6 +38,7 @@ struct GuideEnvironment {
 
     static let live = GuideEnvironment(
         now: { Date() },
+        uptime: { ProcessInfo.processInfo.systemUptime },
         sleep: { try await Task.sleep(nanoseconds: $0) },
         capture: { target, region, related, outputSize in
             try await WindowSnapshotCapture.capture(target, region: region, relatedTargets: related, outputSize: outputSize)

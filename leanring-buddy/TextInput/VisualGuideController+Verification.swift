@@ -1,0 +1,150 @@
+import AppKit
+import OSLog
+#if canImport(ClickyCore)
+import ClickyCore
+#endif
+
+/// Outcome verification: fresh Accessibility first, bounded local waiting for a busy application, then at most
+/// an initial vision check plus one fresh recheck per episode. Timeouts and matching input never mean success.
+extension VisualGuideController {
+    /// Local wait for an application that is still working; polls scoped AX or simply settles, never the model.
+    static let appWaitSeconds = 3.0
+    static let appPollSeconds = 0.25
+    /// Pause before the single fresh recheck after a contradicted or unknown verdict.
+    static let recheckSettleSeconds = 1.0
+
+    func verificationLoop(current: UInt64) async throws {
+        guard let step = task?.step, let outcome = step.outcome, let target = currentTarget else { throw AttachmentError.noTarget }
+        let started = environment.now()
+        // A predicate already true before the step cannot prove this step; vision decides instead.
+        if axOutcomeWasSatisfied != true, environment.outcomeMatches(outcome, target) != nil,
+           try await waitForLocalOutcome(outcome, target: target, current: current) {
+            guard task?.confirmLocally() == true else { throw AttachmentError.targetChanged }
+            metrics.count(.localConfirmations); recordVerified(since: started)
+            try await presentNext(note: "Host verified the outcome with fresh Accessibility state.", current: current)
+            return
+        }
+        var last: (state: GuidePresentation.OutcomeState, evidence: String) = (.unknown, "")
+        for check in 0..<2 {
+            if check > 0 { try await settle(after: last.state, current: current) }
+            status = "Checking"; publish()
+            let turn = try await captureTurn(message: "Verify this intended outcome only: " + outcome.description, current: current)
+            guard let context = turn.context else { throw AttachmentError.targetChanged }
+            metrics.count(.visionChecks)
+            let result = try await request(turn, current: current)
+            guard result.kind == .verification_result, result.captureID == context.captureID,
+                  let verdict = result.matches else { throw AskError.protocolFailure("Verification lacks current outcome evidence.") }
+            let state = result.outcomeState ?? .unknown
+            var confirmed = verdict && state == .confirmed
+            if confirmed { confirmed = try await evidenceStillCurrent(current: current, evidenceTarget: result.evidenceTarget) }
+            last = (state, result.evidence ?? "")
+            if task?.checked(matches: confirmed, context: context) == true {
+                recordVerified(since: started)
+                try await presentNext(note: "Host verified the outcome.", current: current)
+                return
+            }
+        }
+        // A contradicted result after a genuine attempt may be a detour or the user working ahead:
+        // look once at the current state and continue from there, never assuming success.
+        if last.state == .contradicted, task?.beginRecovery() == true {
+            metrics.count(.recoveries)
+            status = "Finding the next step"; publish()
+            let turn = try await captureTurn(message: recoveryMessage() + "\nThe intended outcome was not observed: " + last.evidence
+                + "\nInspect the current state. If the user took another route or is ahead, present the step that continues "
+                + "toward the goal from here; if the goal checks already hold, return task_completed. Never claim unseen actions.",
+                current: current)
+            try await presentationLoop(turn, current: current)
+            return
+        }
+        enterUncertain()
+    }
+
+    /// The provider proposed completion. Verify every stored goal check on fresh evidence before accepting it.
+    func verifyGoal(proposal: GuidePresentation, current: UInt64) async throws {
+        guard task?.beginGoalVerification() == true else { throw AskError.protocolFailure("Task completion arrived in the wrong phase.") }
+        metrics.count(.goalChecks)
+        status = "Checking the whole goal"; publish()
+        let checks = task?.plan.goalChecks.isEmpty == false ? task?.plan.goalChecks ?? [] : [task?.goal ?? ""]
+        let turn = try await captureTurn(message: "Final verification. Every stored goal check must hold now in this capture:\n- "
+                                         + checks.joined(separator: "\n- ") + "\nmatches=true only if all hold.", current: current)
+        guard let context = turn.context else { throw AttachmentError.targetChanged }
+        let result = try await request(turn, current: current)
+        guard result.kind == .verification_result, result.captureID == context.captureID,
+              let verdict = result.matches else { throw AskError.protocolFailure("Final verification lacks current evidence.") }
+        var confirmed = verdict && result.outcomeState == .confirmed
+        if confirmed { confirmed = try await evidenceStillCurrent(current: current, evidenceTarget: result.evidenceTarget) }
+        if confirmed, task?.finish(matches: true, captureID: context.captureID) == true {
+            stopObservation(); onClearTarget?(); status = "Task complete · verified"; closeAgent(); lastImage = nil; lastContext = nil
+            onResponse?(status + "\n\n" + proposal.text)
+            walkthroughPresented = false
+            return
+        }
+        guard task?.goalVerificationFailed() == true else { enterUncertain(goal: true); return }
+        status = "Finding the next step"; publish()
+        let next = try await captureTurn(message: recoveryMessage() + "\nFinal verification did not confirm the goal: "
+                                         + (result.evidence ?? "") + "\nPresent the step that satisfies the remaining goal checks.",
+                                         current: current)
+        try await presentationLoop(next, current: current)
+    }
+
+    /// Polls fresh scoped AX until the outcome holds or the bounded deadline passes. Returns false when AX
+    /// cannot decide, so vision verification follows; nothing is captured or sent while waiting.
+    private func waitForLocalOutcome(_ outcome: GuideOutcome, target: WindowCaptureTarget, current: UInt64) async throws -> Bool {
+        let deadline = environment.now().addingTimeInterval(Self.appWaitSeconds)
+        var waited = false
+        while true {
+            try check(current)
+            switch environment.outcomeMatches(outcome, target) {
+            case true?: return true
+            case nil: return false
+            case false?:
+                guard environment.now() < deadline else { return false }
+                if !waited { waited = true; metrics.count(.appWaits); status = "Waiting for the app"; publish() }
+                try await environment.sleep(UInt64(Self.appPollSeconds * 1_000_000_000))
+            }
+        }
+    }
+
+    /// Before the single recheck: a pending app gets the bounded app wait, anything else a short settle.
+    private func settle(after state: GuidePresentation.OutcomeState, current: UInt64) async throws {
+        let seconds = state == .pending ? Self.appWaitSeconds : Self.recheckSettleSeconds
+        if state == .pending { metrics.count(.appWaits); status = "Waiting for the app"; publish() }
+        try await environment.sleep(UInt64(seconds * 1_000_000_000))
+        try check(current)
+    }
+
+    func presentNext(note: String, current: UInt64) async throws {
+        lastAdvanceAt = environment.now()
+        task?.beginRequest()
+        status = "Finding the next step"; publish()
+        let next = try await captureTurn(message: recoveryMessage() + "\n" + note
+                                         + " Locate the next useful step or return task_completed if every goal check holds.", current: current)
+        try await presentationLoop(next, current: current)
+    }
+
+    private func recordVerified(since started: Date) {
+        metrics.sample(.verification, seconds: environment.now().timeIntervalSince(started))
+    }
+
+    /// Uncertainty keeps a safe watch: the same target stays marked and observed, so a new genuine attempt
+    /// re-arms a bounded check without Retry. A moved window or missing rectangle leaves Re-check to the user.
+    func enterUncertain(goal: Bool = false) {
+        metrics.count(.uncertainties)
+        status = goal ? "Couldn't confirm the whole goal · Re-check or finish manually" : "I couldn't confirm that · Re-check"
+        guard !goal, let step = task?.step, let rect = stepScreenRect, let target = currentTarget,
+              environment.bounds(target) == stepWindowBounds else { publish(); return }
+        onTarget?(GuideMark(mark: step.mark ?? .circle, target: rect, label: nil, value: step.mark == .value ? step.value : nil,
+                            ghost: nil, within: stepWindowBounds))
+        if !composerOpen { observer.start(step: step, target: target, rect: rect) }
+        publish()
+    }
+
+    func waitingStatus(_ step: GuidePresentation) -> String {
+        switch step.action?.kind {
+        case .double_click: return "Waiting for your double-click"
+        case .right_click: return "Waiting for your right-click"
+        case .key, .field_commit: return "Waiting for your key"
+        default: return "Waiting for your click"
+        }
+    }
+}
