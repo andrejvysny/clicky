@@ -6,6 +6,8 @@ import ClickyCore
 /// The presented step, kept in memory so a temporary interruption can be revalidated locally on return.
 struct GuideStepSnapshot {
     let step: GuidePresentation
+    /// The snapshot only stands for this step; once the task advances it must not come back.
+    let stepRevision: UInt64
     let image: PNGImageAttachment
     let context: GuideCaptureContext
     let windowBounds: CGRect?
@@ -25,7 +27,7 @@ extension VisualGuideController {
         composerOpen = false
         guard let task else { return }
         // A step that arrived while the composer was open was shown but not observed yet.
-        if task.phase == .waiting, !observer.isObserving, !isBusy { revalidateStep(); return }
+        if task.phase == .waiting, !observer.isObserving, !isBusy, task.historyIndex == nil { revalidateStep(); return }
         _ = self.task?.clearTemporaryInterruption(.composer)
         _ = self.task?.clearTemporaryInterruption(.sideAnswer)
         resumeAfterInterruption()
@@ -47,7 +49,7 @@ extension VisualGuideController {
 
     /// Resumes only when nothing but temporary reasons held the task; otherwise the user resumes deliberately.
     func resumeAfterInterruption() {
-        guard let task, task.phase == .paused else { return }
+        guard let task, task.phase == .paused, task.historyIndex == nil else { return }
         guard task.interruptions.isEmpty else {
             if task.interruptions.allSatisfy(\.isTemporary) { publish(); return }
             status = "Paused · Resume when ready"; publish(); return
@@ -61,7 +63,8 @@ extension VisualGuideController {
     /// Re-shows the current step after a fresh local capture shows its target unchanged; otherwise re-grounds
     /// it with the provider. Old coordinates are never reused without that check.
     func revalidateStep() {
-        guard let snapshot = stepSnapshot, task?.step != nil || task?.phase == .locating else { retry(); return }
+        guard task?.historyIndex == nil else { return }
+        guard let snapshot = stepSnapshot, task?.step != nil, snapshot.stepRevision == task?.stepRevision else { retry(); return }
         // The side question is over; the walkthrough step is presented again under its own purpose.
         sideQuestion = false
         transaction &+= 1; let current = transaction
@@ -71,7 +74,12 @@ extension VisualGuideController {
             let shown = (try? await reshow(snapshot, current: current)) ?? false
             guard current == transaction else { return }
             isBusy = false; work = nil
-            if shown { publish() } else { task?.changed(); retry() }
+            guard !shown else { publish(); return }
+            // A changed target is re-grounded within the step's relocation budget; focus flapping cannot
+            // turn into unbounded provider turns.
+            task?.changed()
+            if task?.spendRelocation() == true { metrics.count(.relocations); retry() }
+            else { status = "View changed · Find again or Re-check"; publish() }
         }
     }
 

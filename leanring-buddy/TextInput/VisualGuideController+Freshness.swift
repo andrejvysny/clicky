@@ -48,7 +48,7 @@ extension VisualGuideController {
             var mismatches = 0
             while !Task.isCancelled {
                 do { try await self?.environment.sleep(Self.guardIntervalNanoseconds) } catch { return }
-                guard let self, task?.phase == .waiting, task?.isCurrent(context) == true, !composerOpen else { return }
+                guard let self, task?.phase == .waiting, task?.isCurrent(context) == true, !composerOpen, displayGranted else { return }
                 guard environment.focused(target) else { interruptForAppSwitch(); return }
                 guard environment.bounds(target) != nil else {
                     pause(message: "Target closed or minimized · Choose a window to resume", reason: .targetClosed); return

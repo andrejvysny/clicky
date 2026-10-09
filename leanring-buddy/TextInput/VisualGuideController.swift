@@ -165,7 +165,7 @@ final class VisualGuideController: ObservableObject {
         if task?.grant == nil, explicitlyVisual, let currentTarget { task?.authorize(currentTarget) }
         if task?.phase == .paused {
             // A side question clears only the composer hold; an explicit pause stays latched (the turn is then text-only).
-            if sideQuestion { _ = task?.clearTemporaryInterruption(.composer) } else { task?.resume() }
+            if sideQuestion { _ = task?.clearTemporaryInterruption(.composer) } else if !continueByUserAction() { return }
         }
         task?.beginRequest()
         pendingEffort = effort
@@ -201,9 +201,19 @@ final class VisualGuideController: ObservableObject {
         activationWatch?.remove(); activationWatch = nil
         task?.resume(); retry()
     }
+    /// Retry, Mark done and a clarification reply are deliberate and may lift an explicit pause, but never
+    /// revoked sharing, a closed target or lost permission: those need Resume or a new window choice.
+    func continueByUserAction() -> Bool {
+        guard let task, task.phase == .paused else { return true }
+        let blocking: Set<GuideInterruption> = [.sharingRevoked, .targetClosed, .permissionLost]
+        guard task.interruptions.isDisjoint(with: blocking) else {
+            error = "Sharing is stopped for this task · Resume or choose a window first"; publish(); return false
+        }
+        activationWatch?.remove(); activationWatch = nil
+        self.task?.resume(); return true
+    }
     func retry() {
-        guard !isBusy, task != nil else { return }
-        if task?.phase == .paused { task?.resume() }
+        guard !isBusy, task != nil, task?.historyIndex == nil, continueByUserAction() else { return }
         task?.beginRequest(); sideQuestion = false
         launch(message: recoveryMessage() + "\nLocate the current step again against fresh context.", captureFirst: true)
     }
@@ -240,9 +250,8 @@ final class VisualGuideController: ObservableObject {
     }
     func nextManually() {
         if demo != nil { demo?.next(); status = demo?.completed == true ? "Demo finished manually · no verification" : "Demo · no AI · manual checklist"; publish(); return }
-        guard !isBusy, task?.step != nil, task?.historyIndex == nil else { return }
+        guard !isBusy, task?.step != nil, task?.historyIndex == nil, continueByUserAction() else { return }
         stopObservation(); onClearTarget?()
-        if task?.phase == .paused { task?.resume() }
         task?.manualNext(); task?.beginRequest(); sideQuestion = false; metrics.count(.manualAcknowledgements)
         launch(message: recoveryMessage() + "\nUser manually acknowledged the last step; it is NOT verified. Locate the next step.", captureFirst: true)
     }
@@ -318,7 +327,7 @@ final class VisualGuideController: ObservableObject {
     /// fresh evidence, within the step's relocation budget. Never assumes the old control is still there.
     func relocateTarget(reason: String) {
         observer.cancelPendingMousePress()
-        guard !isBusy, !composerOpen, task?.phase == .waiting, task?.spendRelocation() == true else {
+        guard !isBusy, !composerOpen, task?.historyIndex == nil, task?.phase == .waiting, task?.spendRelocation() == true else {
             if task?.phase == .waiting { invalidateTarget(reason: reason) }
             return
         }

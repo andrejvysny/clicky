@@ -192,6 +192,8 @@ nonisolated public struct GuideTaskState: Sendable {
     public mutating func beginVerification(automatic: Bool = false) -> Bool {
         guard step != nil, phase == .waiting || phase == .uncertain, grant?.paused == false else { return false }
         if automatic, !budget.spendEpisode() { return false }
+        // Each episode consumes its attempt: later AX noise needs a new genuine attempt to check again.
+        actionDetected = false
         phase = .verifying; verificationChecks = 0; lastVerificationCaptureID = nil; invalidate(); return true
     }
     /// Fresh, directly bound Accessibility state established the outcome without a capture.

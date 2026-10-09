@@ -196,7 +196,8 @@ extension VisualGuideController {
                   image.pixelWidth == currentImage.pixelWidth, image.pixelHeight == currentImage.pixelHeight else {
                 throw AskError.protocolFailure("The target changed while the agent was locating it. Retry with fresh context.")
             }
-            let snapshot = GuideStepSnapshot(step: result, image: image, context: context, windowBounds: environment.bounds(target))
+            let snapshot = GuideStepSnapshot(step: result, stepRevision: task?.stepRevision ?? 0, image: image, context: context,
+                                             windowBounds: environment.bounds(target))
             stepSnapshot = snapshot
             // A step that arrives during a temporary interruption waits; it is revalidated before it is shown.
             if task?.phase == .paused { status = "Next step ready · continues when you return"; return }
