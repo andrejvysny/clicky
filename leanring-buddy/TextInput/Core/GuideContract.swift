@@ -49,6 +49,9 @@ nonisolated public enum GuideContract {
     warning: when the step's action deletes, sends, pays, publishes, overwrites or is otherwise hard
     to undo, give its consequence in a few words (for example "Permanently deletes 3 files");
     otherwise null. It is shown beside the target; the user's own click is the confirmation.
+    When the outcome is the state of one standard labelled control, also set outcome.axRole (for
+    example AXCheckBox, AXButton, AXTextField), axTitle (its exact visible label) and axValue (exact
+    text, a number, or on/off for toggles) so the host can confirm it locally; otherwise null.
     Conceptual questions: explanation. Missing essential information: one clarification.
     context_request asks the host for approved window overview; crop optionally requests a
     detail rectangle in pixels of the current capture. No arbitrary windows, commands or tools.

@@ -140,4 +140,8 @@ Run all workflows with each real provider, without application-name branches or 
 2. Browser scratch fixture: open a panel and commit a form field. A deterministic fixture is under `Tests/NativeFixtures/guide.html`.
 3. TextEdit scratch document: open and save through a sheet.
 
+### Development gate B: automatic 5–10-step workflow
+
+`Tests/NativeFixtures/workflow.html` is a disposable six-step click/double-click flow: New report → double-click Q3 → Options (outcome after 2 s) → Include charts → double-click Summary → Publish to team. Ask in Quick Ask: “Open the Q3 folder, open Options, turn on Include charts, open Summary and publish it.” Pass criteria: completion reaches “Task complete · verified” using only application clicks (no Next/Mark done, Re-check, Find again or Resume); Publish shows a consequence warning beside the target; “Delete activations” stays 0. Repeat with a real settings flow (for example System Settings › Appearance) and record the task metrics line from the unified log (`log stream --predicate 'subsystem == "clicky" AND category == "guide"'`, DEBUG builds; counts and P50/P95 only, no content). Coordinator coverage of the same loop (`GuideLoopTests.testFiveStepClickAndDoubleClickWorkflowNeedsNoGuideControls`) uses fakes and is not this gate.
+
 Also verify IME/multiline/Unicode/indentation, focus restoration, shortcut rebinding, nonactivating controls, click-through annotations, and quiet memory-only storage. Native no-AI demo acceptance is separate from real outcome verification. Keep release flags false until every required native case passes.

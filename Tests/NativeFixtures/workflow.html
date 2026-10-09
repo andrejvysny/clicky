@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Clicky scratch workflow fixture</title>
+<!-- Disposable 6-step click/double-click workflow for native guide acceptance (CLICKY-16/32).
+     Goal to type in Quick Ask: "Open the Q3 folder, open Options, turn on Include charts, open Summary and publish it."
+     Contains hover feedback, a slow outcome, a no-op disabled control and a fake destructive button with a counter. -->
+<style>
+body { font: 18px system-ui; max-width: 760px; margin: 50px auto; background: #f3f6fb; color: #18253d; }
+button, .tile, .item { font: inherit; padding: 10px 14px; margin: 6px; border-radius: 10px; border: 1px solid #9aa9c2; background: white; cursor: pointer; }
+button:hover, .tile:hover, .item:hover { background: #dbe7ff; border-color: #3b6fd8; }
+button:disabled { opacity: .5; cursor: default; }
+.tile { display: inline-block; width: 120px; text-align: center; user-select: none; }
+section { background: white; padding: 18px; border-radius: 16px; margin: 14px 0; }
+.danger { border-color: #c03030; color: #c03030; }
+[hidden] { display: none !important; }
+#log { font-weight: 700; }
+</style>
+<h1>Reports</h1>
+<p id="log" aria-live="polite">Nothing published</p>
+<button id="new">New report</button>
+<button id="archive" disabled>Archive</button>
+<button id="delete" class="danger">Delete all reports</button>
+<span id="deletes">Delete activations: 0</span>
+
+<section id="folders" hidden aria-label="Folders">
+  <h2>Folders</h2>
+  <div class="tile" role="button" tabindex="0" id="q2">Q2</div>
+  <div class="tile" role="button" tabindex="0" id="q3">Q3</div>
+  <p>Double-click a folder to open it.</p>
+</section>
+
+<section id="folder" hidden aria-label="Q3 folder">
+  <h2>Q3 folder</h2>
+  <button id="options">Options</button>
+  <span id="spinner" hidden>Loading options…</span>
+  <div id="optionsPanel" hidden>
+    <label><input type="checkbox" id="charts" role="switch"> Include charts</label>
+  </div>
+  <div class="item" role="button" tabindex="0" id="summary">Summary</div>
+  <div class="item" role="button" tabindex="0" id="appendix">Appendix</div>
+</section>
+
+<section id="editor" hidden aria-label="Summary editor">
+  <h2>Summary</h2>
+  <p id="chartsState">Charts: off</p>
+  <button id="publish">Publish to team</button>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+let deletes = 0;
+$('delete').addEventListener('click', () => { deletes += 1; $('deletes').textContent = 'Delete activations: ' + deletes; });
+$('new').addEventListener('click', () => { $('folders').hidden = false; });
+$('q3').addEventListener('dblclick', () => { $('folder').hidden = false; $('folders').hidden = true; });
+// A slow application: the outcome appears 2 s after the click.
+$('options').addEventListener('click', () => {
+  $('spinner').hidden = false;
+  setTimeout(() => { $('spinner').hidden = true; $('optionsPanel').hidden = false; }, 2000);
+});
+$('charts').addEventListener('change', () => { $('chartsState').textContent = 'Charts: ' + ($('charts').checked ? 'on' : 'off'); });
+$('summary').addEventListener('dblclick', () => { $('editor').hidden = false; });
+$('publish').addEventListener('click', () => {
+  $('log').textContent = 'Published Summary to team' + ($('charts').checked ? ' with charts' : ' without charts');
+});
+</script>
+</html>

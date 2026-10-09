@@ -158,11 +158,8 @@ enum ScopedAccessibility {
             }
             guard matches.count == 1, let element = matches.first, !secure(element) else { return nil }
             if let expected = outcome.axValue {
-                guard expected.utf8.count <= 4096,
-                    let actual = value(element, kAXValueAttribute) as? String,
-                    actual.utf8.count <= 4096
-                else { return nil }
-                return actual == expected
+                let actual = value(element, kAXValueAttribute)
+                return GuideAXValue.matches(expected: expected, string: actual as? String, number: (actual as? NSNumber)?.doubleValue)
             }
             return true
         }
