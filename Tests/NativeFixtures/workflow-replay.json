@@ -14,17 +14,17 @@
     "published": { "script": ["new", "q3", "options", "optionsLoaded", "charts", "summary", "publish"] }
   },
   "steps": [
-    { "from": "start", "target": "#new",
+    { "from": "start", "target": "#new", "gesture": "click",
       "cases": [ { "after": "folders", "truth": "confirmed" }, { "after": "start_hover_new", "truth": "negative" } ] },
-    { "from": "folders", "target": "#q3",
+    { "from": "folders", "target": "#q3", "gesture": "double_click",
       "cases": [ { "after": "q3", "truth": "confirmed" }, { "after": "folders", "truth": "negative" } ] },
-    { "from": "q3", "target": "#options",
+    { "from": "q3", "target": "#options", "gesture": "click",
       "cases": [ { "after": "options", "truth": "confirmed" }, { "after": "spinner", "truth": "pending" }, { "after": "q3", "truth": "negative" } ] },
-    { "from": "options", "target": "#charts",
+    { "from": "options", "target": "#charts", "gesture": "click",
       "cases": [ { "after": "charts", "truth": "confirmed" }, { "after": "options", "truth": "negative" } ] },
-    { "from": "charts", "target": "#summary",
+    { "from": "charts", "target": "#summary", "gesture": "double_click",
       "cases": [ { "after": "summary", "truth": "confirmed" }, { "after": "charts", "truth": "negative" } ] },
-    { "from": "summary", "target": "#publish",
+    { "from": "summary", "target": "#publish", "gesture": "click",
       "cases": [ { "after": "published", "truth": "confirmed" }, { "after": "summary_hover_publish", "truth": "negative" } ] }
   ],
   "goal_cases": [ { "state": "published", "truth": "confirmed" }, { "state": "summary", "truth": "negative" } ]

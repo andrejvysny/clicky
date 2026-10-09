@@ -232,6 +232,8 @@ extension VisualGuideController {
             // A recovery look that re-presents the step it started from must not invite the same gesture again
             // (a second click undoes a toggle): keep the mark but leave the step uncertain with Re-check primary.
             let repeatsStep = recoveringMilestone.map { (result.milestone ?? result.text) == $0 } ?? false
+                && result.action?.kind == recoveringAction
+            recoveringAction = nil
             if let previous = recoveringMilestone {
                 trace("recovery sameMilestone=\((result.milestone ?? result.text) == previous)"); recoveringMilestone = nil
             }
@@ -275,8 +277,8 @@ extension VisualGuideController {
         case .task_proposal:
             proposal = result; task?.pause(); status = "Start a new task or keep this walkthrough?"
         case .task_completed:
-            guard try await evidenceStillCurrent(current: current, evidenceTarget: result.evidenceTarget) else { throw AttachmentError.targetChanged }
-            // The proposal alone never completes the task: the stored goal checks are verified on fresh evidence.
+            // The proposal alone never completes the task: the stored goal checks are verified on a fresh capture
+            // (with their own evidence freshness check), so a proposal over a since-changed screen is not an error.
             try await verifyGoal(proposal: result, current: current)
         default: throw AskError.protocolFailure("The agent returned a presentation inappropriate for this task phase.")
         }

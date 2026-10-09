@@ -56,10 +56,9 @@ extension VisualGuideController {
             metrics.count(.recoveries); recoveringMilestone = step.milestone ?? step.text
             trace("recovery after=" + last.state.rawValue)
             status = "Finding the next step"; publish()
-            let turn = try await captureTurn(message: recoveryMessage() + "\nThe intended outcome was not confirmed: " + last.evidence
-                + "\nInspect the current state. If the user took another route or is ahead, present the step that continues "
-                + "toward the goal from here; if the goal checks already hold, return task_completed. Never claim unseen actions.",
-                current: current)
+            let turn = try await captureTurn(message: task.map { GuideHostMessages.recovery($0, evidence: last.evidence) } ?? "",
+                                             current: current)
+            recoveringAction = step.action?.kind
             try await presentationLoop(turn, current: current)
             return
         }

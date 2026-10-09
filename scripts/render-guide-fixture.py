@@ -12,6 +12,7 @@ from __future__ import annotations
 import functools
 import http.server
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -21,7 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "Tests" / "NativeFixtures"
 DEFINITION = FIXTURES / "workflow-replay.json"
 SESSION = "-s=clicky-replay"
-VIEWPORT = (1100, 900)
+VIEWPORT = (int(os.environ.get("REPLAY_WIDTH", "1100")), int(os.environ.get("REPLAY_HEIGHT", "900")))
 
 # Each action reproduces the fixture's own handler deterministically (the 2 s Options delay is applied directly).
 ACTIONS: dict[str, str] = {

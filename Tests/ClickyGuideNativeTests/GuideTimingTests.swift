@@ -223,4 +223,30 @@ final class GuideTimingTests: XCTestCase {
         try await harness.reply { GuideHarness.step($0, pixel: CGRect(x: 40, y: 30, width: 10, height: 8), text: "Click Advanced") }
         XCTAssertEqual(harness.controller.task?.phase, .waiting)
     }
+
+    func testRecoveryThatChangesTheGestureIsANewInstructionNotARepeat() async throws {
+        let harness = GuideHarness()
+        try await harness.startStep()
+        try await harness.act(time: 10, verdict: .contradicted)
+        await harness.clock.advance(GuideHarnessTiming.settle)
+        try await harness.reply { GuideHarness.verdict($0, matches: false, state: .contradicted) }
+        let recovery = try await harness.nextTurn()
+        await harness.agent.reply(GuideHarness.step(recovery, action: .double_click))
+        await settle()
+        XCTAssertEqual(harness.controller.task?.phase, .waiting)
+        XCTAssertEqual(harness.controller.status, "Waiting for your double-click")
+    }
+
+    func testCompletionProposalOverAChangedScreenGoesToTheFreshGoalCheck() async throws {
+        let harness = GuideHarness()
+        try await harness.startStep()
+        try await harness.act(time: 10, verdict: .confirmed)
+        let proposal = try await harness.nextTurn()
+        harness.screen.paint(CGRect(x: 30, y: 20, width: 20, height: 20), value: 0)
+        await harness.agent.reply(GuideHarness.completed(proposal))
+        await settle()
+        let goal = try await harness.nextTurn()
+        XCTAssertEqual(goal.purpose, .verification)
+        XCTAssertNil(harness.controller.error)
+    }
 }

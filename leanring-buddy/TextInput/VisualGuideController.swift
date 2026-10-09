@@ -110,6 +110,8 @@ final class VisualGuideController: ObservableObject {
     var lastAdvanceAt: TimeInterval?
     /// Milestone a recovery look started from, to log whether the provider re-presented it (bool only).
     var recoveringMilestone: String?
+    /// Gesture of the step a recovery started from; the same milestone with another gesture is a new attempt.
+    var recoveringAction: GuideAction.Kind?
     /// Request time of the current task until its first instruction is shown.
     var taskStartedAt: TimeInterval?
     /// Metrics are per task; logged once when the task completes, finishes manually or ends.

@@ -30,6 +30,15 @@ nonisolated public enum GuideHostMessages {
             + "only when the relevant area is not visible; if it is visible but shows no such result, use contradicted."
     }
 
+    /// One look at the current state after the intended outcome was not confirmed. Replay showed that asking the
+    /// provider to change the gesture from a no-response screenshot flips correct gestures, so it is not asked to;
+    /// a repeated step and gesture is shown uncertain by the host instead.
+    public static func recovery(_ task: GuideTaskState, evidence: String) -> String {
+        context(task) + "\nThe intended outcome was not confirmed: " + evidence
+            + "\nInspect the current state. If the user took another route or is ahead, present the step that continues "
+            + "toward the goal from here; if the goal checks already hold, return task_completed. Never claim unseen actions."
+    }
+
     public static func next(_ task: GuideTaskState, note: String) -> String {
         context(task) + "\n" + note + " Locate the next useful step or return task_completed if every goal check holds."
     }

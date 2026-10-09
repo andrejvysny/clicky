@@ -8,7 +8,7 @@ enum GuideReplay {
     struct Manifest: Decodable {
         struct State: Decodable { let png: String; let boxes: [String: [Double]] }
         struct Case: Decodable { let after: String; let truth: String }
-        struct Step: Decodable { let from: String; let target: String; let cases: [Case] }
+        struct Step: Decodable { let from: String; let target: String; let gesture: String?; let cases: [Case] }
         struct GoalCase: Decodable { let state: String; let truth: String; var after: String { state } }
         let goal: String
         let states: [String: State]
@@ -35,7 +35,7 @@ enum GuideReplay {
         let runs = options.first { $0.hasPrefix("--runs=") }.flatMap { Int($0.dropFirst(7)) } ?? 1
         let positional = options.filter { !$0.hasPrefix("--") }
         guard positional.count == 4, let provider = AgentProvider(rawValue: positional[0]), provider != .preview else {
-            throw AskError.protocolFailure("Usage: clicky-guide replay claude|codex EXECUTABLE CLICKY_PROFILE_ROOT MANIFEST [--runs=N] [--show-text]")
+            throw AskError.protocolFailure("Usage: clicky-guide replay claude|codex EXECUTABLE CLICKY_PROFILE_ROOT MANIFEST [--runs=N] [--show-text] [--recovery]")
         }
         let manifest = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: URL(fileURLWithPath: positional[3])))
         let showText = flags.contains("--show-text")
@@ -44,7 +44,8 @@ enum GuideReplay {
             print("run \(run)")
             let profile = try GuideAgentProfile(provider: provider, root: URL(fileURLWithPath: positional[2]), taskID: UUID())
             let session = GuideAgentSession(profile: profile, executable: URL(fileURLWithPath: positional[1]))
-            do { try await replay(manifest, session: session, showText: showText, tally: &tally) }
+            do { try await replay(manifest, session: session, options: Options(showText: showText, recoveryProbe: flags.contains("--recovery")),
+                                  tally: &tally) }
             catch { print("  run aborted: \(error.localizedDescription)") }
             await session.close()
         }
@@ -54,7 +55,10 @@ enum GuideReplay {
         }
     }
 
-    private static func replay(_ manifest: Manifest, session: GuideAgentSession, showText: Bool, tally: inout Tally) async throws {
+    struct Options { let showText: Bool; let recoveryProbe: Bool }
+
+    private static func replay(_ manifest: Manifest, session: GuideAgentSession, options: Options, tally: inout Tally) async throws {
+        let showText = options.showText
         var task = GuideTaskState(goal: manifest.goal)
         task.authorize(target)
         func send(_ turn: GuideAgentTurn) async throws -> GuidePresentation {
@@ -97,6 +101,19 @@ enum GuideReplay {
                 tally.record(truth: item.truth, observed: observed, matches: verdict.matches == true)
                 print("    case \(item.after) truth=\(item.truth) got=\(observed) matches=\(verdict.matches.map(String.init) ?? "-")")
                 if showText { print("      evidence: \(verdict.evidence ?? "-")") }
+            }
+            // Recovery probe: the user's gesture produced no visible response (the from state again).
+            if options.recoveryProbe {
+                var probe = task
+                _ = probe.recordAttempt(); _ = probe.beginVerification(); _ = probe.beginRecovery()
+                let (still, stillContext) = try capture(&probe, manifest.states[step.from])
+                let recovered = try await send(GuideAgentTurn(
+                    message: GuideHostMessages.recovery(probe, evidence: "No change is visible after the action."),
+                    image: still, context: stillContext, purpose: .continuation, taskContext: GuideHostTaskContext(probe)))
+                let same = (recovered.milestone ?? recovered.text) == (located.milestone ?? located.text)
+                print("    recovery kind=\(recovered.kind.rawValue) action=\(recovered.action?.kind.rawValue ?? "-") sameMilestone=\(same) "
+                      + "expected=\(step.gesture ?? "-")")
+                if showText { print("      text: \(recovered.text)") }
             }
             // Advance as a host-verified step on the true outcome state.
             guard let positive = step.cases.first(where: { $0.truth == "confirmed" }) else { return }
