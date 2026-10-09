@@ -32,10 +32,11 @@ extension VisualGuideController {
                 #endif
                 self.error = error.localizedDescription; onClearTarget?()
                 // Only a visible walkthrough is kept for Retry; anything else starts fresh on the next question.
+                lastAdvanceAt = nil
                 if walkthroughActive { task?.pause() } else { task = nil; currentTarget = nil }
                 lastImage = nil; lastContext = nil; status = "Needs attention · Retry explicitly"
                 // Host-side rejections leave the conversation intact; process or protocol-transport failures do not.
-                if !(error is AttachmentError), !(error is GuideHostRejection) { closeAgent() }
+                if !(error is AttachmentError), !(error is GuideHostRejection), !(error is GuideTargetChangedWhileLocating) { closeAgent() }
             }
             guard current == transaction else { return }
             isBusy = false; work = nil; publish()
@@ -102,7 +103,22 @@ extension VisualGuideController {
                                              + "Locate the target again in this capture and use its captureID.", current: current)
                 continue
             }
-            try await present(result, current: current)
+            do {
+                try await present(result, current: current)
+            } catch is GuideTargetChangedWhileLocating {
+                // Loading, animation or hover changed the target after the capture: look again within the step's
+                // relocation budget rather than stopping for Resume; old coordinates are never shown.
+                guard task?.spendRelocation() == true, screenAvailable, displayGranted else {
+                    throw GuideHostRejection(message: "The target kept changing while it was being located · Retry when it settles.")
+                }
+                // A host-forced look is a new locate request, bounded by the relocation budget, not provider context.
+                metrics.count(.relocations); task?.beginRequest()
+                status = "Finding the control"; publish()
+                turn = try await captureTurn(message: "The view changed while you were locating the step (loading, animation or "
+                                             + "hover). Locate the same step again in this capture and use its captureID.",
+                                             current: current)
+                continue
+            }
             return
         }
     }
@@ -194,7 +210,7 @@ extension VisualGuideController {
                   let previous = fingerprint(image, rect: pixels),
                   let fresh = fingerprint(currentImage, rect: pixels), previous == fresh,
                   image.pixelWidth == currentImage.pixelWidth, image.pixelHeight == currentImage.pixelHeight else {
-                throw AskError.protocolFailure("The target changed while the agent was locating it. Retry with fresh context.")
+                throw GuideTargetChangedWhileLocating()
             }
             let snapshot = GuideStepSnapshot(step: result, stepRevision: task?.stepRevision ?? 0, image: image, context: context,
                                              windowBounds: environment.bounds(target))
@@ -287,6 +303,11 @@ extension VisualGuideController {
 }
 
 /// The host declined a well-formed reply (stale target, wrong phase); the agent conversation stays usable.
+/// The located target's pixels differ between the capture the provider saw and a fresh one.
+struct GuideTargetChangedWhileLocating: LocalizedError {
+    var errorDescription: String? { "The target changed while the agent was locating it." }
+}
+
 struct GuideHostRejection: LocalizedError {
     let message: String
     var errorDescription: String? { message }

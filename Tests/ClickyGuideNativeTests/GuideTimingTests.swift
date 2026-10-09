@@ -87,4 +87,66 @@ final class GuideTimingTests: XCTestCase {
         XCTAssertEqual(harness.clearedTargets, cleared)
         XCTAssertTrue(harness.controller.observer.isObserving)
     }
+
+    func testTargetChangedWhileLocatingLooksAgainAutomatically() async throws {
+        let harness = GuideHarness()
+        try harness.controller.ask("Open the fixture settings", target: harness.screen.target)
+        try await harness.reply { _ in GuideHarness.contextRequest() }
+        let locating = try await harness.nextTurn()
+        // Hover or loading changes the target after the capture the provider saw.
+        harness.screen.paint(CGRect(x: 10, y: 10, width: 12, height: 8), value: 90)
+        await harness.agent.reply(GuideHarness.step(locating))
+        await settle()
+        let again = try await harness.nextTurn()
+        XCTAssertNotNil(again.image, "a fresh capture, not an error")
+        XCTAssertEqual(harness.controller.metrics[.relocations], 1)
+        try await harness.reply { GuideHarness.step($0) }
+        XCTAssertEqual(harness.controller.task?.phase, .waiting)
+        XCTAssertNil(harness.controller.error)
+    }
+
+    func testTargetThatKeepsChangingStopsWithinBudgetAndKeepsTheConversation() async throws {
+        let harness = GuideHarness()
+        try harness.controller.ask("Open the fixture settings", target: harness.screen.target)
+        try await harness.reply { _ in GuideHarness.contextRequest() }
+        for shade in [UInt8(90), 60, 30] {
+            let turn = try await harness.nextTurn()
+            harness.screen.paint(CGRect(x: 10, y: 10, width: 12, height: 8), value: shade)
+            await harness.agent.reply(GuideHarness.step(turn))
+            await settle()
+        }
+        XCTAssertEqual(harness.controller.metrics[.relocations], GuideStepBudget.relocations)
+        XCTAssertEqual(harness.controller.error, "The target kept changing while it was being located · Retry when it settles.")
+        let closed = await harness.agent.closed
+        XCTAssertFalse(closed, "a host-side check keeps the provider conversation")
+    }
+
+    func testClarificationReplyTimeIsNotFirstInstructionLatency() async throws {
+        let harness = GuideHarness()
+        try harness.controller.ask("Open the fixture settings", target: harness.screen.target)
+        try await harness.reply { _ in GuidePresentation(kind: .clarification, text: "Which report?") }
+        await harness.clock.advance(30)
+        try harness.controller.ask("The Q3 one", target: harness.screen.target)
+        try await harness.reply { _ in GuideHarness.contextRequest() }
+        try await harness.reply { GuideHarness.step($0) }
+        let first = try XCTUnwrap(harness.controller.metrics.percentile(.firstInstruction, 0.5))
+        XCTAssertLessThan(first, 30)
+    }
+
+    func testResumeWhileFocusIsElsewhereExplainsAndDoesNotRetry() async throws {
+        let harness = GuideHarness()
+        try await harness.startStep()
+        harness.controller.pause()
+        let turns = await harness.turnCount
+        harness.screen.focused = false
+        harness.controller.resume()
+        await settle()
+        XCTAssertEqual(harness.controller.error, "Activate the approved target window, then Resume; or choose Change target.")
+        XCTAssertEqual(harness.controller.task?.phase, .paused)
+        harness.screen.focused = true
+        harness.controller.resume()
+        await settle()
+        let after = await harness.turnCount
+        XCTAssertEqual(after, turns + 1, "Resume with focus back re-locates once")
+    }
 }

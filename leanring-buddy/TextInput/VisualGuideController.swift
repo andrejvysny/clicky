@@ -167,6 +167,8 @@ final class VisualGuideController: ObservableObject {
         } else if task?.grant == nil, let target {
             currentTarget = target
         }
+        // Time the user spent answering a clarification is not first-instruction latency.
+        if continuingClarification, taskStartedAt != nil { taskStartedAt = environment.uptime() }
         if task?.grant == nil, explicitlyVisual, let currentTarget { task?.authorize(currentTarget) }
         if task?.phase == .paused {
             // A side question clears only the composer hold; an explicit pause stays latched (the turn is then text-only).
@@ -192,6 +194,8 @@ final class VisualGuideController: ObservableObject {
         let active = isBusy
         transaction &+= 1; work?.cancel(); work = nil; isBusy = false
         task?.pause(reason); stopObservation(); onClearTarget?()
+        // Time spent paused is the user's, not the guide's next-step latency.
+        lastAdvanceAt = nil
         if active { closeAgent() }
         lastImage = nil; lastContext = nil; status = message; publish()
     }
@@ -200,11 +204,24 @@ final class VisualGuideController: ObservableObject {
         guard displayGranted else {
             error = "Display sharing is not approved. Ask again to approve it, or choose a window."; publish(); return
         }
-        guard !isBusy, let currentTarget, environment.focused(currentTarget) else {
-            error = "Activate the approved target window, then Resume; or choose Change target."; publish(); return
+        guard !isBusy else { error = "Still working · Resume when the current check finishes"; publish(); return }
+        guard let currentTarget else { error = "No approved window · ask again or choose Change target."; publish(); return }
+        // Focus may still be returning from the island or another app; wait briefly instead of refusing the click.
+        let generation = transaction
+        Task { [weak self] in
+            guard let self else { return }
+            let focused = await environment.waitForFocus(currentTarget)
+            guard generation == transaction, !isBusy, task?.phase == .paused else { return }
+            guard focused else {
+                #if DEBUG
+                Logger(subsystem: "clicky", category: "guide").notice(
+                    "resume refused: \(self.environment.focusDiagnosis(currentTarget), privacy: .public)")
+                #endif
+                error = "Activate the approved target window, then Resume; or choose Change target."; publish(); return
+            }
+            activationWatch?.remove(); activationWatch = nil
+            task?.resume(); retry()
         }
-        activationWatch?.remove(); activationWatch = nil
-        task?.resume(); retry()
     }
     /// Retry, Mark done and a clarification reply are deliberate and may lift an explicit pause, but never
     /// revoked sharing, a closed target or lost permission: those need Resume or a new window choice.

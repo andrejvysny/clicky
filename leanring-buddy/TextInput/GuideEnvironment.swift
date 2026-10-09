@@ -19,6 +19,7 @@ struct GuideEnvironment {
     /// The approved window or one of its established related surfaces is focused (task surface group).
     var focused: (WindowCaptureTarget) -> Bool
     var waitForFocus: (WindowCaptureTarget) async -> Bool
+    var focusDiagnosis: (WindowCaptureTarget) -> String
     var bounds: (WindowCaptureTarget) -> CGRect?
     var related: (WindowCaptureTarget) -> [WindowCaptureTarget]
     var outcomeMatches: (GuideOutcome, WindowCaptureTarget) -> Bool?
@@ -52,6 +53,7 @@ struct GuideEnvironment {
         },
         focused: { ScopedAccessibility.surfaceFocused($0) },
         waitForFocus: { await ScopedAccessibility.waitForSurfaceFocus($0) },
+        focusDiagnosis: { ScopedAccessibility.focusDiagnosis($0) },
         bounds: { ScopedAccessibility.bounds($0) },
         related: { ScopedAccessibility.related($0) },
         outcomeMatches: { ScopedAccessibility.matches($0, target: $1) },

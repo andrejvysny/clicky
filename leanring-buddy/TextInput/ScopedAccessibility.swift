@@ -79,6 +79,19 @@ enum ScopedAccessibility {
             return CFEqual(expected, focused)
         } ?? false
     }
+    /// Content-free reason a focus check failed, for the DEBUG log only (no titles, values or frames).
+    static func focusDiagnosis(_ target: WindowCaptureTarget) -> String {
+        let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier
+        let trusted = AXIsProcessTrusted()
+        let found = window(target) != nil
+        let focusedMatches: Bool = read {
+            guard let expected = window(target),
+                  let focused = value(AXUIElementCreateApplication(target.processIdentifier), kAXFocusedWindowAttribute)
+            else { return false }
+            return CFEqual(expected, focused)
+        } ?? false
+        return "frontmost=\(frontmost) trusted=\(trusted) window=\(found) focusedWindow=\(focusedMatches) bounds=\(bounds(target) != nil)"
+    }
     /// The approved window, or an established related surface of it (an AX child sheet, dialog or menu
     /// window matched by Window Server identity), has focus. Same process alone is not enough.
     static func surfaceFocused(_ target: WindowCaptureTarget) -> Bool {
