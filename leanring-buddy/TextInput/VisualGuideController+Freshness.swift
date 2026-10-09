@@ -64,7 +64,7 @@ extension VisualGuideController {
                     guard observer.expectedFieldGeometryIsCurrent else { relocateTarget(reason: "field_geometry"); return }
                     if suspendedForInteraction || pointerNear(screenRect) { mismatches = 0; continue }
                     let same = fresh.pixelWidth == image.pixelWidth && fresh.pixelHeight == image.pixelHeight
-                        && fingerprint(fresh, rect: pixels) == expected
+                        && fingerprint(fresh, rect: pixels).map { $0.looksLike(expected) } == true
                     mismatches = same ? 0 : mismatches + 1
                     if mismatches >= Self.guardMismatchLimit { relocateTarget(reason: "target_pixels"); return }
                 } catch is CancellationError { return }
@@ -85,7 +85,7 @@ extension VisualGuideController {
     private var suspendedForInteraction: Bool {
         environment.uptime() < targetGuardSuspendedUntil || observer.isPressingExpectedTarget || observer.isEditingExpectedField
     }
-    private func pointerNear(_ rect: CGRect) -> Bool {
+    func pointerNear(_ rect: CGRect) -> Bool {
         rect.insetBy(dx: -Self.hoverMargin, dy: -Self.hoverMargin).contains(environment.pointer())
     }
 

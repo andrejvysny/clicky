@@ -105,7 +105,7 @@ final class GuideTimingTests: XCTestCase {
         let harness = GuideHarness()
         try harness.controller.ask("Open the fixture settings", target: harness.screen.target)
         try await harness.reply { _ in GuideHarness.contextRequest() }
-        for shade in [UInt8(90), 60, 30] {
+        for shade in [UInt8(200), 100, 0] {
             let turn = try await harness.nextTurn()
             harness.screen.paint(CGRect(x: 10, y: 10, width: 12, height: 8), value: shade)
             await harness.agent.reply(GuideHarness.step(turn))
@@ -178,5 +178,49 @@ final class GuideTimingTests: XCTestCase {
         await harness.clock.advance(0.5)
         let verification = try await harness.nextTurn()
         XCTAssertTrue(verification.message.contains("The user was asked: Click Settings"))
+    }
+
+    func testHoverFeedbackWhileLocatingIsToleratedUnderThePointer() async throws {
+        let harness = GuideHarness()
+        try harness.controller.ask("Open the fixture settings", target: harness.screen.target)
+        try await harness.reply { _ in GuideHarness.contextRequest() }
+        let locating = try await harness.nextTurn()
+        harness.screen.pointer = harness.screen.point(CGPoint(x: 14, y: 12))
+        harness.screen.paint(CGRect(x: 10, y: 10, width: 12, height: 8), value: 200)
+        await harness.agent.reply(GuideHarness.step(locating))
+        await settle()
+        XCTAssertEqual(harness.controller.task?.phase, .waiting)
+        XCTAssertEqual(harness.controller.metrics[.relocations], 0)
+    }
+
+    func testRenderingNoiseNeverRelocatesTheGuardedTarget() async throws {
+        let harness = GuideHarness()
+        try await harness.startStep()
+        harness.screen.paint(CGRect(x: 12, y: 12, width: 1, height: 1), value: 0)
+        for _ in 0..<4 { await harness.clock.advance(1) }
+        XCTAssertEqual(harness.controller.task?.phase, .waiting)
+        XCTAssertEqual(harness.controller.metrics[.relocations], 0)
+    }
+
+    func testRecoveryThatRepeatsTheStepAsksForReCheckNotAnotherClick() async throws {
+        let harness = GuideHarness()
+        try await harness.startStep()
+        try await harness.act(time: 10, verdict: .contradicted)
+        await harness.clock.advance(GuideHarnessTiming.settle)
+        try await harness.reply { GuideHarness.verdict($0, matches: false, state: .contradicted) }
+        try await harness.reply { GuideHarness.step($0) }
+        XCTAssertEqual(harness.controller.task?.phase, .uncertain)
+        XCTAssertEqual(harness.controller.status, "I couldn't confirm that · Re-check")
+        XCTAssertTrue(harness.controller.observer.isObserving, "the mark stays watched")
+    }
+
+    func testRecoveryThatMovesOnPresentsTheNewStepNormally() async throws {
+        let harness = GuideHarness()
+        try await harness.startStep()
+        try await harness.act(time: 10, verdict: .contradicted)
+        await harness.clock.advance(GuideHarnessTiming.settle)
+        try await harness.reply { GuideHarness.verdict($0, matches: false, state: .contradicted) }
+        try await harness.reply { GuideHarness.step($0, pixel: CGRect(x: 40, y: 30, width: 10, height: 8), text: "Click Advanced") }
+        XCTAssertEqual(harness.controller.task?.phase, .waiting)
     }
 }

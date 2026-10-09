@@ -282,6 +282,11 @@ nonisolated public struct GuideTaskState: Sendable {
         guard step != nil, phase == .verifying || phase == .waiting || phase == .uncertain else { return }
         advance(.satisfied)
     }
+    /// A shown step whose earlier attempt could not be confirmed: still marked and observed, never advanced.
+    public mutating func markUncertain() -> Bool {
+        guard phase == .waiting, step != nil else { return false }
+        phase = .uncertain; return true
+    }
     public mutating func changed() { invalidate(); if phase == .waiting { phase = .uncertain } }
     public mutating func cancel() { phase = .canceled; invalidate(); grant = nil; step = nil }
     private mutating func advance(_ completion: GuideCompletion) {

@@ -93,7 +93,8 @@ extension VisualGuideController {
         let fresh = try await matchingCapture(target, context: snapshot.context)
         try check(current)
         guard let state = task, fresh.pixelWidth == snapshot.image.pixelWidth, fresh.pixelHeight == snapshot.image.pixelHeight,
-              fingerprint(fresh, rect: pixels) == fingerprint(snapshot.image, rect: pixels) else { return false }
+              let now = fingerprint(fresh, rect: pixels), let then = fingerprint(snapshot.image, rect: pixels),
+              now.looksLike(then) else { return false }
         let context = try GuideCaptureContext(image: fresh, target: target, task: state, relatedTargets: related)
         guard task?.accept(context, lease: lease) == true else { return false }
         lastImage = fresh; lastContext = context

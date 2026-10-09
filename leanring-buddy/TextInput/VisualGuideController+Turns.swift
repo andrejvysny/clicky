@@ -214,9 +214,14 @@ extension VisualGuideController {
             guard windowsStillCurrent(context),
                   let pixels = GuidePixelMapping.comparisonRect(pixelTarget, pixelWidth: image.pixelWidth, pixelHeight: image.pixelHeight),
                   let previous = fingerprint(image, rect: pixels),
-                  let fresh = fingerprint(currentImage, rect: pixels), previous == fresh,
+                  let fresh = fingerprint(currentImage, rect: pixels),
                   image.pixelWidth == currentImage.pixelWidth, image.pixelHeight == currentImage.pixelHeight else {
                 throw GuideTargetChangedWhileLocating()
+            }
+            // Rendering noise is tolerated; hover feedback under the pointer is expected, as in the target guard.
+            if !previous.looksLike(fresh) {
+                guard pointerNear(rect) else { throw GuideTargetChangedWhileLocating() }
+                trace("locate hover_tolerated")
             }
             let snapshot = GuideStepSnapshot(step: result, stepRevision: task?.stepRevision ?? 0, image: image, context: context,
                                              windowBounds: environment.bounds(target))
@@ -224,6 +229,9 @@ extension VisualGuideController {
             // A step that arrives during a temporary interruption waits; it is revalidated before it is shown.
             if task?.phase == .paused { status = "Next step ready · continues when you return"; return }
             try task?.show(result); status = waitingStatus(result)
+            // A recovery look that re-presents the step it started from must not invite the same gesture again
+            // (a second click undoes a toggle): keep the mark but leave the step uncertain with Re-check primary.
+            let repeatsStep = recoveringMilestone.map { (result.milestone ?? result.text) == $0 } ?? false
             if let previous = recoveringMilestone {
                 trace("recovery sameMilestone=\((result.milestone ?? result.text) == previous)"); recoveringMilestone = nil
             }
@@ -240,6 +248,7 @@ extension VisualGuideController {
                 observer.start(step: result, target: target, rect: rect, scope: context.region.rect)
                 startTargetGuard(image: image, context: context, pixelTarget: pixelTarget)
             }
+            if repeatsStep, task?.markUncertain() == true { metrics.count(.uncertainties); status = "I couldn't confirm that · Re-check" }
             #endif
         case .annotation:
             // Points only: no observation, verification or milestone; a click or 45 s clears it.
@@ -287,7 +296,7 @@ extension VisualGuideController {
         return environment.annotationObstacles(target, region)
     }
 
-    func fingerprint(_ image: PNGImageAttachment, rect: CGRect) -> Data? {
+    func fingerprint(_ image: PNGImageAttachment, rect: CGRect) -> GuidePixels? {
         guard let source = CGImageSourceCreateWithData(image.data as CFData, nil), let decoded = CGImageSourceCreateImageAtIndex(source, 0, nil),
               let crop = decoded.cropping(to: rect.integral) else { return nil }
         var bytes = Data(count: crop.width * crop.height * 4)
@@ -297,7 +306,7 @@ extension VisualGuideController {
                                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
             renderer.draw(crop, in: CGRect(x: 0, y: 0, width: crop.width, height: crop.height)); return true
         }
-        return rendered ? bytes : nil
+        return rendered ? GuidePixels(width: crop.width, height: crop.height, rgba: bytes) : nil
     }
     func check(_ current: UInt64) throws {
         try Task.checkCancellation()
