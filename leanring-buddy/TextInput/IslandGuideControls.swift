@@ -46,31 +46,35 @@ struct IslandGuideControls: View {
         return controller.demo?.instruction ?? controller.task?.step?.text ?? controller.task?.goal ?? ""
     }
 
+    private var available: GuideControlAvailability {
+        GuideControlAvailability(phase: controller.task?.phase, isBusy: controller.isBusy,
+                                 hasStep: controller.task?.step != nil, demo: controller.demo != nil)
+    }
+
+    /// Only conflicting turn-starting actions disable while busy; End and Pause stay operable in every phase.
     @ViewBuilder private var actions: some View {
         HStack(spacing: 6) {
             if controller.proposal != nil {
-                Button("Start new task") { controller.acceptProposal() }.islandButton(.primary)
+                Button("Start new task") { controller.acceptProposal() }.islandButton(.primary).disabled(controller.isBusy)
                 Button("Keep current task") { controller.keepTask() }.islandButton(.secondary)
             } else if controller.task?.phase == .completed || controller.demo?.completed == true {
                 Text("Finished").font(.system(size: 11)).foregroundStyle(DS.Colors.textSecondary)
             } else if controller.task?.phase == .paused || controller.demo?.paused == true {
-                Button("Resume") { controller.resume() }.islandButton(.primary)
+                Button("Resume") { controller.resume() }.islandButton(.primary).disabled(!available.resume && controller.demo == nil)
             } else if uncertain {
                 // The only state that asks: Next is the default so one keystroke unblocks.
                 Button("Next ⌥⇧→") { controller.nextManually() }.islandButton(.warning).accessibilityLabel("Next")
-                Button("Re-check") { controller.checkNow() }.islandButton(.secondary)
-                Button("Retry") { controller.retry() }.islandButton(.secondary)
+                    .disabled(!available.next)
+                Button("Re-check") { controller.checkNow() }.islandButton(.secondary).disabled(!available.recheck)
+                Button("Retry") { controller.retry() }.islandButton(.secondary).disabled(!available.retry)
             } else {
-                Button("Next") { controller.nextManually() }.islandButton(.secondary)
-                    .disabled(controller.isBusy || (controller.task?.step == nil && controller.demo == nil))
-                Button("Retry") { controller.retry() }.islandButton(.secondary)
-                    .disabled(controller.isBusy || controller.demo != nil)
-                Button("Pause") { controller.pause() }.islandButton(.secondary)
+                Button("Next") { controller.nextManually() }.islandButton(.secondary).disabled(!available.next)
+                Button("Retry") { controller.retry() }.islandButton(.secondary).disabled(!available.retry)
+                Button("Pause") { controller.pause() }.islandButton(.secondary).disabled(!available.pause && controller.demo == nil)
             }
             Spacer(minLength: 0)
             Button("End") { controller.endTask() }.islandButton(.quiet)
         }
-        .disabled(controller.isBusy && !uncertain && controller.proposal == nil)
     }
 
     private var details: some View {
