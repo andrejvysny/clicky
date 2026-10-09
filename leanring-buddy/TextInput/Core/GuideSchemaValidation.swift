@@ -30,6 +30,14 @@ nonisolated enum GuideSchemaValidation {
                 return GuideValidationIssue(code: .emptyText, path: path)
             }
         }
+        if case .array(let items) = value {
+            if let maximum = schema["maxItems"].number, Double(items.count) > maximum {
+                return GuideValidationIssue(code: .textTooLong, path: path)
+            }
+            for (index, item) in items.enumerated() {
+                if let issue = issue(item, schema: schema["items"], path: path + "[\(index)]") { return issue }
+            }
+        }
         if case .object(let object) = value, case .object(let properties) = schema["properties"] {
             let required = Set(schema["required"].array.compactMap(\.string))
             if let missing = required.subtracting(object.keys).sorted().first {
@@ -50,7 +58,7 @@ nonisolated enum GuideSchemaValidation {
     }
     private static func matches(_ value: JSONValue, type: String) -> Bool {
         switch (type, value) {
-        case ("null", .null), ("string", .string), ("boolean", .bool), ("object", .object): return true
+        case ("null", .null), ("string", .string), ("boolean", .bool), ("object", .object), ("array", .array): return true
         case ("number", .number(let number)): return number.isFinite
         case ("integer", .number(let number)): return number.isFinite && number.rounded() == number
         default: return false
@@ -65,6 +73,7 @@ nonisolated struct GuideValidationIssue: Equatable, Sendable {
         case unknownEnum = "unknown_enum", invalidUUID = "invalid_uuid", invalidNumber = "invalid_number"
         case emptyText = "empty_text", textTooLong = "text_too_long", invalidRect = "invalid_rect"
         case forbiddenField = "forbidden_field", invalidAction = "invalid_action", missingEvidence = "missing_evidence"
+        case invalidVerdict = "invalid_verdict"
     }
     let code: Code
     let path: String

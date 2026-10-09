@@ -6,9 +6,11 @@ final class GuideEvidenceTargetTests: XCTestCase {
     private let region = GuideRect(CGRect(x: 120, y: 80, width: 300, height: 200))
 
     private func fields(_ kind: GuidePresentation.Kind, matches: Bool = true) throws -> [String: JSONValue] {
-        ["kind": .string(kind.rawValue), "text": .string("Fixture observation"), "captureID": .string(identifier.uuidString),
-         "matches": .bool(matches), "evidence": .string("Relevant panel observation"),
+        var fields: [String: JSONValue] = ["kind": .string(kind.rawValue), "text": .string("Fixture observation"),
+         "captureID": .string(identifier.uuidString), "matches": .bool(matches), "evidence": .string("Relevant panel observation"),
          "evidenceTarget": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(region))]
+        if kind == .verification_result { fields["outcomeState"] = .string(matches ? "confirmed" : "contradicted") }
+        return fields
     }
 
     private func parse(_ fields: [String: JSONValue], kind: GuidePresentation.Kind) throws -> GuidePresentation {
@@ -82,7 +84,7 @@ final class GuideEvidenceTargetTests: XCTestCase {
     func testHostContractNamesRelevantFalseRegionAndWholeGoalEvidence() throws {
         let request = GuideHostRequest(purpose: .verification, text: "Check", task: nil, capture: nil)
         let encoded = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(request))
-        XCTAssertEqual(encoded["protocolVersion"], .string("clicky-guide-7"))
+        XCTAssertEqual(encoded["protocolVersion"], .string("clicky-guide-8"))
         XCTAssertTrue(request.responseContract.contains("evidenceTarget must bound ALL relevant visible outcome evidence"))
         XCTAssertTrue(request.responseContract.contains("relevant absence/uncertainty for false"))
         XCTAssertTrue(request.responseContract.contains("Never copy the original action target"))

@@ -87,11 +87,14 @@ nonisolated public struct GuideSharingGrant: Equatable, Sendable {
     public init(target: WindowCaptureTarget) { targets = [target] }
 }
 
-nonisolated public enum GuideCompletion: String, Codable, Sendable { case verified, manuallyAcknowledged }
+/// Execution-ledger provenance. `satisfied` means fresh state showed the milestone already holds;
+/// it never claims the user performed an unseen action.
+nonisolated public enum GuideCompletion: String, Codable, Sendable { case verified, manuallyAcknowledged, satisfied }
 nonisolated public struct GuideMilestone: Encodable, Identifiable, Equatable, Sendable {
     public let id = UUID()
     public let instruction: String
     public let completion: GuideCompletion
+    public var intent: String? = nil
 }
 
 nonisolated public struct GuideTaskState: Sendable {
@@ -109,6 +112,9 @@ nonisolated public struct GuideTaskState: Sendable {
     public private(set) var contextRequests = 0
     public private(set) var verificationChecks = 0
     public private(set) var actionDetected = false
+    public private(set) var plan = GuidePlan()
+    /// Every reason guidance is held. Only temporary reasons may clear without a deliberate user action.
+    public private(set) var interruptions: Set<GuideInterruption> = []
     private var captureLease: UUID?
     private var lastVerificationCaptureID: UUID?
 
@@ -148,6 +154,7 @@ nonisolated public struct GuideTaskState: Sendable {
               presentation.captureID == capture.captureID, let rect = presentation.target,
               capture.screenRect(rect) != nil else { throw AttachmentError.targetChanged }
         try presentation.validate()
+        plan.adopt(milestone: presentation.milestone, route: presentation.plan, goalChecks: presentation.goalChecks)
         step = presentation; phase = .waiting; verificationChecks = 0; actionDetected = false
     }
     public mutating func recordAttempt() { if phase == .waiting || phase == .uncertain { actionDetected = true } }
@@ -177,12 +184,30 @@ nonisolated public struct GuideTaskState: Sendable {
         if step != nil { advance(.manuallyAcknowledged) }
         phase = .completed; invalidate(); grant?.paused = true
     }
-    public mutating func pause() { phase = .paused; invalidate(); grant?.paused = true }
-    public mutating func resume() { grant?.paused = false; phase = step == nil ? .locating : .uncertain; invalidate() }
+    public mutating func pause(_ reason: GuideInterruption = .explicitPause) {
+        interruptions.insert(reason); phase = .paused; invalidate(); grant?.paused = true
+    }
+    /// Clears one temporary reason. True when nothing else holds the task, so the host may revalidate
+    /// fresh state and resume; a deliberate reason (explicit pause, revoke, closure, failure) keeps it held.
+    public mutating func clearTemporaryInterruption(_ reason: GuideInterruption) -> Bool {
+        guard reason.isTemporary, phase == .paused else { return false }
+        interruptions.remove(reason)
+        return interruptions.isEmpty
+    }
+    /// Deliberate resume: the user explicitly chose to continue, which clears every reason.
+    public mutating func resume() {
+        interruptions = []; grant?.paused = false; phase = step == nil ? .locating : .uncertain; invalidate()
+    }
+    /// Fresh state shows the current milestone already holds; recorded without claiming an action happened.
+    public mutating func satisfyCurrent() {
+        guard step != nil, phase == .verifying || phase == .waiting || phase == .uncertain else { return }
+        advance(.satisfied)
+    }
     public mutating func changed() { invalidate(); if phase == .waiting { phase = .uncertain } }
     public mutating func cancel() { phase = .canceled; invalidate(); grant = nil; step = nil }
     private mutating func advance(_ completion: GuideCompletion) {
-        if let step { milestones.append(GuideMilestone(instruction: step.text, completion: completion)) }
+        if let step { milestones.append(GuideMilestone(instruction: step.text, completion: completion, intent: plan.current?.intent ?? step.milestone)) }
+        plan.completeCurrent()
         step = nil; stepRevision &+= 1; phase = .locating; invalidate()
     }
     private mutating func invalidate() { generation &+= 1; contextRevision &+= 1; captureLease = nil; capture = nil }

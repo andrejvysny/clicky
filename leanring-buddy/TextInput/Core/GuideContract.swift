@@ -1,7 +1,7 @@
 import Foundation
 
 nonisolated public enum GuideContract {
-    public static let promptVersion = "clicky-guide-7"
+    public static let promptVersion = "clicky-guide-8"
     public static let isolationVersion = "clicky-isolation-1"
     public static let prompt = """
     You are Clicky, a visual guide for software the user is using. The user performs all
@@ -38,8 +38,14 @@ nonisolated public enum GuideContract {
     Choose mark by element: circle for small controls, icons and toggles; underline for menu rows,
     list items and phrases; highlight for panels, regions and groups; arrow for edges, drag handles
     and canvas spots; value with the exact text in value when the user must type it. One mark only.
-    Guide steps may add detail (one short second line), mark, value, ghost (the dim next target in
-    dense UIs, at most one) and estimatedSteps (your current estimate of the total step count).
+    Guide steps may add detail (one short second line), mark, value and ghost (the dim next target in
+    dense UIs, at most one). Every guide_step names milestone: the short semantic intent this step
+    serves (for example "Open Settings"), never coordinates. plan lists the remaining milestone
+    intents in order, starting with this one, at most 8; it is your current route and the host
+    treats it as advisory. goalChecks lists at most 6 independently checkable conditions that
+    together establish the user's requested end state, including every setting the user asked for.
+    Give them on the first step and repeat them unchanged afterwards; the host keeps the original
+    list. Never weaken, replace or narrow the user's goal. Do not state a fixed total step count.
     Conceptual questions: explanation. Missing essential information: one clarification.
     context_request asks the host for approved window overview; crop optionally requests a
     detail rectangle in pixels of the current capture. No arbitrary windows, commands or tools.
@@ -56,12 +62,20 @@ nonisolated public enum GuideContract {
     matches is a JSON boolean, never null or a string. Set true only when the intended
     outcome is established from the supplied fresh evidence. Set false when absent or uncertain,
     explaining the observed mismatch or visibility limitation in nonempty evidence and text.
+    outcomeState classifies the verdict: confirmed (established; the only state with matches true),
+    contradicted (evidence shows it did not happen, e.g. wrong value or unchanged dialog), pending
+    (the app visibly is still working: spinner, progress, loading) or unknown (cannot tell).
     Do not omit evidence on a false verdict. Never reuse the step's older captureID.
     annotation uses only kind, text, captureID, target, mark, label and nullable value;
-    omit action, outcome, crop, matches, evidence, proposedGoal, detail, ghost and estimatedSteps.
+    omit action, outcome, crop, matches, evidence, proposedGoal, detail, ghost, milestone, plan,
+    goalChecks and outcomeState.
     Do not infer success from pixel changes, confidence, or the previous instruction alone.
     After host-confirmed completion, propose the next grounded step or task_completed supported
-    by current evidence. Manual acknowledgement is not verified success. Do not poll.
+    by current evidence. task_completed requires every goal check to hold now; the host verifies
+    each stored goal check again before accepting it. If a milestone is already satisfied in the
+    current state, skip to the next unsatisfied one without asking the user to repeat it; never
+    claim the user performed actions you did not see. Manual acknowledgement is not verified
+    success. Do not poll.
     A related question during a walkthrough receives explanation or clarification; preserve
     its step. A different goal MUST return task_proposal; the host asks before replacing it.
     Do not expand sharing scope. The host handles grants, freshness, completion and recovery.
@@ -72,6 +86,7 @@ nonisolated public enum GuideContract {
         let string: JSONValue = .object(["type": .string("string")])
         let nullableString: JSONValue = .object(["type": .array([.string("string"), .string("null")])])
         let number: JSONValue = .object(["type": .string("number")])
+        let nullableStrings: JSONValue = .object(["type": .array([.string("array"), .string("null")]), "items": string])
         let rect = object(["x": number, "y": number, "width": number, "height": number])
         let action = object([
             "kind": .object(["type": .string("string"), "enum": .array(["click", "right_click", "double_click", "key", "field_commit"].map(JSONValue.string))]),
@@ -93,7 +108,12 @@ nonisolated public enum GuideContract {
             "mark": .object(["type": .array([.string("string"), .string("null")]),
                              "enum": .array(GuidePresentation.Mark.allCases.map { .string($0.rawValue) } + [.null])]),
             "label": nullableString, "detail": nullableString, "value": nullableString, "ghost": nullable(rect),
-            "estimatedSteps": .object(["type": .array([.string("integer"), .string("null")])]),
+            "milestone": described(nullableString, "Guide_step only: short semantic intent of this step's milestone, never coordinates."),
+            "plan": described(nullableStrings, "Guide_step only: remaining milestone intents in order starting with this one; at most 8; advisory."),
+            "goalChecks": described(nullableStrings, "Guide_step only: at most 6 independently checkable conditions establishing the whole requested end state."),
+            "outcomeState": described(.object(["type": .array([.string("string"), .string("null")]),
+                                               "enum": .array(GuidePresentation.OutcomeState.allCases.map { .string($0.rawValue) } + [.null])]),
+                                      "Verification_result only: confirmed, contradicted, pending (app still working) or unknown."),
         ])
     }
 
@@ -105,7 +125,7 @@ nonisolated public enum GuideContract {
     public static func responseContract(for purpose: GuideRequestPurpose) -> String {
         switch purpose {
         case .verification:
-            return "Return {presentation: verification_result object} only. Report matches=false if uncertain, with nonempty evidence explaining the limitation. Use the supplied fresh captureID. Include only kind/text/captureID/matches/evidence/evidenceTarget. evidenceTarget must bound ALL relevant visible outcome evidence in IMAGE PIXELS, or the relevant absence/uncertainty for false. Never copy the original action target or choose an irrelevant stable patch. Never choose a next step or task_completed; the host decides advancement."
+            return "Return {presentation: verification_result object} only. Report matches=false if uncertain, with nonempty evidence explaining the limitation. Use the supplied fresh captureID. Include only kind/text/captureID/matches/evidence/evidenceTarget/outcomeState; outcomeState is confirmed only with matches=true, else contradicted, pending (app still working) or unknown. evidenceTarget must bound ALL relevant visible outcome evidence in IMAGE PIXELS, or the relevant absence/uncertainty for false. Never copy the original action target or choose an irrelevant stable patch. Never choose a next step or task_completed; the host decides advancement."
         case .sideQuestion:
             return "Answer the side question using allowedKinds. Preserve the current step; never advance or complete the task. A different goal uses task_proposal."
         default:
@@ -118,13 +138,15 @@ nonisolated public enum GuideContract {
         properties["kind"] = .object(["type": .string("string"),
                                       "enum": .array(allowedKinds(for: purpose).map { .string($0.rawValue) })])
         if purpose == .verification {
-            for key in properties.keys where !["kind", "text", "captureID", "matches", "evidence", "evidenceTarget"].contains(key) {
+            for key in properties.keys where !["kind", "text", "captureID", "matches", "evidence", "evidenceTarget", "outcomeState"].contains(key) {
                 properties[key] = .object(["type": .string("null")])
             }
             properties["captureID"] = .object(["type": .string("string")])
             properties["matches"] = .object(["type": .string("boolean")])
             properties["evidence"] = .object(["type": .string("string")])
             properties["evidenceTarget"] = schema["properties"]["evidenceTarget"]["anyOf"].array.first
+            properties["outcomeState"] = .object(["type": .string("string"),
+                                                  "enum": .array(GuidePresentation.OutcomeState.allCases.map { .string($0.rawValue) })])
         }
         root["properties"] = .object(properties)
         return .object(root)

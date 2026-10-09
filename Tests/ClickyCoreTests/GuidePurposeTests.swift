@@ -52,7 +52,7 @@ final class GuidePurposeTests: XCTestCase {
 
     func testFalseVerificationRemainsValidAndCannotCarryStepFields() throws {
         var value = fields(kind: .verification_result)
-        value["captureID"] = .string(UUID().uuidString); value["matches"] = .bool(false)
+        value["captureID"] = .string(UUID().uuidString); value["matches"] = .bool(false); value["outcomeState"] = .string("unknown")
         value["evidence"] = .string("Intended value is not visible")
         value["evidenceTarget"] = .object(["x": .number(0), "y": .number(0), "width": .number(1), "height": .number(1)])
         XCTAssertEqual(try GuidePresentation.parse(JSONEncoder().encode(JSONValue.object(value)), purpose: .verification).matches, false)

@@ -33,12 +33,18 @@ nonisolated extension GuideContract {
                 fields["properties"] = .object(children); outcome = .object(fields)
             }
             properties["outcome"] = outcome
+            properties["milestone"] = nonempty(nonnullable(source["milestone"]))
+            properties["plan"] = .object(["type": .string("array"), "items": nonempty(.object(["type": .string("string")])),
+                                          "description": source["plan"]["description"]])
+            properties["goalChecks"] = .object(["type": .string("array"), "items": nonempty(.object(["type": .string("string")])),
+                                                "description": source["goalChecks"]["description"]])
         case .annotation:
             properties["captureID"] = uuid
             properties["target"] = nonnullable(source["target"])
             properties["mark"] = nonnullable(source["mark"])
             properties["label"] = nonempty(nonnullable(source["label"]))
         case .verification_result, .task_completed:
+            if kind == .verification_result { properties["outcomeState"] = nonnullable(source["outcomeState"]) }
             properties["captureID"] = uuid
             properties["matches"] = .object(["type": .string("boolean")])
             properties["evidence"] = nonempty(nonnullable(source["evidence"]))
@@ -52,7 +58,8 @@ nonisolated extension GuideContract {
     private static func variantFields(_ kind: GuidePresentation.Kind) -> [String] {
         switch kind {
         case .context_request: return ["captureID", "crop"]
-        case .guide_step: return ["captureID", "target", "action", "outcome", "mark", "label", "detail", "value", "ghost", "estimatedSteps"]
+        case .guide_step: return ["captureID", "target", "action", "outcome", "mark", "label", "detail", "value", "ghost",
+                                  "milestone", "plan", "goalChecks"]
         case .annotation: return ["captureID", "target", "mark", "label", "value"]
         case .verification_result, .task_completed: return ["captureID", "matches", "evidence", "evidenceTarget"]
         case .task_proposal: return ["proposedGoal"]

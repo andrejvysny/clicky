@@ -19,9 +19,14 @@ nonisolated public struct GuideHostTaskContext: Encodable, Sendable {
     public let contextRevision: UInt64
     public let currentStep: GuidePresentation?
     public let milestones: [GuideMilestone]
+    /// Stored final-goal conditions; completion is verified against these, never a newer goal.
+    public let goalChecks: [String]
+    public let planRevision: UInt64
+    public let plan: [GuidePlanItem]
     public init(_ task: GuideTaskState) {
         taskID = task.identifier; goal = task.goal; stepRevision = task.stepRevision
         contextRevision = task.contextRevision; currentStep = task.step; milestones = task.milestones
+        goalChecks = task.plan.goalChecks; planRevision = task.plan.revision; plan = task.plan.items
     }
 }
 

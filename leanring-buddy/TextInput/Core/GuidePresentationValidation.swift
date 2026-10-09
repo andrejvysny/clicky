@@ -10,7 +10,9 @@ nonisolated extension GuidePresentation {
             if let content, content.utf8.count > limit { throw failure(.textTooLong, field) }
         }
         if mark == .value, value?.isEmpty != false { throw failure(.missingField, "value") }
-        if let estimatedSteps, !(1...50).contains(estimatedSteps) { throw failure(.invalidNumber, "estimatedSteps") }
+        if let milestone, milestone.utf8.count > Self.milestoneBytes { throw failure(.textTooLong, "milestone") }
+        if let plan, plan.count > Self.planLimit { throw failure(.textTooLong, "plan") }
+        if let goalChecks, goalChecks.count > Self.goalCheckLimit { throw failure(.textTooLong, "goalChecks") }
         try validateFields()
         switch kind {
         case .guide_step: try validateStep()
@@ -41,7 +43,10 @@ nonisolated extension GuidePresentation {
             ("value", value != nil, kind == .guide_step || kind == .annotation),
             ("detail", detail != nil, kind == .guide_step),
             ("ghost", ghost != nil, kind == .guide_step),
-            ("estimatedSteps", estimatedSteps != nil, kind == .guide_step),
+            ("milestone", milestone != nil, kind == .guide_step),
+            ("plan", plan != nil, kind == .guide_step),
+            ("goalChecks", goalChecks != nil, kind == .guide_step),
+            ("outcomeState", outcomeState != nil, kind == .verification_result),
         ]
         if let invalid = fields.first(where: { $0.1 && !$0.2 }) { throw failure(.forbiddenField, invalid.0) }
     }
@@ -72,6 +77,9 @@ nonisolated extension GuidePresentation {
         }
         try requireText(evidence, field: "evidence", limit: 16_384)
         guard evidenceTarget != nil else { throw failure(.missingField, "evidenceTarget") }
+        // A positive verdict must be classified confirmed; an unclassified legacy verdict is never success.
+        if kind == .verification_result, matches == true, outcomeState != .confirmed { throw failure(.invalidVerdict, "outcomeState") }
+        if kind == .verification_result, matches == false, outcomeState == .confirmed { throw failure(.invalidVerdict, "outcomeState") }
     }
 
     private func requireText(_ value: String, field: String, limit: Int) throws {

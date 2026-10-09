@@ -17,7 +17,8 @@ def presentation(text: str) -> dict:
     return dict(kind='explanation', text=text, captureID=None, target=None,
                 action=None, outcome=None, matches=None, evidence=None, evidenceTarget=None,
                 proposedGoal=None, crop=None, mark=None, label=None,
-                detail=None, value=None, ghost=None, estimatedSteps=None)
+                detail=None, value=None, ghost=None, milestone=None, plan=None,
+                goalChecks=None, outcomeState=None)
 
 
 def response(result: dict, schema: dict) -> dict:
@@ -39,7 +40,8 @@ def answer(prompt: str, number: int) -> dict:
         result = presentation('Fixture verification')
         result.update(kind='verification_result', captureID=request['capture']['captureID'],
                       matches=prompt == 'verification-true', evidence='Fixture panel observation',
-                      evidenceTarget=dict(x=0, y=0, width=1, height=1))
+                      evidenceTarget=dict(x=0, y=0, width=1, height=1),
+                      outcomeState='confirmed' if prompt == 'verification-true' else 'contradicted')
         return result
     if prompt == 'wrong-purpose':
         return presentation('Wrong fixture kind')
@@ -48,7 +50,9 @@ def answer(prompt: str, number: int) -> dict:
         result.update(kind='guide_step', captureID=request['capture']['captureID'],
                       target=dict(x=0, y=0, width=1, height=1),
                       action=dict(kind='click', keyCode=None, modifiers=None),
-                      outcome=dict(description='Fixture panel opens', axRole=None, axTitle=None, axValue=None))
+                      outcome=dict(description='Fixture panel opens', axRole=None, axTitle=None, axValue=None),
+                      milestone='Open the fixture panel', plan=['Open the fixture panel'],
+                      goalChecks=['Fixture panel is open'])
         if prompt == 'missing-outcome':
             del result['outcome']
         if prompt == 'null-outcome':

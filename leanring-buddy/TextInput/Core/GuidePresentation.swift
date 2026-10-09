@@ -63,24 +63,40 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
     public let value: String?
     /// Dim next target for dense UIs; steps only, at most one.
     public let ghost: GuideRect?
-    /// The model's current estimate of the walkthrough length; it may change between steps.
-    public let estimatedSteps: Int?
+    /// Semantic milestone this step serves (intent, not coordinates), e.g. "Open Settings".
+    public let milestone: String?
+    /// Remaining semantic milestones in order, starting with this step's. Advisory; the host owns progress.
+    public let plan: [String]?
+    /// Independently checkable final-goal conditions. The host freezes the first nonempty set for the task.
+    public let goalChecks: [String]?
+    /// Verification only: confirmed, contradicted, still processing, or unknown.
+    public let outcomeState: OutcomeState?
 
     public init(kind: Kind, text: String, captureID: UUID? = nil, target: GuideRect? = nil,
                 action: GuideAction? = nil, outcome: GuideOutcome? = nil, matches: Bool? = nil,
                 evidence: String? = nil, evidenceTarget: GuideRect? = nil, proposedGoal: String? = nil, crop: GuideRect? = nil,
                 mark: Mark? = nil, label: String? = nil, detail: String? = nil, value: String? = nil,
-                ghost: GuideRect? = nil, estimatedSteps: Int? = nil) {
+                ghost: GuideRect? = nil, milestone: String? = nil, plan: [String]? = nil, goalChecks: [String]? = nil,
+                outcomeState: OutcomeState? = nil) {
         self.kind = kind; self.text = text; self.captureID = captureID; self.target = target
         self.action = action; self.outcome = outcome; self.matches = matches
         self.evidence = evidence; self.evidenceTarget = evidenceTarget; self.proposedGoal = proposedGoal; self.crop = crop
         self.mark = mark; self.label = label; self.detail = detail; self.value = value
-        self.ghost = ghost; self.estimatedSteps = estimatedSteps
+        self.ghost = ghost; self.milestone = milestone; self.plan = plan; self.goalChecks = goalChecks
+        self.outcomeState = outcomeState
     }
 
     public enum Mark: String, Codable, Sendable, CaseIterable {
         case circle, underline, highlight, arrow, value
     }
+
+    /// A verdict's outcome classification. Only `confirmed` with `matches == true` can advance.
+    public enum OutcomeState: String, Codable, Sendable, CaseIterable {
+        case confirmed, contradicted, pending, unknown
+    }
+
+    /// Bounds shared by the schema, validation and normalization.
+    public static let milestoneBytes = 80, planLimit = 8, goalCheckLimit = 6, goalCheckBytes = 200
 
     /// Label drawn at the mark: the model's label, else the first words of the text.
     public var markLabel: String {
@@ -156,7 +172,6 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
         let fields: [(JSONValue, Double, Double, String)] = [
             (object["action"]["keyCode"], 0, 65_536, "$.action.keyCode"),
             (object["action"]["modifiers"], 0, 18_446_744_073_709_551_616, "$.action.modifiers"),
-            (object["estimatedSteps"], Double(Int.min), -Double(Int.min), "$.estimatedSteps"),
         ]
         for (value, minimum, maximum, path) in fields {
             if case .number(let number) = value, number < minimum || number >= maximum {
@@ -184,9 +199,13 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
         case .guide_step:
             return Self(kind: kind, text: text, captureID: captureID, target: target, action: action, outcome: outcome,
                         mark: cleanMark, label: cleanLabel, detail: cleanDetail, value: cleanValue,
-                        ghost: ghost?.isValid == true ? ghost : nil,
-                        estimatedSteps: estimatedSteps.flatMap { (1...50).contains($0) ? $0 : nil })
-        case .verification_result, .task_completed:
+                        ghost: ghost?.isValid == true ? ghost : nil, milestone: milestone.map { Self.trimmed($0, bytes: Self.milestoneBytes) },
+                        plan: Self.cleanList(plan, limit: Self.planLimit, bytes: Self.milestoneBytes),
+                        goalChecks: Self.cleanList(goalChecks, limit: Self.goalCheckLimit, bytes: Self.goalCheckBytes))
+        case .verification_result:
+            return Self(kind: kind, text: text, captureID: captureID, matches: matches, evidence: evidence,
+                        evidenceTarget: evidenceTarget, outcomeState: outcomeState)
+        case .task_completed:
             return Self(kind: kind, text: text, captureID: captureID, matches: matches, evidence: evidence,
                         evidenceTarget: evidenceTarget)
         }
@@ -200,6 +219,10 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
     private var cleanMark: Mark? { mark == .value && cleanValue == nil ? .circle : mark }
     private var cleanLabel: String? { label.map { Self.trimmed($0, bytes: 60) }.flatMap { $0.isEmpty ? nil : $0 } }
     private var cleanDetail: String? { detail.map { Self.trimmed($0, bytes: 600) }.flatMap { $0.isEmpty ? nil : $0 } }
+    /// Bounded, trimmed, nonempty entries; the schema already capped the count.
+    private static func cleanList(_ list: [String]?, limit: Int, bytes: Int) -> [String]? {
+        list.map { $0.prefix(limit).map { trimmed($0, bytes: bytes) }.filter { !$0.isEmpty } }
+    }
     private static func trimmed(_ text: String, bytes: Int) -> String {
         var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
         while result.utf8.count > bytes { result.removeLast() }

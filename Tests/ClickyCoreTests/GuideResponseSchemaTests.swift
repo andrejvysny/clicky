@@ -9,7 +9,8 @@ final class GuideResponseSchemaTests: XCTestCase {
          "target": .object(["x": .number(0), "y": .number(0), "width": .number(10), "height": .number(20)]),
          "action": .object(["kind": .string("click"), "keyCode": .null, "modifiers": .null]),
          "outcome": .object(["description": .string("Panel is visible"), "axRole": .null, "axTitle": .null, "axValue": .null]),
-         "mark": .null, "label": .null, "detail": .null, "value": .null, "ghost": .null, "estimatedSteps": .null]
+         "mark": .null, "label": .null, "detail": .null, "value": .null, "ghost": .null,
+         "milestone": .string("Open panel"), "plan": .array([.string("Open panel")]), "goalChecks": .array([.string("Panel is visible")])]
     }
 
     private func data(_ fields: [String: JSONValue]) throws -> Data {
@@ -43,9 +44,10 @@ final class GuideResponseSchemaTests: XCTestCase {
     func testExplicitFalseVerdictValidButUnknownOrUnsupportedEvidenceNeverSucceeds() throws {
         let fields: [String: JSONValue] = ["kind": .string("verification_result"), "text": .string("Panel absent"),
             "captureID": .string(identifier), "matches": .bool(false), "evidence": .string("Panel is not visible"),
-            "evidenceTarget": .object(["x": .number(10), "y": .number(20), "width": .number(100), "height": .number(200)])]
+            "evidenceTarget": .object(["x": .number(10), "y": .number(20), "width": .number(100), "height": .number(200)]),
+            "outcomeState": .string("unknown")]
         XCTAssertEqual(try GuidePresentation.parseResponse(data(fields), purpose: .verification).matches, false)
-        for field in ["captureID", "matches", "evidence", "evidenceTarget"] {
+        for field in ["captureID", "matches", "evidence", "evidenceTarget", "outcomeState"] {
             var missing = fields; missing.removeValue(forKey: field)
             assertFailure(missing, "missing_field at $." + field, purpose: .verification)
             var null = fields; null[field] = .null
@@ -89,7 +91,7 @@ final class GuideResponseSchemaTests: XCTestCase {
         XCTAssertEqual(schema["type"], .string("object")); XCTAssertEqual(schema["anyOf"], .null)
         XCTAssertEqual(schema["required"], .array([.string("presentation")]))
         XCTAssertEqual(schema["additionalProperties"], .bool(false))
-        XCTAssertEqual(unionCount(schema), 14)
+        XCTAssertEqual(unionCount(schema), 13)
         for purpose in [GuideRequestPurpose.planning, .verification, .sideQuestion, .continuation, .recovery, .oneOffContext] {
             let variants = GuideContract.responseSchema(for: purpose)["properties"]["presentation"]["anyOf"].array
             XCTAssertEqual(variants.map { $0["properties"]["kind"]["enum"].array.first! },

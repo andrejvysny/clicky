@@ -210,12 +210,14 @@ final class GuideHarness {
     static func step(_ turn: GuideAgentTurn, pixel: CGRect = CGRect(x: 10, y: 10, width: 12, height: 8),
                      action: GuideAction.Kind = .click, text: String = "Click Settings") -> GuidePresentation {
         GuidePresentation(kind: .guide_step, text: text, captureID: turn.context?.captureID, target: GuideRect(pixel),
-                          action: GuideAction(kind: action), outcome: GuideOutcome(description: "Settings panel is open"))
+                          action: GuideAction(kind: action), outcome: GuideOutcome(description: "Settings panel is open"),
+                          milestone: text, plan: [text], goalChecks: ["Settings panel is open"])
     }
 
     static func verdict(_ turn: GuideAgentTurn, matches: Bool, evidence: CGRect = CGRect(x: 30, y: 20, width: 20, height: 20)) -> GuidePresentation {
         GuidePresentation(kind: .verification_result, text: matches ? "Opened" : "Not opened", captureID: turn.context?.captureID,
-                          matches: matches, evidence: "Panel title visible", evidenceTarget: GuideRect(evidence))
+                          matches: matches, evidence: "Panel title visible", evidenceTarget: GuideRect(evidence),
+                          outcomeState: matches ? .confirmed : .contradicted)
     }
 
     static func completed(_ turn: GuideAgentTurn, evidence: CGRect = CGRect(x: 30, y: 20, width: 20, height: 20)) -> GuidePresentation {

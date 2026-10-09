@@ -29,6 +29,7 @@ nonisolated public enum JSONValue: Codable, Equatable, Sendable {
     public var string: String? { if case .string(let value) = self { return value }; return nil }
     public var array: [JSONValue] { if case .array(let value) = self { return value }; return [] }
     public var bool: Bool { if case .bool(let value) = self { return value }; return false }
+    public var number: Double? { if case .number(let value) = self { return value }; return nil }
     public var integer: Int? { if case .number(let value) = self { return Int(exactly: value) }; return nil }
 }
 

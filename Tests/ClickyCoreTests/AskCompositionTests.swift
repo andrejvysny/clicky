@@ -105,7 +105,8 @@ final class PresentationNormalizationTests: XCTestCase {
         var fields: [String: JSONValue] = ["kind": .string("explanation"), "text": .string("I can see a Terminal window."),
                                            "captureID": .string(UUID().uuidString), "evidence": .string("Capture shows a terminal")]
         for key in ["target", "crop", "action", "outcome", "matches", "evidenceTarget", "proposedGoal",
-                    "mark", "label", "detail", "value", "ghost", "estimatedSteps"] { fields[key] = .null }
+                    "mark", "label", "detail", "value", "ghost", "milestone", "plan", "goalChecks",
+                    "outcomeState"] { fields[key] = .null }
         let result = try GuidePresentation.parse(JSONEncoder().encode(JSONValue.object(fields)))
         XCTAssertEqual(result.kind, .explanation)
         XCTAssertNil(result.evidence)
@@ -159,26 +160,27 @@ final class AnnotationMarkTests: XCTestCase {
     func testInvalidMarkCombinationsAreRejected() {
         XCTAssertThrowsError(try GuidePresentation(kind: .annotation, text: "Type", target: rect, mark: .value).validate())
         XCTAssertThrowsError(try GuidePresentation(kind: .annotation, text: "x", target: rect, ghost: rect).validate())
-        XCTAssertThrowsError(try GuidePresentation(kind: .annotation, text: "x", target: rect, estimatedSteps: 3).validate())
+        XCTAssertThrowsError(try GuidePresentation(kind: .annotation, text: "x", target: rect, plan: ["Open"]).validate())
         XCTAssertThrowsError(try GuidePresentation(kind: .annotation, text: "x", target: rect,
                                                    label: String(repeating: "a", count: 61)).validate())
-        let step = { (steps: Int) in
+        let step = { (plan: [String]) in
             GuidePresentation(kind: .guide_step, text: "Click", captureID: UUID(), target: self.rect,
-                              action: GuideAction(kind: .click), outcome: GuideOutcome(description: "Opens"), estimatedSteps: steps)
+                              action: GuideAction(kind: .click), outcome: GuideOutcome(description: "Opens"), plan: plan)
         }
-        XCTAssertNoThrow(try step(4).validate())
-        XCTAssertThrowsError(try step(0).validate())
-        XCTAssertThrowsError(try step(51).validate())
+        XCTAssertNoThrow(try step(["Open", "Apply"]).validate())
+        XCTAssertThrowsError(try step(Array(repeating: "Open", count: 9)).validate())
     }
 
     func testMalformedExtrasAreDroppedNotFatal() {
         let step = GuidePresentation(kind: .guide_step, text: "Click Save", captureID: UUID(), target: rect,
                                      action: GuideAction(kind: .click), outcome: GuideOutcome(description: "Saved"),
                                      mark: .value, label: String(repeating: "a", count: 80), detail: "",
-                                     ghost: GuideRect(CGRect(x: 0, y: 0, width: 0, height: 0)), estimatedSteps: 0).normalized()
+                                     ghost: GuideRect(CGRect(x: 0, y: 0, width: 0, height: 0)),
+                                     plan: Array(repeating: " Open ", count: 12) + [""]).normalized()
         XCTAssertNoThrow(try step.validate())
         XCTAssertEqual(step.mark, .circle)
-        XCTAssertNil(step.ghost); XCTAssertNil(step.estimatedSteps); XCTAssertNil(step.detail)
+        XCTAssertNil(step.ghost); XCTAssertNil(step.detail)
+        XCTAssertEqual(step.plan, Array(repeating: "Open", count: 8))
         XCTAssertEqual(step.label?.utf8.count, 60)
     }
 

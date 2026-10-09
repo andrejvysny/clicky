@@ -41,6 +41,7 @@ final class GuideContractHardeningTests: XCTestCase {
             var value = fields(.verification_result)
             value["captureID"] = .string(captureID.uuidString)
             value["matches"] = .bool(matches)
+            value["outcomeState"] = .string(matches ? "confirmed" : "contradicted")
             value["evidence"] = .string(matches ? "Panel is visible" : "Panel is not visible")
             value["evidenceTarget"] = .object(["x": .number(10), "y": .number(20), "width": .number(100), "height": .number(200)])
             XCTAssertEqual(try parse(value).matches, matches)

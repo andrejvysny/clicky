@@ -37,9 +37,10 @@ struct IslandStepCard: View {
 
     private var current: Int { completed.count + 1 }
 
+    /// Only the deterministic demo has a known length; a model's route is advisory, so live guides show Step N.
     private var total: Int? {
-        if guide.demo != nil { return max(GuidePreviewFixture.instructions.count, current) }
-        return guide.task?.step?.estimatedSteps.map { max($0, current) }
+        guard guide.demo != nil else { return nil }
+        return max(GuidePreviewFixture.instructions.count, current)
     }
 
     private var counter: String { total.map { "\(current)/\($0)" } ?? "Step \(current)" }
