@@ -23,16 +23,28 @@ nonisolated public enum GuideHostMessages {
     public static func verification(instruction: String, outcome: String) -> String {
         "The user was asked: " + instruction
             + "\nVerify this intended outcome only: " + outcome
-            + "\nJudge whether the current capture shows the result of that action. Use unknown only when "
-            + "the relevant area is not visible; if it is visible but different, use contradicted."
+            + "\nThe intended outcome is the guide's prediction. Judge whether the current capture shows the result of "
+            + "that action: if it shows a different but clearly direct result of this action that moves toward the task "
+            + "(new content attributable to it), report confirmed and describe what appeared. Hover or focus highlight, "
+            + "unchanged content or an unrelated change are never confirmation; visible loading is pending. Use unknown "
+            + "only when the relevant area is not visible; if it is visible but shows no such result, use contradicted."
     }
 
     public static func next(_ task: GuideTaskState, note: String) -> String {
         context(task) + "\n" + note + " Locate the next useful step or return task_completed if every goal check holds."
     }
 
+    public static func wrongPurpose(_ wrong: GuideWrongPurpose) -> String {
+        "Your previous reply was \(wrong.kind.rawValue), which this \(wrong.purpose.rawValue) turn does not allow. "
+            + "Answer the same request again for the same capture, using only allowedKinds: "
+            + GuideContract.allowedKinds(for: wrong.purpose).map(\.rawValue).joined(separator: ", ") + "."
+    }
+
     public static func goalCheck(_ checks: [String]) -> String {
         "Final verification. Every stored goal check must hold now in this capture:\n- "
-            + checks.joined(separator: "\n- ") + "\nmatches=true only if all hold."
+            + checks.joined(separator: "\n- ")
+            + "\nA check about an action already taken (something created, opened or clicked) is established by the "
+            + "matching host-verified milestone in the task context; every check about a final value, state or result "
+            + "must be visible in this capture. matches=true only if all hold."
     }
 }

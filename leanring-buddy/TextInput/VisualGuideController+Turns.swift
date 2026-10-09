@@ -64,8 +64,9 @@ extension VisualGuideController {
         let value = try getAgent(effort: activeEffort)
         if turn.image != nil { lastSent = environment.now() }
         metrics.count(.providerTurns)
-        let result = try await value.turn(turn)
+        let (result, corrected) = try await value.turnAllowingOneCorrection(turn)
         try check(current)
+        if corrected { metrics.count(.providerTurns); trace("wrong_purpose corrected purpose=" + turn.purpose.rawValue) }
         #if DEBUG
         // Kinds and states only (never text, targets or images), persisted so a native run can be reconstructed.
         Logger(subsystem: "clicky", category: "guide").notice(

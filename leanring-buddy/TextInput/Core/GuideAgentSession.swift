@@ -30,6 +30,19 @@ nonisolated public protocol GuideAgentRunning: Sendable {
     func close() async
 }
 
+extension GuideAgentRunning {
+    /// Sends the turn; a reply of a kind the purpose forbids gets exactly one text-only corrective turn on the same
+    /// capture (the provider already has the image). Returns the presentation and whether a correction was needed.
+    public func turnAllowingOneCorrection(_ request: GuideAgentTurn) async throws -> (GuidePresentation, corrected: Bool) {
+        do { return (try await turn(request), false) }
+        catch let wrong as GuideWrongPurpose {
+            let correction = GuideAgentTurn(message: GuideHostMessages.wrongPurpose(wrong), context: request.context,
+                                            purpose: request.purpose, taskContext: request.taskContext, effort: request.effort)
+            return (try await turn(correction), true)
+        }
+    }
+}
+
 public actor GuideAgentSession: GuideAgentRunning {
     private let profile: GuideAgentProfile
     private let executable: URL
@@ -169,7 +182,9 @@ public actor GuideAgentSession: GuideAgentRunning {
         let data: Data
         if message["structured_output"] != .null { data = try JSONEncoder().encode(message["structured_output"]) }
         else { data = Data((message["result"].string ?? "").utf8) }
-        let presentation = try parsePresentation(data)
+        let presentation: GuidePresentation
+        do { presentation = try parsePresentation(data) }
+        catch let wrong as GuideWrongPurpose { self.claudeTurnID = nil; reject(wrong); return }
         self.claudeTurnID = nil; complete(presentation)
     }
 
@@ -194,7 +209,8 @@ public actor GuideAgentSession: GuideAgentRunning {
             guard params["turn"]["status"].string == "completed" else {
                 throw AskError.protocolFailure("GPT-6 Luna could not complete the turn. Check model access and official sign-in, then Retry explicitly.")
             }
-            complete(try parsePresentation(Data(response.utf8)))
+            do { complete(try parsePresentation(Data(response.utf8))) }
+            catch let wrong as GuideWrongPurpose { reject(wrong) }
         default: break
         }
     }
@@ -208,6 +224,13 @@ public actor GuideAgentSession: GuideAgentRunning {
         timeout?.cancel(); timeout = nil
         let continuation = pending; pending = nil; pendingPurpose = nil; response = ""
         continuation?.resume(returning: value)
+    }
+
+    /// Ends only the pending turn with an error; the conversation stays open for a corrective turn.
+    private func reject(_ error: Error) {
+        timeout?.cancel(); timeout = nil
+        let continuation = pending; pending = nil; pendingPurpose = nil; response = ""
+        continuation?.resume(throwing: error)
     }
 
     private func fail(_ error: Error) {

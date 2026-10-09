@@ -133,7 +133,7 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
             throw GuideValidationIssue(code: fields["kind"] == nil ? .missingField : .unknownEnum, path: "$.kind").error()
         }
         guard purpose.permits(kind) else {
-            throw AskError.protocolFailure("The agent returned an invalid presentation (wrong_purpose at $.kind; kind=\(kind.rawValue), purpose=\(purpose.rawValue)). Retry explicitly with fresh context.")
+            throw GuideWrongPurpose(kind: kind, purpose: purpose)
         }
         if let issue = GuideSchemaValidation.issue(presentation, schema: GuideContract.variantSchema(for: kind)) {
             throw issue.error(kind: kind)
@@ -150,7 +150,7 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
             throw GuideValidationIssue(code: .invalidJSON, path: "$").error()
         }
         if let purpose, let rawKind = object["kind"].string, let kind = Kind(rawValue: rawKind), !purpose.permits(kind) {
-            throw AskError.protocolFailure("The agent returned an invalid presentation (wrong_purpose at $.kind; kind=\(kind.rawValue), purpose=\(purpose.rawValue)). Retry explicitly with fresh context.")
+            throw GuideWrongPurpose(kind: kind, purpose: purpose)
         }
         let schema = purpose.map(GuideContract.schema(for:)) ?? GuideContract.schema
         if let issue = GuideSchemaValidation.issue(object, schema: schema) { throw issue.error() }
@@ -241,4 +241,14 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
         return result
     }
 
+}
+
+/// The provider answered with a kind this turn's purpose does not allow. The session stays usable, so the host
+/// may ask once more for an allowed kind; the presentation itself is never used.
+nonisolated public struct GuideWrongPurpose: LocalizedError, Equatable, Sendable {
+    public let kind: GuidePresentation.Kind
+    public let purpose: GuideRequestPurpose
+    public var errorDescription: String? {
+        "The agent returned an invalid presentation (wrong_purpose at $.kind; kind=\(kind.rawValue), purpose=\(purpose.rawValue)). Retry explicitly with fresh context."
+    }
 }

@@ -35,7 +35,9 @@ ACTIONS: dict[str, str] = {
 }
 BOXES_JS = """() => JSON.stringify(Object.fromEntries(
   ['new','archive','delete','q2','q3','options','charts','summary','appendix','publish'].map(id => {
-    const r = document.getElementById(id).getBoundingClientRect();
+    const element = document.getElementById(id);
+    // A checkbox's label is part of its click target.
+    const r = (element.closest('label') || element).getBoundingClientRect();
     return ['#' + id, [r.x * devicePixelRatio, r.y * devicePixelRatio, r.width * devicePixelRatio, r.height * devicePixelRatio]];
   })))"""
 

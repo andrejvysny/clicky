@@ -82,7 +82,7 @@ final class GuidePlanContractTests: XCTestCase {
         XCTAssertEqual(context.goalChecks, [])
         let encoded = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(context))
         XCTAssertEqual(encoded["planRevision"], .number(0))
-        XCTAssertEqual(GuideContract.promptVersion, "clicky-guide-9")
+        XCTAssertEqual(GuideContract.promptVersion, "clicky-guide-10")
     }
 }
 

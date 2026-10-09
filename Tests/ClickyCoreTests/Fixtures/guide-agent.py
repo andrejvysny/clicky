@@ -36,6 +36,8 @@ def answer(prompt: str, number: int) -> dict:
     if request['purpose'] == 'verification':
         assert request['allowedKinds'] == ['verification_result']
         assert 'host decides advancement' in request['responseContract']
+    if prompt.startswith('Your previous reply'):
+        prompt = 'verification-false'
     if prompt.startswith('verification-'):
         result = presentation('Fixture verification')
         result.update(kind='verification_result', captureID=request['capture']['captureID'],

@@ -20,13 +20,13 @@ enum GuideReplay {
                                             applicationIdentifier: "fixture.replay", applicationName: "Fixture")
 
     struct Tally {
-        var located = 0, hits = 0, steps = 0, turns = 0
+        var located = 0, hits = 0, steps = 0, turns = 0, corrections = 0
         /// truth -> observed outcome state -> count
         var verdicts: [String: [String: Int]] = [:]
         var falseConfirms = 0
         mutating func record(truth: String, observed: String, matches: Bool) {
             verdicts[truth, default: [:]][observed, default: 0] += 1
-            if truth != "confirmed", matches || observed == "confirmed" { falseConfirms += 1 }
+            if !truth.hasSuffix("confirmed"), matches || observed == "confirmed" { falseConfirms += 1 }
         }
     }
 
@@ -48,7 +48,7 @@ enum GuideReplay {
             catch { print("  run aborted: \(error.localizedDescription)") }
             await session.close()
         }
-        print("summary located=\(tally.located)/\(tally.steps) targetHits=\(tally.hits) providerTurns=\(tally.turns) falseConfirms=\(tally.falseConfirms)")
+        print("summary located=\(tally.located)/\(tally.steps) targetHits=\(tally.hits) providerTurns=\(tally.turns) corrections=\(tally.corrections) falseConfirms=\(tally.falseConfirms)")
         for (truth, observed) in tally.verdicts.sorted(by: { $0.key < $1.key }) {
             print("  truth=\(truth) " + observed.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))
         }
@@ -59,7 +59,8 @@ enum GuideReplay {
         task.authorize(target)
         func send(_ turn: GuideAgentTurn) async throws -> GuidePresentation {
             tally.turns += 1
-            let result = try await session.turn(turn)
+            let (result, corrected) = try await session.turnAllowingOneCorrection(turn)
+            if corrected { tally.turns += 1; tally.corrections += 1; print("    corrected wrong purpose for \(turn.purpose.rawValue)") }
             guard turn.purpose.permits(result.kind) else { throw AskError.protocolFailure("\(result.kind.rawValue) not allowed for \(turn.purpose.rawValue)") }
             return result
         }

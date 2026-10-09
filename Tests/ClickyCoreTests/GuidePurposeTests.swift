@@ -90,18 +90,24 @@ final class GuidePurposeTests: XCTestCase {
         }
     }
 
-    func testWrongPurposeClosesBothProvidersWithoutReplay() async throws {
+    func testWrongPurposeKeepsTheSessionAndGetsExactlyOneCorrectiveTurn() async throws {
         for provider in [AgentProvider.claude, .codex] {
             let (agent, root) = try session(provider)
             defer { try? FileManager.default.removeItem(at: root) }
+            let context = try capture()
             do {
-                _ = try await agent.turn(GuideAgentTurn(message: "wrong-purpose", purpose: .verification))
+                _ = try await agent.turn(GuideAgentTurn(message: "wrong-purpose", context: context, purpose: .verification))
                 XCTFail("Wrong kind accepted")
             } catch {
+                XCTAssertTrue(error is GuideWrongPurpose)
                 XCTAssertTrue(error.localizedDescription.contains("wrong_purpose at $.kind"))
             }
-            do { _ = try await agent.turn(GuideAgentTurn(message: "replay")); XCTFail("Closed session reused") }
-            catch { XCTAssertEqual(error as? AskError, .incompleteTurn) }
+            // The conversation survives; the host (never the provider) asks once more for an allowed kind.
+            let (verdict, corrected) = try await agent.turnAllowingOneCorrection(
+                GuideAgentTurn(message: "wrong-purpose", context: context, purpose: .verification))
+            XCTAssertTrue(corrected)
+            XCTAssertEqual(verdict.kind, .verification_result)
+            XCTAssertEqual(verdict.matches, false)
             await agent.close()
         }
     }

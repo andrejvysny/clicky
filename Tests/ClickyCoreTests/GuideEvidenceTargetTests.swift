@@ -84,7 +84,7 @@ final class GuideEvidenceTargetTests: XCTestCase {
     func testHostContractNamesRelevantFalseRegionAndWholeGoalEvidence() throws {
         let request = GuideHostRequest(purpose: .verification, text: "Check", task: nil, capture: nil)
         let encoded = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(request))
-        XCTAssertEqual(encoded["protocolVersion"], .string("clicky-guide-9"))
+        XCTAssertEqual(encoded["protocolVersion"], .string("clicky-guide-10"))
         XCTAssertTrue(request.responseContract.contains("evidenceTarget must bound ALL relevant visible outcome evidence"))
         XCTAssertTrue(request.responseContract.contains("relevant absence/uncertainty for false"))
         XCTAssertTrue(request.responseContract.contains("Never copy the original action target"))
