@@ -12,6 +12,8 @@ final class GuideObserver {
     var onInteractionBegan: (() -> Void)?
     var onInvalidated: (() -> Void)?
     var onUnavailable: (() -> Void)?
+    /// The approved window itself closed or was minimized; a deliberate recovery, not a temporary switch.
+    var onClosed: (() -> Void)?
     private var sources: GuideEventSources?
     /// True while observing; tests use it to confirm a stopped observer cannot match late events.
     var isObserving: Bool { target != nil }
@@ -22,6 +24,10 @@ final class GuideObserver {
     private var mouseRelease: GuideMouseReleaseTracker?
     private var target: WindowCaptureTarget?
     private var targetBounds: CGRect?
+    /// The captured region of the task surface group; clicks outside it are not this task's.
+    private var scope: CGRect?
+    /// A matched attempt is settling toward verification; surface changes it caused are expected.
+    private var evidencePending = false
     private var generation: UInt64 = 0
     private var expectedField: AXUIElement?
     private var expectedFieldFrame: CGRect?
@@ -53,10 +59,10 @@ final class GuideObserver {
 
     func cancelPendingMousePress() { mouseRelease?.cancel() }
 
-    func start(step: GuidePresentation, target: WindowCaptureTarget, rect: CGRect) {
+    func start(step: GuidePresentation, target: WindowCaptureTarget, rect: CGRect, scope: CGRect? = nil) {
         stop()
         guard let action = step.action else { return }
-        self.target = target; targetBounds = environment.bounds(target)
+        self.target = target; targetBounds = environment.bounds(target); self.scope = scope ?? targetBounds
         matcher = GuideInteractionMatcher(action: action, target: rect)
         mouseRelease = GuideMouseReleaseTracker(target: rect)
         let keys = environment.accessibilityTrusted() && (action.kind == .key || action.kind == .field_commit)
@@ -67,7 +73,7 @@ final class GuideObserver {
         if environment.accessibilityTrusted() { installAX(target) }
     }
     func stop() {
-        generation &+= 1; pending?.cancel(); pending = nil
+        generation &+= 1; pending?.cancel(); pending = nil; evidencePending = false; scope = nil
         sources?.remove(); sources = nil
         if let axObserver { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(axObserver), .commonModes) }
         axObserver = nil
@@ -83,7 +89,7 @@ final class GuideObserver {
         if event.scroll { mouseRelease?.cancel(); onInvalidated?(); return }
         guard environment.bounds(target) == targetBounds else { mouseRelease?.cancel(); onInvalidated?(); return }
         let point = event.point
-        guard targetBounds?.contains(point) == true else { mouseRelease?.cancel(); return }
+        guard scope?.contains(point) == true else { mouseRelease?.cancel(); return }
         if event.pressed {
             if mouseRelease?.began(button: event.button, count: event.count, point: point, timestamp: event.timestamp) == true { onInteractionBegan?() }
             return
@@ -114,9 +120,11 @@ final class GuideObserver {
     }
     private func schedule(delay: UInt64) {
         pending?.cancel(); let current = generation
+        evidencePending = true
         pending = Task { [weak self] in
             do { try await self?.environment.sleep(delay) } catch { return }
             guard let self, self.generation == current else { return }
+            evidencePending = false
             self.onEvidence?()
         }
     }
@@ -145,7 +153,17 @@ final class GuideObserver {
     }
     func receiveAccessibility(_ name: String) {
         if [kAXWindowMovedNotification, kAXWindowResizedNotification].contains(name) { mouseRelease?.cancel(); onInvalidated?(); return }
-        if name == kAXUIElementDestroyedNotification || name == kAXFocusedWindowChangedNotification { mouseRelease?.cancel(); onUnavailable?(); return }
+        if name == kAXUIElementDestroyedNotification || name == kAXFocusedWindowChangedNotification {
+            mouseRelease?.cancel()
+            guard let target else { return }
+            if environment.bounds(target) == nil { onClosed?(); return }
+            // Focus left the approved surface group: an unrelated window or app (temporary switch).
+            guard environment.focused(target) else { onUnavailable?(); return }
+            // An established related dialog/sheet/menu opened or closed. After a matched attempt that is the
+            // expected transition and verification follows; otherwise the old target geometry is stale.
+            if !evidencePending { onInvalidated?() }
+            return
+        }
         // Web controls can bubble these notifications from an ancestor, not the edited field.
         // Neither typing nor selecting text is a field commit, regardless of the sender.
         if matcher?.action.kind == .field_commit,

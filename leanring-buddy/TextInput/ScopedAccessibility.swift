@@ -79,6 +79,28 @@ enum ScopedAccessibility {
             return CFEqual(expected, focused)
         } ?? false
     }
+    /// The approved window, or an established related surface of it (an AX child sheet, dialog or menu
+    /// window matched by Window Server identity), has focus. Same process alone is not enough.
+    static func surfaceFocused(_ target: WindowCaptureTarget) -> Bool {
+        if focused(target) { return true }
+        guard target.displayIdentifier == nil,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier else { return false }
+        let focusedFrame: CGRect? = read {
+            guard AXIsProcessTrusted(), let raw = value(AXUIElementCreateApplication(target.processIdentifier), kAXFocusedWindowAttribute),
+                  CFGetTypeID(raw) == AXUIElementGetTypeID() else { return nil }
+            return frame(raw as! AXUIElement)
+        }
+        guard let focusedFrame else { return false }
+        return related(target).contains { bounds($0).map { near($0, focusedFrame) } ?? false }
+    }
+    static func waitForSurfaceFocus(_ target: WindowCaptureTarget, timeout: TimeInterval = 1.0) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if surfaceFocused(target) { return true }
+            if Date() >= deadline { return false }
+            try? await Task.sleep(nanoseconds: 80_000_000)
+        }
+    }
     /// Focus returns asynchronously after Quick Ask closes; wait briefly instead of failing the request.
     static func waitForFocus(_ target: WindowCaptureTarget, timeout: TimeInterval = 1.0) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)

@@ -210,7 +210,7 @@ extension VisualGuideController {
                                 ghost: result.ghost.flatMap(context.screenRect), within: context.region.rect,
                                 avoidRects: environment.annotationObstacles(target, context.region.rect), warning: result.warning != nil))
             if !composerOpen {
-                observer.start(step: result, target: target, rect: rect)
+                observer.start(step: result, target: target, rect: rect, scope: context.region.rect)
                 startTargetGuard(image: image, context: context, pixelTarget: pixelTarget)
             }
             #endif

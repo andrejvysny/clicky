@@ -124,6 +124,9 @@ final class VisualGuideController: ObservableObject {
         observer.onEvidence = { [weak self] in self?.evidenceObserved() }
         observer.onInvalidated = { [weak self] in self?.relocateTarget(reason: "observed_change") }
         observer.onUnavailable = { [weak self] in self?.interruptForAppSwitch() }
+        observer.onClosed = { [weak self] in
+            self?.pause(message: "Target closed or minimized · Choose a window to resume", reason: .targetClosed)
+        }
     }
 
     /// Claude fixes effort per process, so it can change only before a task session starts.

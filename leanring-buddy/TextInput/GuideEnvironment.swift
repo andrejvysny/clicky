@@ -16,6 +16,7 @@ struct GuideEnvironment {
     var sleep: (UInt64) async throws -> Void
     var capture: (_ target: WindowCaptureTarget, _ region: CGRect?, _ related: [WindowCaptureTarget],
                   _ outputSize: CGSize?) async throws -> PNGImageAttachment
+    /// The approved window or one of its established related surfaces is focused (task surface group).
     var focused: (WindowCaptureTarget) -> Bool
     var waitForFocus: (WindowCaptureTarget) async -> Bool
     var bounds: (WindowCaptureTarget) -> CGRect?
@@ -49,8 +50,8 @@ struct GuideEnvironment {
         capture: { target, region, related, outputSize in
             try await WindowSnapshotCapture.capture(target, region: region, relatedTargets: related, outputSize: outputSize)
         },
-        focused: { ScopedAccessibility.focused($0) },
-        waitForFocus: { await ScopedAccessibility.waitForFocus($0) },
+        focused: { ScopedAccessibility.surfaceFocused($0) },
+        waitForFocus: { await ScopedAccessibility.waitForSurfaceFocus($0) },
         bounds: { ScopedAccessibility.bounds($0) },
         related: { ScopedAccessibility.related($0) },
         outcomeMatches: { ScopedAccessibility.matches($0, target: $1) },

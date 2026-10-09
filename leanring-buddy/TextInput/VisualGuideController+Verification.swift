@@ -135,7 +135,7 @@ extension VisualGuideController {
               environment.bounds(target) == stepWindowBounds else { publish(); return }
         onTarget?(GuideMark(mark: step.mark ?? .circle, target: rect, label: Self.stepLabel(step), value: step.mark == .value ? step.value : nil,
                             ghost: nil, within: stepWindowBounds, warning: step.warning != nil))
-        if !composerOpen { observer.start(step: step, target: target, rect: rect) }
+        if !composerOpen { observer.start(step: step, target: target, rect: rect, scope: stepSnapshot?.context.region.rect) }
         publish()
     }
 
