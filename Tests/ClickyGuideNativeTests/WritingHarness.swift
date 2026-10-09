@@ -58,6 +58,7 @@ final class FakeWritingWorld {
 
     var primary: TextTargetSnapshot?
     var alternate: TextTargetSnapshot?
+    var ambiguous = false
     /// What `liveTarget` returns; nil means "the bound target, unchanged".
     var live: TextTargetSnapshot?
     var sourceText = ""
@@ -69,6 +70,11 @@ final class FakeWritingWorld {
     var applyResult: WritingApplyOutcome?
     var restoreResult = true
     var definitions = WritingDefinitions.empty
+    /// Runs inside the adapter just before its commit-point authorization check (models work suspended there).
+    var beforeCommit: (() -> Void)?
+    /// Ordered native effects: "keyRelease", "closeComposer", "restoreFocus", "apply", "restore".
+    private(set) var events: [String] = []
+    private(set) var canceledAtCommit = 0
 
     private(set) var applyCalls: [ApplyCall] = []
     private(set) var readSourceCalls = 0
@@ -91,22 +97,31 @@ final class FakeWritingWorld {
 
     var environment: WritingEnvironment {
         WritingEnvironment(
-            captureTargets: { [unowned self] _ in WritingTargets(primary: primary, alternate: alternate) },
+            captureTargets: { [unowned self] _ in WritingTargets(primary: primary, alternate: alternate, ambiguous: ambiguous) },
             liveTarget: { [unowned self] bound in live ?? bound },
             readSource: { [unowned self] target in
                 readSourceCalls += 1
-                return try ExactSource(text: sourceText, range: target.selection)
+                // A paste-only destination copies a selection whose range it cannot read.
+                let range = target.pasteOnly && target.selection.isEmpty ? UTF16Range(location: 0, length: sourceText.utf16.count)! : target.selection
+                return try ExactSource(text: sourceText, range: range)
             },
             readSurrounding: { [unowned self] _ in readSurroundingCalls += 1; return surrounding },
             frontmostProcess: { [unowned self] in frontmost },
-            restoreFocus: { [unowned self] _ in focusRestorable },
-            waitForSubmitKeyRelease: { [unowned self] in keyReleased },
-            apply: { [unowned self] target, range, text, expected in
+            restoreFocus: { [unowned self] _ in events.append("restoreFocus"); return focusRestorable },
+            waitForSubmitKeyRelease: { [unowned self] in events.append("keyRelease"); return keyReleased },
+            apply: { [unowned self] target, range, text, expected, authorized in
+                beforeCommit?()
+                guard authorized() else { canceledAtCommit += 1; return .notApplied(.canceled) }
+                events.append("apply")
                 applyCalls.append((target, range, text, expected))
                 return applyResult ?? .applied(WritingAppliedEdit(targetToken: target.token, insertedRange: range.replaced(by: text),
                                                                   insertedText: text, replacedText: expected, postRevision: "r2"))
             },
-            restore: { [unowned self] _, edit in restoreCalls.append(edit); return restoreResult },
+            restore: { [unowned self] _, edit, authorized in
+                beforeCommit?()
+                guard authorized() else { canceledAtCommit += 1; return false }
+                events.append("restore"); restoreCalls.append(edit); return restoreResult
+            },
             copy: { [unowned self] text in copied.append(text) },
             makeAgent: { [unowned self] _, _, _, _ in agentsMade += 1; return agent })
     }
@@ -117,6 +132,7 @@ final class FakeWritingWorld {
         coordinator.provider = provider
         coordinator.executable = executable ? URL(fileURLWithPath: "/nonexistent/scripted-writer") : nil
         coordinator.definitions = { [unowned self] in definitions }
+        coordinator.closeComposer = { [unowned self] in events.append("closeComposer") }
         await coordinator.bind(processIdentifier: FakeWritingWorld.pid)
         return coordinator
     }

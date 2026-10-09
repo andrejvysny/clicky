@@ -152,4 +152,18 @@ final class WritingContractTests: XCTestCase {
         XCTAssertNil(WritingActionInstruction.instruction(for: "translate", argument: "  "))
         XCTAssertTrue(WritingActionInstruction.instruction(for: "translate", argument: "Slovak")!.contains("Slovak"))
     }
+
+    func testPasteOnlyTargetsPasteAutomaticallyAndTerminalPastesStaySingleLine() {
+        func target(_ kind: WritingTargetKind) -> TextTargetSnapshot {
+            TextTargetSnapshot(kind: kind, applicationName: "A", bundleIdentifier: "a", processIdentifier: 1, windowIdentifier: 1,
+                               paneIdentity: nil, selection: .caret(0)!, contentRevision: "", pasteOnly: true)
+        }
+        let provenance = WritingProvenance.snippet(id: UUID(), revision: 1)
+        XCTAssertEqual(WritingApplyPlan.decide(intent: .draft, target: target(.textField), text: "a\nb", provenance: provenance), .automatic)
+        XCTAssertEqual(WritingApplyPlan.decide(intent: .rewrite, target: target(.textField), text: "a", provenance: provenance), .automatic)
+        XCTAssertTrue(target(.textField).mayHaveSelection)
+        XCTAssertEqual(WritingApplyPlan.decide(intent: .snippet, target: target(.terminal), text: "ls", provenance: provenance), .automatic)
+        XCTAssertEqual(WritingApplyPlan.decide(intent: .snippet, target: target(.terminal), text: "a\nb", provenance: provenance),
+                       .previewOnly(.terminalMultiline))
+    }
 }

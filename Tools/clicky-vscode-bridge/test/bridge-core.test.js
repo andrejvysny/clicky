@@ -57,3 +57,25 @@ test('response and failure builders', () => {
   assert.deepStrictEqual(JSON.parse(core.response('i', { a: 1 })), { v: 1, id: 'i', ok: true, result: { a: 1 } });
   assert.deepStrictEqual(JSON.parse(core.failure('i', 'busy')), { v: 1, id: 'i', ok: false, error: 'busy' });
 });
+
+test('RequestLedger rejects repeats and stays bounded', () => {
+  const ledger = new core.RequestLedger(2);
+  assert.ok(ledger.admit('a'));
+  assert.ok(!ledger.admit('a'));
+  assert.ok(ledger.admit('b'));
+  assert.ok(ledger.admit('c'));
+  assert.strictEqual(ledger.seen.size, 2);
+});
+
+test('terminalReadiness is unknown until observed', () => {
+  assert.strictEqual(core.terminalReadiness({ shellIntegration: true, observed: false, running: 0 }), 'unknown');
+  assert.strictEqual(core.terminalReadiness({ shellIntegration: false, observed: true, running: 0 }), 'unknown');
+  assert.strictEqual(core.terminalReadiness({ shellIntegration: true, observed: true, running: 1 }), 'busy');
+  assert.strictEqual(core.terminalReadiness({ shellIntegration: true, observed: true, running: 0 }), 'ready');
+});
+
+test('selectionMatches requires one exact selection', () => {
+  assert.ok(core.selectionMatches([{ start: 1, end: 3 }], 1, 3));
+  assert.ok(!core.selectionMatches([{ start: 1, end: 3 }, { start: 5, end: 5 }], 1, 3));
+  assert.ok(!core.selectionMatches([{ start: 2, end: 2 }], 1, 1));
+});

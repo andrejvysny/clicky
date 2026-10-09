@@ -81,12 +81,14 @@ nonisolated public struct VSCodeBridgeClient: Sendable {
         return text
     }
 
+    /// `requireSelection`: the bridge applies only while the active editor's single selection is exactly `range`
+    /// (forward writes); a restore of Clicky's own inserted text passes false.
     public func replaceRange(socket: URL, uri: String, version: Int, range: UTF16Range,
-                             text: String, expected: String) async throws -> VSCodeReplaceResult {
+                             text: String, expected: String, requireSelection: Bool = false) async throws -> VSCodeReplaceResult {
         let result = try await call(socket: socket, method: "replaceRange", params: [
             "uri": .string(uri), "version": .number(Double(version)),
             "start": .number(Double(range.location)), "end": .number(Double(range.end)),
-            "text": .string(text), "expected": .string(expected),
+            "text": .string(text), "expected": .string(expected), "requireSelection": .bool(requireSelection),
         ])
         return try VSCodeBridgeWire.decode(VSCodeReplaceResult.self, from: result)
     }

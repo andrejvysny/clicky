@@ -150,8 +150,12 @@ private final class PromptTextView: NSTextView {
 
     override func keyDown(with event: NSEvent) {
         if !hasMarkedText() {
+            let isSubmitKey = [UInt16(36), UInt16(76)].contains(event.keyCode) && !event.modifierFlags.contains(.shift)
+            // A held Return must act once: auto-repeat can neither turn a picker completion into a submission
+            // nor submit/apply again while the first submission is being handled.
+            if isSubmitKey, event.isARepeat { return }
             if let onPickerKey, let key = Self.pickerKey(event), onPickerKey(key) { return }
-            if [UInt16(36), UInt16(76)].contains(event.keyCode), !event.modifierFlags.contains(.shift) { onSubmit?(); return }
+            if isSubmitKey { onSubmit?(); return }
             if event.keyCode == 53 { onCancel?(); return }
             if let onAttach, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
                event.charactersIgnoringModifiers?.lowercased() == "a" { onAttach(); return }

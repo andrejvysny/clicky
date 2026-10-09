@@ -22,13 +22,14 @@ struct CursorAskView: View {
     private var suggestions: [SlashCommand] {
         guard let query = pickerQuery else { return [] }
         return SlashCommandRegistry(definitions: controller.writingDefinitions.definitions,
-                                    hasSelection: writing.target?.hasSelection ?? false).suggestions(for: query)
+                                    hasSelection: writing.target?.mayHaveSelection ?? false).suggestions(for: query)
     }
     private var pickerVisible: Bool { picker.isVisible(query: pickerQuery, count: suggestions.count) }
     private var emptyDraft: Bool { controller.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var canSend: Bool { controller.canSubmit || (emptyDraft && writing.canApply) }
 
     private var placeholder: String {
+        if writing.canRefine, writing.proposal == nil { return "Answer the question…" }
         if writing.canRefine { return "Refine the draft… (↩ alone applies)" }
         if controller.selection != nil { return "Ask about the selection…" }
         if controller.provider == .preview { return "Ask Clicky (preview, no AI)…" }

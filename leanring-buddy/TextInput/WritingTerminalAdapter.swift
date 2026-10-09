@@ -10,9 +10,11 @@ import ClickyCore
 @MainActor
 final class WritingTerminalAdapter {
     static let bundleIdentifier = "com.apple.Terminal"
-    static let shells: Set<String> = ["zsh", "bash", "fish", "sh", "ksh", "tcsh", "dash"]
+    /// Automatic insertion is limited to the shell with native evidence (Terminal + zsh, see MAC_VALIDATION).
+    /// Other shells keep the Copy path until they are validated.
+    static let shells: Set<String> = ["zsh"]
     private var elements: [UUID: AXUIElement] = [:]
-    private let clipboard = WritingClipboard()
+    private let clipboard = WritingClipboard.shared
 
     struct PaneState: Equatable {
         let windowIdentifier: UInt32
@@ -99,25 +101,28 @@ final class WritingTerminalAdapter {
         return WritingAX.focusedElement(of: bound.processIdentifier).map { CFEqual($0, element) } ?? false
     }
 
-    func apply(_ bound: TextTargetSnapshot, text: String) async -> WritingApplyOutcome {
+    func apply(_ bound: TextTargetSnapshot, text: String, authorized: WritingAuthorization) async -> WritingApplyOutcome {
         guard TerminalPayload.classify(text) == .singleLine else { return .notApplied(.rejectedByTarget) }
         guard let element = elements[bound.token], let before = WritingAX.characterCount(element) else { return .notApplied(.targetUnavailable) }
         guard let state = try? await Self.paneState() else { return .notApplied(.terminalNotReady) }
         guard state.windowIdentifier == bound.windowIdentifier, state.tty == bound.paneIdentity else { return .notApplied(.targetChanged) }
         guard state.ready else { return .notApplied(.terminalNotReady) }
+        // No suspension from here to the keystroke. The caret baseline is sampled before the paste is posted,
+        // so a fast echo cannot be mistaken for the starting position.
+        guard authorized() else { return .notApplied(.canceled) }
         guard focusRestored(bound) else { return .notApplied(.focusChanged) }
+        let caretBefore = WritingAX.selectedRange(element)
         guard let snapshot = clipboard.snapshot() else { return .notApplied(.clipboardUnavailable) }
         guard let staged = clipboard.stage(text, preserving: snapshot) else { return .notApplied(.clipboardUnavailable) }
         WritingAX.postPaste(to: bound.processIdentifier)
         // Evidence of the echo: the insertion caret advanced by exactly the text. Buffer growth alone could be
         // unrelated output, and Terminal's AX count drops a character per soft wrap, so it is not used.
-        let caretBefore = WritingAX.selectedRange(element)
         let length = text.utf16.count
         let landed = await WritingAX.poll(timeout: 2.0) {
             guard let caretBefore, caretBefore.isEmpty, let now = WritingAX.selectedRange(element), now.isEmpty else { return false }
             return now.location - caretBefore.location == length
         }
-        guard landed else { clipboard.restoreLater(staged); return .deliveryUnknown }
+        guard landed else { clipboard.leaveUnsettled(staged); return .deliveryUnknown }
         clipboard.restore(staged)
         guard let after = try? await Self.paneState(), after.tty == state.tty, !after.busy else { return .deliveryUnknown }
         return .applied(WritingAppliedEdit(targetToken: bound.token, insertedRange: .caret(0)!.replaced(by: text), insertedText: text,

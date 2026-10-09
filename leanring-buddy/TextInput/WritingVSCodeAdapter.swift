@@ -6,7 +6,7 @@ import ClickyCore
 /// VS Code through the opt-in Clicky bridge extension: versioned range edits in the document editor, and
 /// insert-only `sendText(text, false)` into the active integrated terminal. Without the bridge, VS Code
 /// targets stay preview-only. The bridge cannot tell whether the editor or the terminal had keyboard focus,
-/// so the terminal is offered as an explicit alternate destination.
+/// so with both present the binding is ambiguous: the terminal is an alternate and nothing applies automatically.
 @MainActor
 final class WritingVSCodeAdapter {
     static let bundleIdentifiers: Set<String> = ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders"]
@@ -38,7 +38,7 @@ final class WritingVSCodeAdapter {
         if let terminal = state.terminal, let id = terminal.id {
             let snapshot = Self.terminalSnapshot(terminal, id: id, name: base.name, bundle: base.bundle, pid: base.pid, window: window)
             remember(snapshot.token, Binding(socket: socket, uri: nil, terminalID: id))
-            if targets.primary == nil { targets.primary = snapshot } else { targets.alternate = snapshot }
+            if targets.primary == nil { targets.primary = snapshot } else { targets.alternate = snapshot; targets.ambiguous = true }
         }
         return targets
     }
@@ -53,9 +53,10 @@ final class WritingVSCodeAdapter {
 
     private static func terminalSnapshot(_ terminal: VSCodeBridgeState.Terminal, id: Int, name: String, bundle: String, pid: Int32,
                                          window: UInt32?, token: UUID = UUID()) -> TextTargetSnapshot {
+        // The bridge exposes no prompt-buffer revision; readiness must be positively observed, never assumed.
         TextTargetSnapshot(token: token, kind: .terminal, applicationName: name + " terminal", bundleIdentifier: bundle, processIdentifier: pid,
-                           windowIdentifier: window, paneIdentity: "vscode-terminal:\(id)", selection: .caret(0)!, contentRevision: "terminal",
-                           blockedReason: terminal.shellIntegration && !terminal.busy ? nil : .terminalNotReady)
+                           windowIdentifier: window, paneIdentity: "vscode-terminal:\(id)", selection: .caret(0)!,
+                           contentRevision: "terminal:\(id)", blockedReason: terminal.isReady ? nil : .terminalNotReady)
     }
 
     func owns(_ token: UUID) -> Bool { bindings[token] != nil }
@@ -101,22 +102,28 @@ final class WritingVSCodeAdapter {
         return (try? await client.state(socket: binding.socket))?.focused == true
     }
 
-    func apply(_ bound: TextTargetSnapshot, range: UTF16Range, text: String, expectedSource: String) async -> WritingApplyOutcome {
+    func apply(_ bound: TextTargetSnapshot, range: UTF16Range, text: String, expectedSource: String,
+               authorized: WritingAuthorization) async -> WritingApplyOutcome {
         guard let binding = bindings[bound.token] else { return .notApplied(.targetUnavailable) }
         do {
             if let id = binding.terminalID {
                 guard TerminalPayload.classify(text) == .singleLine else { return .notApplied(.rejectedByTarget) }
+                // Commit point: the request is sent right after this check; the bridge rechecks focus and readiness.
+                guard authorized() else { return .notApplied(.canceled) }
                 try await client.insertTerminal(socket: binding.socket, terminalID: id, text: text)
                 return .acknowledged(WritingAppliedEdit(targetToken: bound.token, insertedRange: .caret(0)!.replaced(by: text),
                                                         insertedText: text, replacedText: "", postRevision: "terminal"))
             }
             guard let uri = binding.uri, let version = Int(bound.contentRevision) else { return .notApplied(.targetUnavailable) }
+            guard authorized() else { return .notApplied(.canceled) }
             let result = try await client.replaceRange(socket: binding.socket, uri: uri, version: version, range: range,
-                                                       text: text, expected: expectedSource)
+                                                       text: text, expected: expectedSource, requireSelection: true)
             guard result.applied else { return .notApplied(.rejectedByTarget) }
             guard result.verified == true, let start = result.start, let end = result.end, let newVersion = result.version,
                   let inserted = UTF16Range(location: start, length: end - start) else { return .deliveryUnknown }
-            return .applied(WritingAppliedEdit(targetToken: bound.token, insertedRange: inserted, insertedText: text,
+            // The receipt records what the document now holds: VS Code converts line endings to the document EOL.
+            let stored = result.insertedText(requested: text)
+            return .applied(WritingAppliedEdit(targetToken: bound.token, insertedRange: inserted, insertedText: stored,
                                                replacedText: expectedSource, postRevision: String(newVersion)))
         } catch let error as VSCodeBridgeError {
             return Self.outcome(for: error)
@@ -133,8 +140,12 @@ final class WritingVSCodeAdapter {
             switch code {
             case "stale": return .notApplied(.contentChanged)
             case "sourceChanged": return .notApplied(.sourceChanged)
-            case "busy", "noShellIntegration": return .notApplied(.terminalNotReady)
+            case "selectionChanged": return .notApplied(.selectionChanged)
+            case "focusChanged": return .notApplied(.focusChanged)
+            case "busy", "noShellIntegration", "readinessUnknown": return .notApplied(.terminalNotReady)
             case "terminalChanged": return .notApplied(.targetChanged)
+            case "revoked", "canceled": return .notApplied(.canceled)
+            case "duplicate": return .notApplied(.alreadyApplied)
             case "notFound", "unauthorized": return .notApplied(.targetUnavailable)
             default: return .notApplied(.rejectedByTarget)
             }
@@ -142,8 +153,9 @@ final class WritingVSCodeAdapter {
     }
 
     /// Guarded inverse through the same versioned edit: refused unless the inserted text is untouched.
-    func restore(_ bound: TextTargetSnapshot, _ edit: WritingAppliedEdit) async -> Bool {
+    func restore(_ bound: TextTargetSnapshot, _ edit: WritingAppliedEdit, authorized: WritingAuthorization) async -> Bool {
         guard let binding = bindings[bound.token], let uri = binding.uri, let version = Int(edit.postRevision) else { return false }
+        guard authorized() else { return false }
         let result = try? await client.replaceRange(socket: binding.socket, uri: uri, version: version, range: edit.insertedRange,
                                                     text: edit.replacedText, expected: edit.insertedText)
         return result?.applied == true && result?.verified == true

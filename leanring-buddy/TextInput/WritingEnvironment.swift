@@ -4,11 +4,17 @@ import ClickyCore
 #endif
 
 /// The destinations bound when Quick Ask opens. VS Code offers its document editor as primary and its
-/// active integrated terminal as an explicit alternate, because the bridge cannot tell which had focus.
+/// active integrated terminal as an alternate. The bridge cannot tell which had keyboard focus, so with both
+/// present the binding is `ambiguous` and nothing is applied without an explicit Insert/Replace.
 struct WritingTargets {
     var primary: TextTargetSnapshot?
     var alternate: TextTargetSnapshot?
+    var ambiguous = false
 }
+
+/// Operation-scoped write authority. Adapters check it at their last synchronous point before the external
+/// side effect (paste keystroke, bridge request); Stop, revocation or a newer operation make it false.
+typealias WritingAuthorization = @MainActor () -> Bool
 
 /// Native effects the writing coordinator depends on. The app uses `.live` (`WritingNativeTargets`);
 /// coordinator tests inject fakes while exercising the same `WritingCoordinator` code.
@@ -26,10 +32,17 @@ struct WritingEnvironment {
     var restoreFocus: (TextTargetSnapshot) async -> Bool
     /// Waits until Return and keypad Enter are released so the submit key never reaches the destination.
     var waitForSubmitKeyRelease: () async -> Bool
-    /// The single external write for one claimed proposal revision. Adapters never retry or switch strategy.
-    var apply: (_ target: TextTargetSnapshot, _ range: UTF16Range, _ text: String, _ expectedSource: String) async -> WritingApplyOutcome
+    /// The single external write for one claimed proposal revision. Adapters never retry or switch strategy,
+    /// and return `.notApplied(.canceled)` when `authorized` turned false before they committed.
+    var apply: (_ target: TextTargetSnapshot, _ range: UTF16Range, _ text: String, _ expectedSource: String,
+                _ authorized: @escaping WritingAuthorization) async -> WritingApplyOutcome
     /// Guarded inverse of one applied edit; refuses when the inserted text or revision changed since.
-    var restore: (TextTargetSnapshot, WritingAppliedEdit) async -> Bool
+    var restore: (TextTargetSnapshot, WritingAppliedEdit, _ authorized: @escaping WritingAuthorization) async -> Bool
     var copy: (String) -> Void
     var makeAgent: (_ provider: AgentProvider, _ executable: URL, _ root: URL, _ effort: AskEffort) throws -> any GuideAgentRunning
+}
+
+enum WritingRequestError: LocalizedError {
+    case noSelection
+    var errorDescription: String? { WritingBlockReason.noSelection.message }
 }

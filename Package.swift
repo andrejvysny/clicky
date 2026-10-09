@@ -37,7 +37,7 @@ package.targets += [
             exclude: ["Core"],
             sources: ["VisualGuideController.swift", "VisualGuideController+Turns.swift", "VisualGuideController+Freshness.swift", "VisualGuideController+Verification.swift", "VisualGuideController+Interruptions.swift", "VisualGuideController+Correction.swift", "TargetSelectionPanel.swift",
                       "GuideObserver.swift", "GuideEnvironment.swift", "ScopedAccessibility.swift", "WindowSnapshotCapture.swift",
-                      "WritingCoordinator.swift", "WritingEnvironment.swift"],
+                      "WritingCoordinator.swift", "WritingEnvironment.swift", "WritingClipboard.swift"],
             swiftSettings: appTargetSwiftSettings),
     .testTarget(name: "ClickyGuideNativeTests", dependencies: ["ClickyGuideNative", "ClickyCore"], path: "Tests/ClickyGuideNativeTests",
                 swiftSettings: appTargetSwiftSettings),

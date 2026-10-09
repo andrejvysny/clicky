@@ -89,22 +89,29 @@ nonisolated public struct TextTargetSnapshot: Equatable, Sendable {
     public let paneIdentity: String?
     /// The caret (empty) or selected range in the control.
     public let selection: UTF16Range
-    /// Opaque content revision: character count for AX fields, document version for VS Code,
-    /// input caret for terminals. Any change means the destination changed.
+    /// Opaque content revision: character count plus an in-memory value fingerprint for AX fields, document
+    /// version for VS Code, buffer length for macOS Terminal and the process id for VS Code terminals (which
+    /// expose no input-buffer revision). Any change means the destination changed.
     public let contentRevision: String
     /// Nil when the destination accepts host edits; otherwise why it is preview-only.
     public let blockedReason: WritingBlockReason?
+    /// Generic clipboard paste at the application's own cursor, like the user's ⌘V: no adapter can read the
+    /// caret, selection or result back, so it never claims verified insertion and offers no Restore.
+    public let pasteOnly: Bool
 
     public init(token: UUID = UUID(), kind: WritingTargetKind, applicationName: String, bundleIdentifier: String,
                 processIdentifier: Int32, windowIdentifier: UInt32?, paneIdentity: String?, selection: UTF16Range,
-                contentRevision: String, blockedReason: WritingBlockReason? = nil) {
+                contentRevision: String, blockedReason: WritingBlockReason? = nil, pasteOnly: Bool = false) {
         self.token = token; self.kind = kind; self.applicationName = applicationName
         self.bundleIdentifier = bundleIdentifier; self.processIdentifier = processIdentifier
         self.windowIdentifier = windowIdentifier; self.paneIdentity = paneIdentity; self.selection = selection
-        self.contentRevision = contentRevision; self.blockedReason = blockedReason
+        self.contentRevision = contentRevision; self.blockedReason = blockedReason; self.pasteOnly = pasteOnly
     }
 
     public var hasSelection: Bool { !selection.isEmpty }
+    /// Whether a selection-based command may run: a known selection, or a paste-only app whose selection
+    /// cannot be read in advance (Rewrite then copies it).
+    public var mayHaveSelection: Bool { hasSelection || pasteOnly }
 
     /// Why a freshly read live snapshot no longer matches this binding, or nil when it is the same
     /// destination with the same caret/selection and content revision. Tokens are not compared.
@@ -125,6 +132,7 @@ nonisolated public enum WritingBlockReason: String, Codable, Equatable, Sendable
     case terminalNotReady, terminalMultiline, terminalControlCharacters
     case noSelection, previewBackend, emptyText
     case selectionInTerminalHistory
+    case rewriteTargetChanged, snippetTerminalOnly, snippetEditorsOnly
 
     public var message: String {
         switch self {
@@ -141,6 +149,9 @@ nonisolated public enum WritingBlockReason: String, Codable, Equatable, Sendable
         case .previewBackend: return "Local preview never edits other applications."
         case .emptyText: return "There is no text to insert."
         case .selectionInTerminalHistory: return "Terminal history is read-only; the rewrite stays a preview."
+        case .rewriteTargetChanged: return "This rewrite belongs to the selection it was made from. Copy it, or select the text again."
+        case .snippetTerminalOnly: return "This snippet inserts only into terminals."
+        case .snippetEditorsOnly: return "This snippet inserts only into editors."
         }
     }
 }
@@ -198,6 +209,11 @@ nonisolated public enum WritingApplyPlan: Equatable, Sendable {
             case .multiline: return .previewOnly(.terminalMultiline)
             case .unsafe: return .previewOnly(.terminalControlCharacters)
             }
+            return .automatic
+        }
+        if target.pasteOnly {
+            // Copy-and-paste semantics: a rewrite pastes over the selection it copied (undoable in the app with ⌘Z);
+            // drafts and snippets paste at the cursor.
             return .automatic
         }
         switch intent {

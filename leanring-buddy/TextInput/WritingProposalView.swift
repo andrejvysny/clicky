@@ -66,6 +66,8 @@ struct WritingProposalView: View {
         case .applying: return "Inserting…"
         case .finished: return writing.notice ?? "Done"
         default:
+            if writing.canRetry { return "Writing failed" }
+            if writing.clarification != nil, writing.proposal == nil { return "Question" }
             if writing.proposal?.intent == .snippet { return "Snippet · No AI" }
             return writing.proposal?.intent == .rewrite ? "Rewrite preview" : "Draft preview"
         }
@@ -82,7 +84,8 @@ struct WritingProposalView: View {
     @ViewBuilder private var controls: some View {
         HStack(spacing: 10) {
             if writing.canApply {
-                button(writing.replacesSelection ? "Replace selection" : "Insert", id: "writingApply", primary: true) { writing.apply() }
+                button(writing.target?.pasteOnly == true ? "Paste" : writing.replacesSelection ? "Replace selection" : "Insert",
+                       id: "writingApply", primary: true) { writing.apply() }
                     .help("↩ in an empty input also applies")
             }
             if writing.isBusy {
@@ -94,9 +97,14 @@ struct WritingProposalView: View {
                     button("Restore original", id: "writingRestore") { writing.restoreOriginal() }
                 }
                 button("Discard", id: "writingDiscard") { writing.discard() }
+            } else if writing.canRetry {
+                button("Retry", id: "writingRetry", primary: true) { writing.retry() }
+                button("Discard", id: "writingDiscard") { writing.discard() }
             }
             Spacer(minLength: 0)
-            if writing.canRefine { Text("Type to refine").font(.system(size: 10)).foregroundStyle(DS.Colors.textTertiary) }
+            if writing.canRefine, writing.proposal == nil {
+                Text("Type your answer").font(.system(size: 10)).foregroundStyle(DS.Colors.textTertiary)
+            } else if writing.canRefine { Text("Type to refine").font(.system(size: 10)).foregroundStyle(DS.Colors.textTertiary) }
         }
     }
 

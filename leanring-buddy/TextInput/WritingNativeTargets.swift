@@ -3,13 +3,15 @@ import AppKit
 import ClickyCore
 #endif
 
-/// Routes each bound destination to its adapter: macOS Terminal, VS Code (bridge), or AX text fields
-/// (validated: Chrome). Snapshot tokens remember which adapter owns a destination.
+/// Routes each bound destination to its adapter: macOS Terminal, VS Code (bridge), AX text fields
+/// (validated: Chrome), or else a plain clipboard paste at the application's cursor (explicit, unverified).
+/// Snapshot tokens remember which adapter owns a destination.
 @MainActor
 final class WritingNativeTargets {
     private let field = WritingAXFieldAdapter()
     private let terminal = WritingTerminalAdapter()
     private let vscode = WritingVSCodeAdapter()
+    private let paste = WritingPasteAdapter()
 
     func capture(_ processIdentifier: Int32?) async -> WritingTargets {
         guard let processIdentifier, processIdentifier != ProcessInfo.processInfo.processIdentifier,
@@ -18,21 +20,35 @@ final class WritingNativeTargets {
         }
         let bundle = application.bundleIdentifier ?? ""
         if bundle == WritingTerminalAdapter.bundleIdentifier { return WritingTargets(primary: await terminal.capture(application)) }
-        if WritingVSCodeAdapter.bundleIdentifiers.contains(bundle) { return await vscode.capture(application) }
-        return WritingTargets(primary: field.capture(application))
+        if WritingVSCodeAdapter.bundleIdentifiers.contains(bundle) {
+            let targets = await vscode.capture(application)
+            // Without the bridge VS Code still accepts an ordinary paste wherever its cursor is.
+            if targets.primary?.blockedReason == .bridgeUnavailable {
+                return WritingTargets(primary: paste.capture(application, kind: .vscodeEditor))
+            }
+            return targets
+        }
+        if WritingPasteAdapter.terminalBundles.contains(bundle) { return WritingTargets(primary: paste.capture(application)) }
+        let captured = field.capture(application)
+        // Secure and read-only controls stay blocked; only "no verified adapter" falls back to a plain paste.
+        if captured == nil || captured?.blockedReason == .unsupportedTarget { return WritingTargets(primary: paste.capture(application)) }
+        return WritingTargets(primary: captured)
     }
 
     func live(_ bound: TextTargetSnapshot) async -> TextTargetSnapshot? {
+        if paste.owns(bound.token) { return paste.live(bound) }
         if vscode.owns(bound.token) { return await vscode.live(bound) }
         return bound.kind == .terminal ? await terminal.live(bound) : field.live(bound)
     }
 
     func readSource(_ bound: TextTargetSnapshot) async throws -> ExactSource {
+        if paste.owns(bound.token) { return try await paste.readSource(bound) }
         if vscode.owns(bound.token) { return try await vscode.readSource(bound) }
         return bound.kind == .terminal ? try terminal.readSource(bound) : try field.readSource(bound)
     }
 
     func readSurrounding(_ bound: TextTargetSnapshot) async -> WritingHostPayload.Surrounding? {
+        if paste.owns(bound.token) { return nil }
         if vscode.owns(bound.token) { return await vscode.readSurrounding(bound) }
         return bound.kind == .textField ? field.readSurrounding(bound) : nil
     }
@@ -48,6 +64,7 @@ final class WritingNativeTargets {
         }
         guard await WritingAX.poll(timeout: 1.0, { NSWorkspace.shared.frontmostApplication?.processIdentifier == bound.processIdentifier })
         else { return false }
+        if paste.owns(bound.token) { return await WritingAX.poll(timeout: 1.0) { paste.focusRestored(bound) } }
         if vscode.owns(bound.token) {
             let deadline = ProcessInfo.processInfo.systemUptime + 1.0
             while ProcessInfo.processInfo.systemUptime < deadline {
@@ -60,16 +77,19 @@ final class WritingNativeTargets {
         return await WritingAX.poll(timeout: 1.0) { field.focusRestored(bound) }
     }
 
-    func apply(_ bound: TextTargetSnapshot, range: UTF16Range, text: String, expected: String) async -> WritingApplyOutcome {
-        if vscode.owns(bound.token) { return await vscode.apply(bound, range: range, text: text, expectedSource: expected) }
-        if bound.kind == .terminal { return await terminal.apply(bound, text: text) }
-        return await field.apply(bound, range: range, text: text, expectedSource: expected)
+    func apply(_ bound: TextTargetSnapshot, range: UTF16Range, text: String, expected: String,
+               authorized: @escaping WritingAuthorization) async -> WritingApplyOutcome {
+        if paste.owns(bound.token) { return await paste.apply(bound, text: text, authorized: authorized) }
+        if vscode.owns(bound.token) { return await vscode.apply(bound, range: range, text: text, expectedSource: expected, authorized: authorized) }
+        if bound.kind == .terminal { return await terminal.apply(bound, text: text, authorized: authorized) }
+        return await field.apply(bound, range: range, text: text, expectedSource: expected, authorized: authorized)
     }
 
-    func restore(_ bound: TextTargetSnapshot, _ edit: WritingAppliedEdit) async -> Bool {
-        if vscode.owns(bound.token) { return await vscode.restore(bound, edit) }
+    func restore(_ bound: TextTargetSnapshot, _ edit: WritingAppliedEdit, authorized: @escaping WritingAuthorization) async -> Bool {
+        if paste.owns(bound.token) { return false }  // nothing to read back, so nothing to undo safely
+        if vscode.owns(bound.token) { return await vscode.restore(bound, edit, authorized: authorized) }
         // Terminal input is never cleared or undone by Clicky.
-        return bound.kind == .textField ? await field.restore(bound, edit) : false
+        return bound.kind == .textField ? await field.restore(bound, edit, authorized: authorized) : false
     }
 
     var environment: WritingEnvironment {
@@ -84,8 +104,8 @@ final class WritingNativeTargets {
             frontmostProcess: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
             restoreFocus: { [weak self] in await self?.restoreFocus($0) ?? false },
             waitForSubmitKeyRelease: { await WritingAX.poll(timeout: 10, { WritingAX.submitKeysUp }) },
-            apply: { [weak self] in await self?.apply($0, range: $1, text: $2, expected: $3) ?? .notApplied(.targetUnavailable) },
-            restore: { [weak self] in await self?.restore($0, $1) ?? false },
+            apply: { [weak self] in await self?.apply($0, range: $1, text: $2, expected: $3, authorized: $4) ?? .notApplied(.targetUnavailable) },
+            restore: { [weak self] in await self?.restore($0, $1, authorized: $2) ?? false },
             copy: { text in NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) },
             makeAgent: { provider, executable, root, effort in
                 let profile = try GuideAgentProfile(provider: provider, root: root, taskID: UUID(), effort: effort, contract: .writing)

@@ -28,9 +28,14 @@ nonisolated public struct VSCodeBridgeState: Codable, Equatable, Sendable {
         public let shellIntegration: Bool
         public let busy: Bool
         public let shell: String?
-        public init(id: Int?, name: String, shellIntegration: Bool, busy: Bool, shell: String?) {
+        /// `ready`, `busy` or `unknown`; readiness is unknown until the bridge observed a shell-integration
+        /// event for this terminal. Absent (older bridge) means unknown.
+        public let readiness: String?
+        public init(id: Int?, name: String, shellIntegration: Bool, busy: Bool, shell: String?, readiness: String? = nil) {
             self.id = id; self.name = name; self.shellIntegration = shellIntegration; self.busy = busy; self.shell = shell
+            self.readiness = readiness
         }
+        public var isReady: Bool { shellIntegration && !busy && readiness == "ready" }
     }
 
     public let focused: Bool
@@ -63,6 +68,13 @@ nonisolated public struct VSCodeReplaceResult: Codable, Equatable, Sendable {
                 version: Int? = nil, start: Int? = nil, end: Int? = nil) {
         self.applied = applied; self.verified = verified; self.normalizedLineEndings = normalizedLineEndings
         self.version = version; self.start = start; self.end = end
+    }
+
+    /// What the document holds after the edit: VS Code converts inserted line endings to a CRLF document's
+    /// EOL (every LF, or existing CRLF, becomes CRLF), which the bridge reports as `normalizedLineEndings`.
+    public func insertedText(requested text: String) -> String {
+        guard normalizedLineEndings == true else { return text }
+        return text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: "\r\n")
     }
 }
 

@@ -17,6 +17,22 @@ final class VSCodeBridgeTests: XCTestCase {
         XCTAssertEqual(value["params"]["a"].string, "x\ny")
     }
 
+    func testReplaceReceiptRecordsCRLFNormalizedText() {
+        let normalized = VSCodeReplaceResult(applied: true, verified: true, normalizedLineEndings: true, version: 2, start: 0, end: 4)
+        XCTAssertEqual(normalized.insertedText(requested: "a\nb"), "a\r\nb")
+        XCTAssertEqual(normalized.insertedText(requested: "a\r\nb\n😀"), "a\r\nb\r\n😀")
+        XCTAssertEqual(VSCodeReplaceResult(applied: true, normalizedLineEndings: false).insertedText(requested: "a\nb"), "a\nb")
+    }
+
+    func testTerminalReadinessIsUnknownUnlessReported() throws {
+        let legacy = VSCodeBridgeState.Terminal(id: 1, name: "zsh", shellIntegration: true, busy: false, shell: "zsh")
+        XCTAssertFalse(legacy.isReady)
+        let ready = VSCodeBridgeState.Terminal(id: 1, name: "zsh", shellIntegration: true, busy: false, shell: "zsh", readiness: "ready")
+        XCTAssertTrue(ready.isReady)
+        let unknown = VSCodeBridgeState.Terminal(id: 1, name: "zsh", shellIntegration: true, busy: false, shell: "zsh", readiness: "unknown")
+        XCTAssertFalse(unknown.isReady)
+    }
+
     func testResponseDecoding() throws {
         let ok = Data(#"{"v":1,"id":"a","ok":true,"result":{"sent":true}}"#.utf8)
         XCTAssertTrue(try VSCodeBridgeWire.decodeResponse(ok, expectingID: "a")["sent"].bool)

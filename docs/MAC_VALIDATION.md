@@ -52,6 +52,7 @@ Environment: Apple Silicon, macOS 26.6.2, Xcode 26.6, Swift 6.3.3, Python 3.14.7
 | Xcode tests | 11 native tests passed through Xcode, including preview editor/response and deterministic no-AI guide pause/manual provenance. Earlier failing runs exposed a stale test host/import, actor isolation, and preview accessibility/focus harness assumptions; corrections verified |
 | Claude 2.1.294–2.1.295 transport | Haiku 5.5 at low effort: two validated, correlated structured turns per process, effective policy audit, no Clicky task JSONL transcripts found |
 | Claude marker controls | 2.1.294 and 2.1.295: instruction/skill/hook markers present in control, absent in safe isolated run |
+| Claude 2.1.296 (9 October 2026) | `clicky-guide claude` with Haiku 5.5: two validated structured turns in one process, effective policy audit passed. Disposable git project with CLAUDE.md, project skill and `UserPromptSubmit` hook markers: all three loaded in normal `claude -p` control runs; with Clicky's isolation flags from the same project root none loaded (no marker text, skill absent, hook not fired). Isolated and task runs left no transcripts; control transcripts were deleted. Native app writing with 2.1.296 not yet observed |
 | Codex 0.160.1 diagnostics | Effective disabled capabilities, enumerated host skills, ephemeral thread, empty instruction sources verified without model inference |
 | Codex native inference | Requires official sign-in in Clicky's separate profile; personal credentials were not copied |
 | Blender/browser/TextEdit walkthroughs | Pending native acceptance; release gate remains closed |
@@ -163,14 +164,14 @@ Environment: macOS 26.6.2 (Apple Silicon), Chrome 154.0.8037.98, Terminal 2.15 w
 | Layer | Command | Result |
 |---|---|---|
 | Portable + coordinator | `bash scripts/test-core.sh` | 338 XCTest cases pass, including `WritingContractTests`, `SlashCommandTests`, `WritingDefinitionsTests`, `QuickAskRouteTests`, `VSCodeBridgeTests` and 22 `WritingCoordinatorTests` (fakes; production coordinator) |
-| Bridge logic | `cd Tools/clicky-vscode-bridge && node --test` | 7 pass |
+| Bridge logic | `cd Tools/clicky-vscode-bridge && node --test test/*.test.js` | 7 pass (helpers only) |
 | App typecheck | `bash scripts/typecheck-app.sh` and `--debug` | no errors; no new warnings |
 | Native adapters (production adapter sources driven by `Tools/ClickyWritingProbe`, no Clicky GUI) | `scripts/probe-writing-native.sh chrome` | Pass: textarea capture, focus gate, exact insertion of Unicode/emoji/combining marks/tabs/blank lines/`$(x)`/backticks at the caret, user clipboard (string + custom type) restored, guarded restore, exact substring source read, replace only the selected range, caret move detected as `selectionChanged`, stale expected source refused |
 | | `scripts/probe-writing-native.sh terminal` | Pass: ready zsh prompt bound by window id + tty, complex single-line command inserted verbatim with no confirmation, execution-counter file absent after insertion, present only after the tester's separate Return; multiline refused; busy tab (`sleep`) bound as not ready |
 | | `scripts/probe-writing-native.sh chrome-rich` | **Not passed.** Contenteditable located and focused, but another application became frontmost during the run; the adapter refused both writes (`focusChanged`) and the content stayed unchanged. Rerun on an idle desktop |
 | | `scripts/probe-writing-native.sh vscode`, `vscode-terminal` | **Not run.** An isolated VS Code instance could not start from the session scratch directory (IPC socket path > 103 bytes), and installing the bridge into the user's VS Code needs explicit approval |
 | Signed GUI (Xcode, `leanring-buddy` scheme) | Quick Ask picker, Write/Rewrite/snippet end to end, key hold/repeat, notice panel, Settings › Writing | **Not run** |
-| Real provider | Claude/Codex `writing` contract (`clicky-writing-1`) drafts, rewrites, clarifications | **Not run** |
+| Real provider | Claude/Codex `writing` contract (`clicky-writing-2`) drafts, rewrites, clarifications | **Not run** |
 
 Findings fixed during native probing: Chrome applies AX selection asynchronously (the adapter now waits for the exact range to read back); Chrome ignores `AXSelectedText` and `AXReplaceRangeWithText` writes even though they report success (paste is the only write path); Terminal's `processes` must be bound to a variable before `last item` and `tab` inside `tell application "Terminal"` is Terminal's tab class; Terminal's AX character count drops one character per soft-wrapped line (the insertion caret delta is the evidence instead); key events reach only the frontmost application (every adapter re-checks frontmost and the focused control immediately before ⌘V).
 
@@ -182,3 +183,18 @@ Remaining native acceptance (run in the signed app, on an otherwise idle desktop
 4. Picker: `/` lists, ↑↓/Tab/↩ complete without invoking, exact alias ↩ submits once, Escape hides then closes, IME composition (e.g. Japanese) never submits, `/usr/bin/env` and `//write` are sent as text.
 5. A walkthrough waiting on a step while a snippet is inserted: the step does not advance and resumes after the host edit.
 6. Real provider (Claude Haiku 5.5 / Codex): email body only with a separate subject, rewrite preserving facts and source language, clarification shown and never inserted.
+
+### Review hardening — 9 October 2026 (development; native evidence pending)
+
+Deterministic evidence only: `bash scripts/test-core.sh` 355 cases pass (adds `WritingHardeningTests` 11, `WritingClipboardTests` 4, two `VSCodeBridgeTests`); `node --test test/*.test.js` 22 pass, including `extension.test.js` against the production request handler; app typecheck (`--debug` too) clean with the unchanged warning count; the probe driver typechecks. Nothing here is native GUI evidence. The probes above predate these changes and must be rerun.
+
+Additional native acceptance:
+
+7. Hold Return through `/s` completion and submission at a Terminal prompt that already holds a typed command: Quick Ask stays visible until key-up, the command is not executed, the snippet appears once.
+8. VS Code with a document open and the integrated terminal focused: a snippet/Write shows a review with the editor destination and Switch; nothing is inserted until Insert; switching focus or moving the caret after binding refuses the edit (`focusChanged`/`selectionChanged`).
+9. VS Code terminal readiness: right after reloading the window the terminal reports not ready until one command has run; a running `sleep 5` is busy; the result notice reads “Sent to the terminal — not executed, not verified”.
+10. Press Stop during “Inserting…” (while Return is held) and revoke the bridge token while a request is pending: no write lands.
+11. Copy something while an insertion's delivery is unconfirmed: the newer clipboard is kept; a following successful insertion restores the user's pre-Clicky clipboard otherwise.
+12. Chrome: change one character of the field without changing its length during generation: the Write is refused as `contentChanged`.
+13. `/reply` with a pasted email chip or attached selection: the provider receives it as `writing.reference`; a clarification can be answered in Quick Ask; a provider failure shows Retry.
+14. Terminal with bash/fish in the foreground: preview + Copy only (automatic insertion limited to zsh).

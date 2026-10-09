@@ -72,6 +72,8 @@ final class AskController: ObservableObject {
     private var loginTask: Task<Void, Never>?
     private var attachmentState = WindowAttachmentState()
     private var submitAfterCapture = false
+    /// A submission made before the writing destination finished binding; routed once the binding is known.
+    private var submitAfterBinding = false
 
     init() {
         let testing = ProcessInfo.processInfo.arguments.contains("--clicky-ui-test")
@@ -181,7 +183,7 @@ final class AskController: ObservableObject {
         writing.beginBinding(processIdentifier: process)
     }
     func endPresentation() {
-        isComposing = false
+        isComposing = false; submitAfterBinding = false
         removeAttachment(); attachmentState.endPresentation(); captureTargetName = nil; selection = nil
         if writing.phase == .applying { composerClosePending = presentationHasSubmission }
         else { guide.composerDidClose(submitted: presentationHasSubmission) }
@@ -197,9 +199,19 @@ final class AskController: ObservableObject {
 
     /// Slash commands and plainly worded writing requests go to the writing coordinator; questions stay chat.
     private func routeWriting() -> WritingRouting {
+        // Routing depends on the bound destination (selection, editability); never decide it from a missing binding.
+        if writing.isBinding {
+            submitAfterBinding = true
+            writing.whenBound { [weak self] in
+                guard let self, submitAfterBinding, isComposing else { return }
+                submitAfterBinding = false
+                _ = submit()
+            }
+            return .handled(true)
+        }
         let target = writing.target
         let route = QuickAskRoute.route(draft: draft, definitions: writingDefinitions.definitions,
-                                        hasSelection: target?.hasSelection ?? false,
+                                        hasSelection: target?.mayHaveSelection ?? false,
                                         hasEditableTarget: target.map { $0.blockedReason == nil } ?? false)
         switch route {
         case .chat(let text):
@@ -217,11 +229,22 @@ final class AskController: ObservableObject {
                 }
             }
             syncGuideSettings(); replySpeech.stop()
-            let started = writing.start(route, effort: effort)
-            if started { draft = ""; errorMessage = nil; presentationHasSubmission = true; effort = .low; snippets = [] }
+            // Visible attachments travel with the writing request as reference material instead of being dropped.
+            let started = writing.start(route, effort: effort, reference: writingReference())
+            if started {
+                draft = ""; errorMessage = nil; presentationHasSubmission = true; effort = .low
+                // A literal snippet does not use attachments; they stay visible instead of being silently dropped.
+                if case .snippet = route {} else { snippets = []; selection = nil }
+            }
             return .handled(started)
         }
     }
+    /// The attached selection quote and pasted chips, verbatim and in display order; nil when none are attached.
+    private func writingReference() -> String? {
+        let parts = [selection?.text].compactMap { $0 } + snippets.map(\.text)
+        return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+    }
+
     func attachWindowSnapshot() {
         guard !isBusy, !isCapturing else { return }
         let lease: WindowCaptureLease

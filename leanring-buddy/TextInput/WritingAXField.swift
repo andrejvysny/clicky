@@ -31,6 +31,19 @@ enum WritingAX {
 
     static func characterCount(_ element: AXUIElement) -> Int? { (value(element, kAXNumberOfCharactersAttribute) as? NSNumber)?.intValue }
 
+    static let maximumFingerprintUTF16 = 262_144
+
+    /// Character count plus an in-memory fingerprint of the value, so a same-length edit is a change too.
+    /// The value is hashed and dropped at once: never logged, retained or sent. Above the bound, or when the
+    /// control exposes no value, it falls back to the count alone (a documented, weaker revision).
+    static func contentRevision(_ element: AXUIElement) -> String? {
+        guard let count = characterCount(element) else { return nil }
+        guard count <= maximumFingerprintUTF16, let text = value(element, kAXValueAttribute) as? String else { return String(count) }
+        var hasher = Hasher()
+        hasher.combine(text)
+        return "\(count):\(hasher.finalize())"
+    }
+
     static func isSettable(_ element: AXUIElement, _ name: String) -> Bool {
         var settable = DarwinBoolean(false)
         return AXUIElementIsAttributeSettable(element, name as CFString, &settable) == .success && settable.boolValue
@@ -68,9 +81,15 @@ enum WritingAX {
     }
 
     static func postPaste(to processIdentifier: Int32) { postKey(pasteKeyCode(), command: true, to: processIdentifier) }
+    static func postCopy(to processIdentifier: Int32) {
+        postKey(commandKeyCode(for: 99, fallback: CGKeyCode(kVK_ANSI_C)), command: true, to: processIdentifier)
+    }
 
     /// The key that types "v" with Command in the current layout (QWERTY position 9 as the fallback).
-    static func pasteKeyCode() -> CGKeyCode {
+    static func pasteKeyCode() -> CGKeyCode { commandKeyCode(for: 118, fallback: CGKeyCode(kVK_ANSI_V)) }
+
+    /// The key that types the ASCII `character` with Command in the current layout.
+    static func commandKeyCode(for character: UniChar, fallback: CGKeyCode) -> CGKeyCode {
         let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue()
         let ascii = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue()
         for input in [source, ascii].compactMap({ $0 }) {
@@ -83,13 +102,13 @@ enum WritingAX {
                     var characters = [UniChar](repeating: 0, count: 4)
                     let status = UCKeyTranslate(layout, UInt16(code), UInt16(kUCKeyActionDown), UInt32((cmdKey >> 8) & 0xFF),
                                                 UInt32(LMGetKbdType()), OptionBits(kUCKeyTranslateNoDeadKeysBit), &dead, 4, &length, &characters)
-                    if status == noErr, length == 1, characters[0] == UniChar(118) { return CGKeyCode(code) }
+                    if status == noErr, length == 1, characters[0] == character { return CGKeyCode(code) }
                 }
                 return nil
             }
             if let found { return found }
         }
-        return CGKeyCode(kVK_ANSI_V)
+        return fallback
     }
 
     static var submitKeysUp: Bool {
@@ -114,7 +133,7 @@ final class WritingAXFieldAdapter {
     static let validatedBundles: Set<String> = ["com.google.Chrome", "com.google.Chrome.beta", "com.google.Chrome.dev", "com.google.Chrome.canary"]
     private static let textRoles: Set<String> = [kAXTextAreaRole, kAXTextFieldRole, kAXComboBoxRole, "AXSearchField"]
     private var elements: [UUID: AXUIElement] = [:]
-    private let clipboard = WritingClipboard()
+    private let clipboard = WritingClipboard.shared
 
     func capture(_ application: NSRunningApplication) -> TextTargetSnapshot? {
         let pid = application.processIdentifier
@@ -123,28 +142,34 @@ final class WritingAXFieldAdapter {
         let secure = WritingAX.isSecure(element)
         guard secure || Self.textRoles.contains(role), let selection = WritingAX.selectedRange(element) ?? (secure ? .caret(0) : nil)
         else { return nil }
-        var blocked: WritingBlockReason?
-        if secure { blocked = .secureField }
-        else if !Self.validatedBundles.contains(application.bundleIdentifier ?? "") { blocked = .unsupportedTarget }
-        else if !WritingAX.isSettable(element, kAXValueAttribute) || !WritingAX.isSettable(element, kAXSelectedTextRangeAttribute) { blocked = .readOnly }
+        let blocked = Self.blockReason(element, bundle: application.bundleIdentifier ?? "", secure: secure)
         let snapshot = TextTargetSnapshot(kind: .textField, applicationName: application.localizedName ?? "App",
                                           bundleIdentifier: application.bundleIdentifier ?? "", processIdentifier: pid,
                                           windowIdentifier: WindowSnapshotCapture.target(for: application)?.windowIdentifier, paneIdentity: nil,
-                                          selection: selection, contentRevision: secure ? "" : String(WritingAX.characterCount(element) ?? -1),
+                                          selection: selection, contentRevision: secure ? "" : WritingAX.contentRevision(element) ?? "-1",
                                           blockedReason: blocked)
         if !secure { remember(snapshot.token, element) }
         return snapshot
     }
 
+    private static func blockReason(_ element: AXUIElement, bundle: String, secure: Bool) -> WritingBlockReason? {
+        if secure { return .secureField }
+        if !validatedBundles.contains(bundle) { return .unsupportedTarget }
+        if !WritingAX.isSettable(element, kAXValueAttribute) || !WritingAX.isSettable(element, kAXSelectedTextRangeAttribute) { return .readOnly }
+        return nil
+    }
+
     func live(_ bound: TextTargetSnapshot) -> TextTargetSnapshot? {
         guard let element = elements[bound.token], let application = NSRunningApplication(processIdentifier: bound.processIdentifier),
-              let selection = WritingAX.selectedRange(element), let count = WritingAX.characterCount(element) else { return nil }
+              let selection = WritingAX.selectedRange(element), let revision = WritingAX.contentRevision(element) else { return nil }
         // Focus moving to another control (even in the same window) is a different destination.
         let focusedHere = WritingAX.focusedElement(of: bound.processIdentifier).map { CFEqual($0, element) } ?? false
         return TextTargetSnapshot(token: bound.token, kind: .textField, applicationName: bound.applicationName,
                                   bundleIdentifier: bound.bundleIdentifier, processIdentifier: bound.processIdentifier,
                                   windowIdentifier: WindowSnapshotCapture.target(for: application)?.windowIdentifier,
-                                  paneIdentity: focusedHere ? nil : "focus-moved", selection: selection, contentRevision: String(count))
+                                  paneIdentity: focusedHere ? nil : "focus-moved", selection: selection, contentRevision: revision,
+                                  // The control may have become secure or read-only since binding.
+                                  blockedReason: Self.blockReason(element, bundle: bound.bundleIdentifier, secure: WritingAX.isSecure(element)))
     }
 
     func readSource(_ bound: TextTargetSnapshot) throws -> ExactSource {
@@ -169,13 +194,16 @@ final class WritingAXFieldAdapter {
         return WritingAX.focusedElement(of: bound.processIdentifier).map { CFEqual($0, element) } ?? false
     }
 
-    func apply(_ bound: TextTargetSnapshot, range: UTF16Range, text: String, expectedSource: String) async -> WritingApplyOutcome {
+    func apply(_ bound: TextTargetSnapshot, range: UTF16Range, text: String, expectedSource: String,
+               authorized: WritingAuthorization) async -> WritingApplyOutcome {
         guard let element = elements[bound.token], let before = WritingAX.characterCount(element) else { return .notApplied(.targetUnavailable) }
+        guard !WritingAX.isSecure(element) else { return .notApplied(.targetUnavailable) }
         if !range.isEmpty, WritingAX.string(element, range: range) != expectedSource { return .notApplied(.sourceChanged) }
         // Chrome applies AX selection asynchronously; wait for the exact range to read back before pasting.
         guard WritingAX.select(element, range: range),
               await WritingAX.poll(timeout: 0.5, { WritingAX.selectedRange(element) == range }) else { return .notApplied(.selectionChanged) }
-        // No suspension from here to the keystroke: focus, clipboard snapshot and staging are one synchronous step.
+        // No suspension from here to the keystroke: authority, focus, clipboard snapshot and staging are one synchronous step.
+        guard authorized() else { return .notApplied(.canceled) }
         guard focusRestored(bound) else { return .notApplied(.focusChanged) }
         guard let snapshot = clipboard.snapshot() else { return .notApplied(.clipboardUnavailable) }
         guard let staged = clipboard.stage(text, preserving: snapshot) else { return .notApplied(.clipboardUnavailable) }
@@ -188,30 +216,31 @@ final class WritingAXFieldAdapter {
             return latestCount == expectedCount && WritingAX.selectedRange(element) == .caret(inserted.end)
         }
         guard landed, WritingAX.string(element, range: inserted) == text else {
-            // Unconsumed or transformed: never retry; the clipboard returns only after a late paste could land.
-            clipboard.restoreLater(staged)
+            // Unconsumed or transformed: never retry, and never restore the old clipboard under a possible late paste.
+            clipboard.leaveUnsettled(staged)
             return .deliveryUnknown
         }
         clipboard.restore(staged)
         return .applied(WritingAppliedEdit(targetToken: bound.token, insertedRange: inserted, insertedText: text,
-                                           replacedText: expectedSource, postRevision: String(latestCount)))
+                                           replacedText: expectedSource, postRevision: WritingAX.contentRevision(element) ?? String(latestCount)))
     }
 
     /// Guarded inverse: only while the inserted text still sits unchanged where Clicky put it.
-    func restore(_ bound: TextTargetSnapshot, _ edit: WritingAppliedEdit) async -> Bool {
+    func restore(_ bound: TextTargetSnapshot, _ edit: WritingAppliedEdit, authorized: WritingAuthorization) async -> Bool {
         guard edit.targetToken == bound.token, let element = elements[bound.token],
-              String(WritingAX.characterCount(element) ?? -1) == edit.postRevision,
+              WritingAX.contentRevision(element) == edit.postRevision,
               WritingAX.string(element, range: edit.insertedRange) == edit.insertedText else { return false }
         guard focusRestored(bound) else { return false }
         if edit.replacedText.isEmpty {
             guard WritingAX.select(element, range: edit.insertedRange),
                   await WritingAX.poll(timeout: 0.5, { WritingAX.selectedRange(element) == edit.insertedRange }) else { return false }
             let before = WritingAX.characterCount(element) ?? 0
-            guard focusRestored(bound) else { return false }
+            guard authorized(), focusRestored(bound) else { return false }
             WritingAX.postKey(CGKeyCode(kVK_Delete), command: false, to: bound.processIdentifier)
             return await WritingAX.poll(timeout: 1.5) { WritingAX.characterCount(element) == before - edit.insertedRange.length }
         }
-        if case .applied = await apply(bound, range: edit.insertedRange, text: edit.replacedText, expectedSource: edit.insertedText) { return true }
+        if case .applied = await apply(bound, range: edit.insertedRange, text: edit.replacedText, expectedSource: edit.insertedText,
+                                       authorized: authorized) { return true }
         return false
     }
 

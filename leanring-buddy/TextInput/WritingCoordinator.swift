@@ -49,11 +49,24 @@ final class WritingCoordinator: ObservableObject {
     private var stopRequested = false
     private var bindTask: Task<Void, Never>?
     private var bindGeneration: UInt64 = 0
+    /// True when the binding offered two plausible destinations (VS Code editor and terminal) and focus is unknown.
+    private var targetsAmbiguous = false
+    /// The destination this operation was bound to. Later Quick Ask bindings change `target` for explicit use
+    /// only; they never inherit this operation's automatic authority.
+    private var operationTarget: TextTargetSnapshot?
+    /// The destination `source` was read from; a rewrite replaces only that selection.
+    private var sourceTargetToken: UUID?
+    private var snippetRestriction = SnippetRestriction.any
+    /// Visible attachments (pasted text, selection quote) sent with this request as reference material.
+    private var reference: String?
+    /// The last generation failed before a proposal existed; Retry repeats the same request explicitly.
+    @Published private(set) var failed = false
 
     init(environment: WritingEnvironment) { self.environment = environment }
 
     var isBusy: Bool { phase == .generating || phase == .applying }
     var hasProposal: Bool { proposal != nil || clarification != nil }
+    var canRetry: Bool { phase == .review && failed && request != nil }
     var canApply: Bool {
         guard phase == .review, invalidation == nil, let proposal else { return false }
         // An emptied preview would delete the selection; snippets may be whitespace but never empty.
@@ -61,8 +74,11 @@ final class WritingCoordinator: ObservableObject {
         if case .review? = plan { return true }
         return plan == .automatic
     }
-    /// A plain follow-up refines the reviewed draft (snippets are literal and never refined).
-    var canRefine: Bool { phase == .review && proposal != nil && proposal?.intent != .snippet && request != nil }
+    /// A plain follow-up refines the reviewed draft or answers a clarification (snippets are literal and never refined).
+    var canRefine: Bool {
+        guard phase == .review, let request, request.intent != .snippet else { return false }
+        return proposal != nil || clarification != nil
+    }
     var replacesSelection: Bool { if case .review(true)? = plan { return true }; return false }
 
     // MARK: Binding
@@ -78,44 +94,53 @@ final class WritingCoordinator: ObservableObject {
     /// before the capture finishes wait for it.
     func beginBinding(processIdentifier: Int32?) {
         guard phase != .applying else { return }
-        target = nil; alternateTarget = nil
+        target = nil; alternateTarget = nil; targetsAmbiguous = false
         bindGeneration &+= 1
         let expected = bindGeneration
+        isBinding = true
         bindTask = Task { [weak self] in
             guard let self else { return }
             let targets = await environment.captureTargets(processIdentifier)
             guard expected == bindGeneration else { return }
             adopt(targets)
+            isBinding = false
+        }
+    }
+
+    /// True until the latest binding resolved; routing a submission must wait for it.
+    @Published private(set) var isBinding = false
+
+    /// Runs `action` once the binding that is current now has resolved.
+    func whenBound(_ action: @escaping @MainActor () -> Void) {
+        let binding = bindTask
+        Task { @MainActor in
+            await binding?.value
+            action()
         }
     }
 
     private func adopt(_ targets: WritingTargets) {
         // A request waiting for this binding is .generating; only an in-flight write keeps its destination.
         guard phase != .applying else { return }
-        target = targets.primary; alternateTarget = targets.alternate
+        target = targets.primary; alternateTarget = targets.alternate; targetsAmbiguous = targets.ambiguous
         notice = nil
-        if let proposal {
-            invalidation = nil
-            plan = Self.explicitOnly(WritingApplyPlan.decide(intent: proposal.intent, target: target, text: previewText,
-                                                              provenance: proposal.provenance))
-        }
+        if proposal != nil { replan(autoApply: false) }
     }
 
     /// Swaps between VS Code's document editor and its integrated terminal; the user's explicit choice.
     func switchDestination() {
         guard !isBusy, let alternateTarget else { return }
         self.alternateTarget = target; target = alternateTarget
-        if let proposal {
-            plan = Self.explicitOnly(WritingApplyPlan.decide(intent: proposal.intent, target: target, text: previewText,
-                                                              provenance: proposal.provenance))
-        }
+        // Choosing explicitly resolves an ambiguous binding; the result still needs an explicit Insert.
+        targetsAmbiguous = false
+        if proposal != nil { replan(autoApply: false) }
     }
 
     // MARK: Requests
 
     /// Starts a writing route. Returns false for routes the conversation path handles.
     @discardableResult
-    func start(_ route: QuickAskRoute, effort: AskEffort = .low) -> Bool {
+    func start(_ route: QuickAskRoute, effort: AskEffort = .low, reference: String? = nil) -> Bool {
         switch route {
         case .snippet(let snippet):
             beginOperation()
@@ -128,9 +153,11 @@ final class WritingCoordinator: ObservableObject {
             }
             return true
         case .write(let instruction, let skill):
-            beginOperation(); generate(instruction: instruction, skill: skill, intent: .draft, effort: effort); return true
+            beginOperation(); self.reference = reference
+            generate(instruction: instruction, skill: skill, intent: .draft, effort: effort); return true
         case .rewrite(let instruction, let skill):
-            beginOperation(); generate(instruction: instruction, skill: skill, intent: .rewrite, effort: effort); return true
+            beginOperation(); self.reference = reference
+            generate(instruction: instruction, skill: skill, intent: .rewrite, effort: effort); return true
         case .chat, .localError: return false
         }
     }
@@ -138,21 +165,17 @@ final class WritingCoordinator: ObservableObject {
     private func beginOperation() {
         cancelWork(); closeAgent()
         operation = UUID(); proposal = nil; plan = nil; source = nil; invalidation = nil
-        notice = nil; clarification = nil; previewText = ""; stopRequested = false
+        notice = nil; clarification = nil; previewText = ""; stopRequested = false; failed = false
+        operationTarget = nil; sourceTargetToken = nil; snippetRestriction = .any; reference = nil
     }
 
     private func insertSnippet(_ snippet: SavedSnippet) {
         guard let operation else { return }
+        snippetRestriction = snippet.restriction
         preferTarget(for: snippet.restriction)
+        operationTarget = target
         let resolved = WritingProposal(operationID: operation, revision: 1, intent: .snippet, text: snippet.body,
                                        provenance: .snippet(id: snippet.id, revision: snippet.revision))
-        // A restricted snippet never lands in the other kind of destination.
-        let isTerminal = target?.kind == .terminal
-        if (snippet.restriction == .terminalOnly && !isTerminal) || (snippet.restriction == .editorsOnly && isTerminal) {
-            proposal = resolved; previewText = resolved.text; plan = .previewOnly(.unsupportedTarget); phase = .review
-            invalidation = snippet.restriction == .terminalOnly ? "This snippet inserts only into terminals." : "This snippet inserts only into editors."
-            return
-        }
         present(resolved, autoApply: true)
     }
 
@@ -170,12 +193,14 @@ final class WritingCoordinator: ObservableObject {
         let surroundingRequested = includeSurrounding
         includeSurrounding = false
         request = (instruction, skill, intent, effort)
-        stopRequested = false; invalidation = nil
+        stopRequested = false; invalidation = nil; failed = false
         phase = .generating
         let binding = bindTask
         work = Task { [weak self] in
             await binding?.value
             guard let self, expected == generation else { return }
+            // Pinned once, when this operation's own binding resolves; a refinement keeps the original pin.
+            if operationTarget == nil { operationTarget = target }
             do {
                 let reply = try await produce(instruction: instruction, skill: skill, intent: intent, effort: effort,
                                               surrounding: surroundingRequested, previousDraft: previousDraft, refinement: refinement)
@@ -191,7 +216,8 @@ final class WritingCoordinator: ObservableObject {
                 }
             } catch {
                 guard expected == generation else { return }
-                phase = proposal == nil ? .idle : .review
+                // Stays visible with Retry; the submitted request is kept, never silently dropped.
+                phase = .review; failed = proposal == nil
                 notice = (error as? LocalizedError)?.errorDescription ?? "The writing request failed. Retry explicitly."
                 closeAgent()
             }
@@ -201,19 +227,21 @@ final class WritingCoordinator: ObservableObject {
 
     private func produce(instruction: String, skill: CustomSkill?, intent: WritingIntent, effort: AskEffort, surrounding: Bool,
                          previousDraft: String?, refinement: String?) async throws -> WritingReply {
+        let bound = operationTarget
         if intent == .rewrite, source == nil {
-            guard let target, target.hasSelection else { throw WritingRequestError.noSelection }
-            source = try await environment.readSource(target)
+            guard let bound, bound.mayHaveSelection else { throw WritingRequestError.noSelection }
+            source = try await environment.readSource(bound)
+            sourceTargetToken = bound.token
         }
         if provider == .preview {
             let text = intent == .rewrite ? source?.text ?? "" : "Preview draft (no AI): " + instruction
             return .draft(text: text, subject: nil)
         }
         guard let executable else { throw AskError.missingExecutable(provider.displayName) }
-        let context = surrounding ? await target.asyncMap(environment.readSurrounding) : nil
+        let context = surrounding ? await bound.asyncMap(environment.readSurrounding) : nil
         let payload = WritingHostPayload(operation: intent, skill: skill.map { .init(name: $0.name, instructions: $0.instructions) },
-                                         source: source?.text, surrounding: context ?? nil,
-                                         destination: WritingHostPayload.destination(for: target?.kind),
+                                         source: source?.text, reference: reference, surrounding: context ?? nil,
+                                         destination: WritingHostPayload.destination(for: bound?.kind),
                                          previousDraft: previousDraft, refinement: refinement)
         if agent == nil { agent = try environment.makeAgent(provider, executable, profileRoot, effort) }
         guard let agent else { throw AskError.incompleteTurn }
@@ -223,16 +251,38 @@ final class WritingCoordinator: ObservableObject {
 
     private func present(_ proposal: WritingProposal, autoApply: Bool) {
         self.proposal = proposal; previewText = proposal.text; clarification = nil
-        let decided = WritingApplyPlan.decide(intent: proposal.intent, target: target, text: proposal.text, provenance: proposal.provenance)
-        plan = autoApply ? decided : Self.explicitOnly(decided)
         phase = .review
-        if case .previewOnly(let reason)? = plan { invalidation = reason.message; return }
+        replan(autoApply: autoApply)
         guard plan == .automatic else { return }
         // A deliberate switch to another app during generation keeps the result as a preview.
         if let target, environment.frontmostProcess() != target.processIdentifier {
             invalidation = WritingNotAppliedReason.focusChanged.message; return
         }
         apply()
+    }
+
+    /// Decides how the current proposal may reach the current destination. Automatic application requires the
+    /// operation's own, unambiguous destination; a rewrite only ever replaces the selection it was made from.
+    private func replan(autoApply: Bool) {
+        guard let proposal else { return }
+        var decided = WritingApplyPlan.decide(intent: proposal.intent, target: target, text: previewText, provenance: proposal.provenance)
+        if case .previewOnly = decided {} else if let blocked = restrictionBlock(proposal) {
+            decided = .previewOnly(blocked)
+        }
+        let ownDestination = target != nil && target?.token == operationTarget?.token
+        // A restricted snippet names its destination kind itself, which resolves the editor/terminal ambiguity.
+        let ambiguous = targetsAmbiguous && !(proposal.intent == .snippet && snippetRestriction != .any)
+        plan = autoApply && ownDestination && !ambiguous ? decided : Self.explicitOnly(decided)
+        if case .previewOnly(let reason)? = plan { invalidation = reason.message } else { invalidation = nil }
+    }
+
+    private func restrictionBlock(_ proposal: WritingProposal) -> WritingBlockReason? {
+        if proposal.intent == .rewrite, target?.token != sourceTargetToken { return .rewriteTargetChanged }
+        guard proposal.intent == .snippet else { return nil }
+        let isTerminal = target?.kind == .terminal
+        if snippetRestriction == .terminalOnly, !isTerminal { return .snippetTerminalOnly }
+        if snippetRestriction == .editorsOnly, isTerminal { return .snippetEditorsOnly }
+        return nil
     }
 
     // MARK: Application
@@ -247,32 +297,53 @@ final class WritingCoordinator: ObservableObject {
         let range = target.kind == .terminal ? UTF16Range.caret(0)! : target.selection
         stopRequested = false
         phase = .applying
-        closeComposer()
+        let authorized = authorization(expected: expected, operation: operation)
         work = Task { [weak self] in
             guard let self else { return }
-            let outcome = await performApply(claimed, target: target, range: range)
+            let outcome = await performApply(claimed, target: target, range: range, authorized: authorized)
             guard expected == generation else { onApplyFinished(); return }
             finish(outcome, target: target)
             work = nil
         }
     }
 
-    private func performApply(_ proposal: WritingProposal, target: TextTargetSnapshot, range: UTF16Range) async -> WritingApplyOutcome {
+    /// Valid while this operation is current and nobody pressed Stop, revoked or replaced it.
+    private func authorization(expected: UInt64, operation: UUID) -> WritingAuthorization {
+        { [weak self] in
+            guard let self else { return false }
+            return !stopRequested && generation == expected && self.operation == operation
+        }
+    }
+
+    /// Quick Ask keeps keyboard ownership (and its Stop control) until the submitting Return is fully released,
+    /// so neither the key-up nor auto-repeat can reach the destination after focus returns there.
+    private func handOffKeyboard(_ authorized: WritingAuthorization) async -> WritingNotAppliedReason? {
+        guard await environment.waitForSubmitKeyRelease() else { return .keyStillHeld }
+        guard authorized() else { return .canceled }
+        closeComposer()
+        return nil
+    }
+
+    private func performApply(_ proposal: WritingProposal, target: TextTargetSnapshot, range: UTF16Range,
+                              authorized: @escaping WritingAuthorization) async -> WritingApplyOutcome {
+        if let reason = await handOffKeyboard(authorized) { return .notApplied(reason) }
         guard definitionStillCurrent(proposal.provenance) else { return .notApplied(.definitionChanged) }
         var expectedSource = ""
-        if !range.isEmpty, target.kind != .terminal {
-            if let source, source.range == range { expectedSource = source.text }
+        if !range.isEmpty, target.kind != .terminal, !target.pasteOnly {
+            if let source, source.range == range, sourceTargetToken == target.token { expectedSource = source.text }
+            else if proposal.intent == .rewrite { return .notApplied(.sourceChanged) }
             else {
+                // An explicit Replace selection of a draft/snippet replaces whatever is selected now, read exactly.
                 guard let current = try? await environment.readSource(target) else { return .notApplied(.sourceChanged) }
                 expectedSource = current.text
             }
         }
-        guard await environment.waitForSubmitKeyRelease() else { return .notApplied(.keyStillHeld) }
-        guard !stopRequested else { return .notApplied(.canceled) }
+        guard authorized() else { return .notApplied(.canceled) }
         guard await environment.restoreFocus(target) else { return .notApplied(.focusChanged) }
         if let change = target.change(comparedWith: await environment.liveTarget(target)) { return .notApplied(change) }
-        guard !stopRequested, definitionStillCurrent(proposal.provenance) else { return .notApplied(stopRequested ? .canceled : .definitionChanged) }
-        return await environment.apply(target, range, proposal.text, expectedSource)
+        guard authorized() else { return .notApplied(.canceled) }
+        guard definitionStillCurrent(proposal.provenance) else { return .notApplied(.definitionChanged) }
+        return await environment.apply(target, range, proposal.text, expectedSource, authorized)
     }
 
     private func definitionStillCurrent(_ provenance: WritingProvenance) -> Bool {
@@ -293,12 +364,18 @@ final class WritingCoordinator: ObservableObject {
             lastEdit = terminal ? nil : edit; editedTarget = terminal ? nil : target; phase = .finished
             notice = terminal ? "Inserted — not executed" : (replacesSelection ? "Replaced selection" : "Inserted")
         case .acknowledged:
-            lastEdit = nil; phase = .finished; notice = "Inserted — not executed"
+            // Delivered without read-back: the VS Code terminal API, or a plain paste at an app's cursor.
+            lastEdit = nil; phase = .finished
+            if target.pasteOnly {
+                notice = terminal ? "Pasted at the prompt — not executed"
+                    : proposal?.intent == .rewrite ? "Replaced the selection — ⌘Z in the app undoes it" : "Pasted at the cursor"
+            }
+            else { notice = "Sent to the terminal — not executed, not verified" }
         case .notApplied(let reason):
             phase = .review; invalidation = reason.message; notice = "Not inserted: " + reason.message
         case .deliveryUnknown:
             phase = .review; invalidation = "Delivery unconfirmed"
-            notice = "Delivery unconfirmed — check the field. Clicky will not retry; the text stays available to copy."
+            notice = "Delivery unconfirmed — check the field. Clicky will not retry; the clipboard still holds this text."
         }
         if let notice { showNotice(notice) }
         onApplyFinished()
@@ -307,33 +384,48 @@ final class WritingCoordinator: ObservableObject {
     /// Guarded inverse of Clicky's own last edit, through the same key-release and focus gates as applying.
     func restoreOriginal() {
         guard phase == .finished, let edit = lastEdit, let target = editedTarget, edit.targetToken == target.token else { return }
+        guard let operation else { return }
         lastEdit = nil
+        stopRequested = false
         phase = .applying
-        closeComposer()
+        let expected = generation
+        let authorized = authorization(expected: expected, operation: operation)
         work = Task { [weak self] in
             guard let self else { return }
             var restored = false
-            if await environment.waitForSubmitKeyRelease(), await environment.restoreFocus(target) {
-                restored = await environment.restore(target, edit)
+            let handOff = await handOffKeyboard(authorized)
+            if handOff == nil, await environment.restoreFocus(target), authorized() {
+                restored = await environment.restore(target, edit, authorized)
             }
+            guard expected == generation else { onApplyFinished(); return }
             phase = .finished
-            notice = restored ? "Restored the original text" : "Not restored: the field changed or lost focus after Clicky edited it."
+            if restored { notice = "Restored the original text" }
+            else if handOff == .canceled || stopRequested { notice = "Stopped"; lastEdit = edit }
+            else { notice = "Not restored: the field changed or lost focus after Clicky edited it." }
             showNotice(notice!)
             onApplyFinished()
+            work = nil
         }
     }
 
     // MARK: Preview controls
 
     func refine(_ instruction: String) {
-        guard !isBusy, let request, proposal != nil, request.intent != .snippet else { return }
+        guard !isBusy, let request, proposal != nil || clarification != nil, request.intent != .snippet else { return }
+        if proposal == nil {
+            // Answering a clarification continues the same request in the same provider conversation.
+            generate(instruction: request.instruction, skill: request.skill, intent: request.intent, effort: request.effort,
+                     refinement: instruction)
+            return
+        }
         if phase == .finished {
             // A refinement after insertion is a new transaction against freshly re-read metadata.
             operation = UUID(); lastEdit = nil
             Task { [weak self] in
                 guard let self, let target else { return }
                 let live = await environment.liveTarget(target)
-                self.target = live; self.invalidation = live == nil ? WritingNotAppliedReason.targetUnavailable.message : nil
+                self.target = live; self.operationTarget = live
+                self.invalidation = live == nil ? WritingNotAppliedReason.targetUnavailable.message : nil
                 generate(instruction: request.instruction, skill: request.skill, intent: request.intent, effort: request.effort,
                          previousDraft: previewText, refinement: instruction)
             }
@@ -341,6 +433,12 @@ final class WritingCoordinator: ObservableObject {
         }
         generate(instruction: request.instruction, skill: request.skill, intent: request.intent, effort: request.effort,
                  previousDraft: previewText, refinement: instruction)
+    }
+
+    /// Repeats a request whose generation failed before any proposal, with the same instruction and inputs.
+    func retry() {
+        guard canRetry, let request else { return }
+        generate(instruction: request.instruction, skill: request.skill, intent: request.intent, effort: request.effort)
     }
 
     func copyProposal() {
@@ -365,11 +463,13 @@ final class WritingCoordinator: ObservableObject {
         guard phase != .applying else { return }
         cancelWork(); closeAgent()
         operation = nil; proposal = nil; plan = nil; source = nil; previewText = ""; clarification = nil
-        invalidation = nil; notice = nil; lastEdit = nil; request = nil; phase = .idle
+        invalidation = nil; notice = nil; lastEdit = nil; request = nil; phase = .idle; failed = false
+        operationTarget = nil; sourceTargetToken = nil; snippetRestriction = .any; reference = nil
     }
 
-    /// Provider/executable changes and app shutdown end the clean writing process.
-    func reset() { discard() }
+    /// Provider/executable changes and app shutdown end the clean writing process and revoke any write
+    /// that has not committed yet.
+    func reset() { stopRequested = true; discard() }
 
     private func cancelWork() { generation &+= 1; work?.cancel(); work = nil }
 
@@ -384,10 +484,6 @@ final class WritingCoordinator: ObservableObject {
     }
 }
 
-enum WritingRequestError: LocalizedError {
-    case noSelection
-    var errorDescription: String? { WritingBlockReason.noSelection.message }
-}
 
 private extension Optional {
     func asyncMap<T>(_ transform: (Wrapped) async -> T) async -> T? {

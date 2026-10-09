@@ -13,7 +13,7 @@ xcrun swiftc -O -module-name ClickyProbe -sdk "$(xcrun --show-sdk-path --sdk mac
   -enable-upcoming-feature InferIsolatedConformances -enable-upcoming-feature InferSendableFromCaptures \
   -enable-upcoming-feature GlobalActorIsolatedTypesUsability -enable-upcoming-feature DisableOutwardActorInference \
   leanring-buddy/TextInput/Core/*.swift \
-  leanring-buddy/TextInput/{WritingNativeTargets,WritingAXField,WritingTerminalAdapter,WritingVSCodeAdapter,WritingClipboard,WritingEnvironment,WindowSnapshotCapture,ScopedAccessibility}.swift \
+  leanring-buddy/TextInput/{WritingNativeTargets,WritingPasteAdapter,WritingAXField,WritingTerminalAdapter,WritingVSCodeAdapter,WritingClipboard,WritingEnvironment,WindowSnapshotCapture,ScopedAccessibility}.swift \
   Tools/ClickyWritingProbe/main.swift -o "$work/probe"
 case "${1:-}" in
   chrome)

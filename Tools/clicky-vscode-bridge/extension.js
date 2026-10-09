@@ -13,6 +13,8 @@ const TOKEN_PATH = path.join(DIR, 'token');
 const POLL_MS = 5000;
 
 const busy = new Map(); // Terminal -> running shell executions
+const observed = new Set(); // Terminals with a shell-integration event seen by this extension host
+const ledger = new core.RequestLedger();
 let server = null;
 let socketPath = null;
 let pollTimer = null;
@@ -20,6 +22,28 @@ let focusedAt = 0; // ms epoch of the latest window focus gain
 
 class BridgeError extends Error {
   constructor(code) { super(code); this.code = code; }
+}
+
+function readiness(terminal) {
+  return core.terminalReadiness({
+    shellIntegration: Boolean(terminal.shellIntegration), observed: observed.has(terminal), running: busy.get(terminal) || 0,
+  });
+}
+
+// The last check before a side effect: every await before it may have outlived the token (revocation)
+// or the client's connection (timeout/cancel). Nothing may suspend between this and the edit call.
+function commit(ctx) {
+  const token = readToken();
+  if (!token || !core.tokensEqual(token, ctx.token)) throw new BridgeError('revoked');
+  if (!ctx.live()) throw new BridgeError('canceled');
+}
+
+// Writes go only to the focused window's active editor, never a merely visible one.
+function activeEditorFor(doc) {
+  if (!vscode.window.state.focused) throw new BridgeError('focusChanged');
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || editor.document !== doc) throw new BridgeError('focusChanged');
+  return editor;
 }
 
 function ownedWithMode(stat, mode) {
@@ -56,6 +80,7 @@ async function terminalSummary() {
     name: t.name,
     shellIntegration: Boolean(t.shellIntegration),
     busy: (busy.get(t) || 0) > 0,
+    readiness: readiness(t),
     shell: (t.state && t.state.shell) || null,
   };
 }
@@ -111,14 +136,20 @@ function verifyInserted(doc, start, text) {
   return { verified: false, normalized: false, length: text.length };
 }
 
-async function methodReplaceRange(params) {
+async function methodReplaceRange(params, ctx) {
   if (typeof params.text !== 'string' || params.text.length > core.MAX_TEXT_UTF16) throw new BridgeError('badRequest');
   if (typeof params.expected !== 'string') throw new BridgeError('badRequest');
+  if (params.requireSelection !== undefined && typeof params.requireSelection !== 'boolean') throw new BridgeError('badRequest');
   const doc = findDocument(params);
-  const editor = vscode.window.visibleTextEditors.find((e) => e.document === doc);
-  if (!editor) throw new BridgeError('notFound');
+  const editor = activeEditorFor(doc);
   const range = rangeOf(doc, params, core.MAX_TEXT_UTF16);
+  // A forward write is authorized only for the caret/selection the host bound; a restore targets Clicky's own text.
+  if (params.requireSelection) {
+    const selections = editor.selections.map((s) => ({ start: doc.offsetAt(s.start), end: doc.offsetAt(s.end) }));
+    if (!core.selectionMatches(selections, params.start, params.end)) throw new BridgeError('selectionChanged');
+  }
   if (doc.getText(range) !== params.expected) throw new BridgeError('sourceChanged');
+  commit(ctx);
   const ok = await editor.edit((b) => b.replace(range, params.text), { undoStopBefore: true, undoStopAfter: true });
   if (!ok) return { applied: false };
   const check = verifyInserted(doc, params.start, params.text);
@@ -131,16 +162,23 @@ async function methodReplaceRange(params) {
   };
 }
 
-async function methodInsertTerminal(params) {
+async function methodInsertTerminal(params, ctx) {
+  if (!core.isInsertableTerminalText(params.text)) throw new BridgeError('unsafeText');
   const terminal = vscode.window.activeTerminal;
   if (!terminal) throw new BridgeError('terminalChanged');
   const pid = await terminal.processId;
   if (typeof params.terminalId !== 'number' || pid !== params.terminalId) throw new BridgeError('terminalChanged');
+  // Re-read everything after the await: the terminal, focus and readiness may have changed meanwhile.
+  if (vscode.window.activeTerminal !== terminal) throw new BridgeError('terminalChanged');
+  if (!vscode.window.state.focused) throw new BridgeError('focusChanged');
   if (!terminal.shellIntegration) throw new BridgeError('noShellIntegration');
-  if ((busy.get(terminal) || 0) > 0) throw new BridgeError('busy');
-  if (!core.isInsertableTerminalText(params.text)) throw new BridgeError('unsafeText');
+  const state = readiness(terminal);
+  if (state === 'busy') throw new BridgeError('busy');
+  if (state !== 'ready') throw new BridgeError('readinessUnknown');
+  commit(ctx);
   terminal.sendText(params.text, false);
-  return { sent: true };
+  // sendText returns nothing: this is delivery to the API, not a read-back of the prompt buffer.
+  return { sent: true, verified: false };
 }
 
 const METHODS = {
@@ -150,14 +188,15 @@ const METHODS = {
   insertTerminal: methodInsertTerminal,
 };
 
-async function handleLine(line) {
+async function handleLine(line, live = () => true) {
   let request;
   try { request = core.parseRequest(line); } catch (e) { return core.failure('', e.code || 'badRequest'); }
   const token = readToken();
   if (!token || !core.tokensEqual(token, request.token)) return core.failure(request.id, 'unauthorized');
   if (!Object.prototype.hasOwnProperty.call(METHODS, request.method)) return core.failure(request.id, 'unknownMethod');
+  if (!ledger.admit(request.id)) return core.failure(request.id, 'duplicate');
   try {
-    return core.response(request.id, await METHODS[request.method](request.params));
+    return core.response(request.id, await METHODS[request.method](request.params, { token: request.token, live }));
   } catch (e) {
     return core.failure(request.id, e instanceof BridgeError ? e.code : 'internal');
   }
@@ -175,6 +214,10 @@ function serve(connection) {
   };
   connection.setTimeout(10000, () => finish(null));
   connection.on('error', () => finish(null));
+  // The client never half-closes before reading the reply: end/close means it gave up (timeout or cancel),
+  // and a pending handler must not commit a write for a requester that is no longer listening.
+  connection.on('end', () => finish(null));
+  connection.on('close', () => { done = true; });
   let dispatched = false;
   connection.on('data', (chunk) => {
     // One request per connection: bytes after the first line never re-run it.
@@ -186,7 +229,7 @@ function serve(connection) {
     const newline = all.indexOf(10);
     if (newline < 0) return;
     dispatched = true;
-    handleLine(all.subarray(0, newline).toString('utf8')).then(finish, () => finish(core.failure('', 'internal')));
+    handleLine(all.subarray(0, newline).toString('utf8'), () => !done).then(finish, () => finish(core.failure('', 'internal')));
   });
 }
 
@@ -220,13 +263,16 @@ function activate(context) {
   if (vscode.window.state.focused) focusedAt = Date.now();
   context.subscriptions.push(
     vscode.window.onDidChangeWindowState((state) => { if (state.focused) focusedAt = Date.now(); }),
+    vscode.window.onDidChangeTerminalShellIntegration((e) => { observed.add(e.terminal); }),
     vscode.window.onDidStartTerminalShellExecution((e) => {
+      observed.add(e.terminal);
       busy.set(e.terminal, (busy.get(e.terminal) || 0) + 1);
     }),
     vscode.window.onDidEndTerminalShellExecution((e) => {
+      observed.add(e.terminal);
       busy.set(e.terminal, Math.max(0, (busy.get(e.terminal) || 0) - 1));
     }),
-    vscode.window.onDidCloseTerminal((t) => { busy.delete(t); }),
+    vscode.window.onDidCloseTerminal((t) => { busy.delete(t); observed.delete(t); }),
   );
   poll();
   pollTimer = setInterval(poll, POLL_MS);
@@ -238,4 +284,4 @@ function deactivate() {
   stopServer();
 }
 
-module.exports = { activate, deactivate };
+module.exports = { activate, deactivate, _test: { handleLine, serve } };

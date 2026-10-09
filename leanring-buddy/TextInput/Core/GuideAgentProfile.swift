@@ -9,7 +9,7 @@ nonisolated public struct GuideAgentProfile: Sendable {
     public static let claudeModel = "claude-haiku-5-5"
     public static let codexModel = "gpt-6-luna"
     public static let reasoningEffort = "low"
-    static let claudeVersions = ["2.1.294", "2.1.295"]
+    static let claudeVersions = ["2.1.294", "2.1.295", "2.1.296"]
     static let codexVersions = ["0.160.1"]
     public let provider: AgentProvider
     public let workingDirectory: URL

@@ -37,11 +37,11 @@ import ApplicationServices
         report("chrome focus gate", await env.restoreFocus(bound))
         report("chrome capture kind=\(bound.kind) blocked=\(String(describing: bound.blockedReason)) sel=\(bound.selection)", bound.kind == .textField && bound.blockedReason == nil)
         let insert = "Héllo 😀 e\u{301} ťžč\n\n  indented\t$(x) `y`\n"
-        let outcome = await env.apply(bound, bound.selection, insert, "")
+        let outcome = await env.apply(bound, bound.selection, insert, "", { true })
         report("chrome insert applied=\(outcome.applied != nil)", outcome.applied != nil && value() == insert + original)
         report("chrome clipboard restored", pb.string(forType: .string) == "user clipboard ✓" && pb.data(forType: NSPasteboard.PasteboardType("com.example.custom")) == Data([1, 2, 3]))
         if let edit = outcome.applied {
-            let restored = await env.restore(bound, edit)
+            let restored = await env.restore(bound, edit, { true })
             report("chrome guarded restore", restored && value() == original)
         }
         // Rewrite one exact substring: "paragraph" in "First paragraph stays."
@@ -49,9 +49,9 @@ import ApplicationServices
         bound = await env.captureTargets(pid("com.google.Chrome")).primary!
         let source = try? await env.readSource(bound)
         report("chrome exact source '\(source?.text ?? "nil")'", source?.text == "paragraph")
-        let replaced = await env.apply(bound, bound.selection, "PARAGRAPH 😀", source?.text ?? "")
+        let replaced = await env.apply(bound, bound.selection, "PARAGRAPH 😀", source?.text ?? "", { true })
         report("chrome replace only range", replaced.applied != nil && value() == original.replacingOccurrences(of: "First paragraph", with: "First PARAGRAPH 😀"))
-        if let edit = replaced.applied { _ = await env.restore(bound, edit) }
+        if let edit = replaced.applied { _ = await env.restore(bound, edit, { true }) }
         report("chrome restored after replace", value() == original)
         // Changed caret invalidates.
         bound = await env.captureTargets(pid("com.google.Chrome")).primary!
@@ -61,7 +61,7 @@ import ApplicationServices
         // Stale expected source refuses.
         _ = WritingAX.select(field(), range: UTF16Range(location: 0, length: 5)!); try? await Task.sleep(nanoseconds: 300_000_000)
         bound = await env.captureTargets(pid("com.google.Chrome")).primary!
-        let stale = await env.apply(bound, bound.selection, "X", "Nope!")
+        let stale = await env.apply(bound, bound.selection, "X", "Nope!", { true })
         report("chrome stale source refused (\(stale))", stale == .notApplied(.sourceChanged) && value() == original)
         // Promised/unreadable clipboard: simulate oversized snapshot is not possible here; check snapshot works.
         report("chrome clipboard intact at end", pb.string(forType: .string) == "user clipboard ✓")
@@ -92,19 +92,19 @@ import ApplicationServices
         report("contenteditable capture role=\(WritingAX.value(field(), kAXRoleAttribute) as? String ?? "-") blocked=\(String(describing: bound.blockedReason))", bound.blockedReason == nil)
         report("contenteditable focus gate (front=\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "-"))", await env.restoreFocus(bound))
         let original = value()
-        let inserted = await env.apply(bound, bound.selection, "Ahoj 😀 ", "")
+        let inserted = await env.apply(bound, bound.selection, "Ahoj 😀 ", "", { true })
         report("contenteditable insert (\(inserted))", inserted.applied != nil && value() == "Ahoj 😀 " + original)
-        if let edit = inserted.applied { report("contenteditable guarded restore", await env.restore(bound, edit) && value() == original) }
+        if let edit = inserted.applied { report("contenteditable guarded restore", await env.restore(bound, edit, { true }) && value() == original) }
         let middle = (original as NSString).range(of: "Middle")
         let wanted = UTF16Range(location: middle.location, length: middle.length)!
         _ = WritingAX.select(field(), range: wanted)
         report("contenteditable test selection set", await WritingAX.poll(timeout: 1.5) { WritingAX.selectedRange(field()) == wanted })
         bound = await env.captureTargets(pid("com.google.Chrome")).primary!
         let source = try? await env.readSource(bound)
-        let replaced = await env.apply(bound, bound.selection, "Stred ťž", source?.text ?? "")
+        let replaced = await env.apply(bound, bound.selection, "Stred ťž", source?.text ?? "", { true })
         report("contenteditable replace only 'Middle' (\(replaced))", replaced.applied != nil && value() == original.replacingOccurrences(of: "Middle", with: "Stred ťž"))
         report("duplicate passages untouched", value().components(separatedBy: "Duplicate passage").count == 3)
-        if let edit = replaced.applied { _ = await env.restore(bound, edit) }
+        if let edit = replaced.applied { _ = await env.restore(bound, edit, { true }) }
     case "terminal":
         let marker = CommandLine.arguments[2]
         let expectedTTY = CommandLine.arguments[3]
@@ -117,11 +117,11 @@ import ApplicationServices
         let command = "touch '\(marker)' && echo \"$(date) `whoami`\" | tr a-z A-Z; true"
         let plan = WritingApplyPlan.decide(intent: .snippet, target: bound, text: command, provenance: .snippet(id: UUID(), revision: 1))
         report("terminal plan automatic", plan == .automatic)
-        let outcome = await env.apply(bound, .caret(0)!, command, "")
+        let outcome = await env.apply(bound, .caret(0)!, command, "", { true })
         try? await Task.sleep(nanoseconds: 800_000_000)
         report("terminal inserted (\(outcome))", outcome.applied != nil)
         report("terminal NOT executed (marker absent)", !FileManager.default.fileExists(atPath: marker))
-        let multiline = await env.apply(bound, .caret(0)!, "echo a\necho b", "")
+        let multiline = await env.apply(bound, .caret(0)!, "echo a\necho b", "", { true })
         report("terminal multiline refused (\(multiline))", multiline == .notApplied(.rejectedByTarget))
         report("terminal multiline plan previewOnly", WritingApplyPlan.decide(intent: .snippet, target: bound, text: "echo a\n", provenance: .snippet(id: UUID(), revision: 1)) == .previewOnly(.terminalMultiline))
     case "tester-enter":
@@ -147,22 +147,22 @@ import ApplicationServices
         report("vscode capture kind=\(editor.kind) blocked=\(String(describing: editor.blockedReason)) sel=\(editor.selection) rev=\(editor.contentRevision) alt=\(String(describing: bound.alternate?.kind)) altBlocked=\(String(describing: bound.alternate?.blockedReason))", editor.kind == .vscodeEditor && editor.blockedReason == nil)
         if mode == "vscode" {
             let text = "Ťest 😀 e\u{301}\n\tindent $(x)\n"
-            let outcome = await env.apply(editor, editor.selection, text, "")
+            let outcome = await env.apply(editor, editor.selection, text, "", { true })
             report("vscode insert (\(outcome))", outcome.applied != nil)
             if let edit = outcome.applied {
                 let live = await env.liveTarget(editor)
                 report("vscode version advanced \(editor.contentRevision)->\(live?.contentRevision ?? "-")", live?.contentRevision != editor.contentRevision)
-                let stale = await env.apply(editor, editor.selection, "SHOULD NOT LAND", "")
+                let stale = await env.apply(editor, editor.selection, "SHOULD NOT LAND", "", { true })
                 report("vscode stale version refused (\(stale))", stale == .notApplied(.contentChanged))
-                report("vscode guarded restore", await env.restore(editor, edit))
+                report("vscode guarded restore", await env.restore(editor, edit, { true }))
             }
         } else if let terminal = bound.alternate {
             let marker = CommandLine.arguments[2]
-            let outcome = await env.apply(terminal, .caret(0)!, "touch '\(marker)'", "")
+            let outcome = await env.apply(terminal, .caret(0)!, "touch '\(marker)'", "", { true })
             try? await Task.sleep(nanoseconds: 800_000_000)
             report("vscode terminal inserted (\(outcome))", outcome.applied != nil)
             report("vscode terminal NOT executed", !FileManager.default.fileExists(atPath: marker))
-            let multi = await env.apply(terminal, .caret(0)!, "echo a\necho b", "")
+            let multi = await env.apply(terminal, .caret(0)!, "echo a\necho b", "", { true })
             report("vscode terminal multiline refused (\(multi))", multi == .notApplied(.rejectedByTarget))
         } else { report("vscode terminal present", false) }
     default: print("usage: probe chrome|terminal <marker>|terminal-busy")
