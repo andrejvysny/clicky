@@ -54,7 +54,11 @@ struct IslandGuideControls: View {
     /// Only conflicting turn-starting actions disable while busy; End and Pause stay operable in every phase.
     @ViewBuilder private var actions: some View {
         HStack(spacing: 6) {
-            if controller.proposal != nil {
+            if let index = controller.task?.historyIndex {
+                Button("Return to current") { controller.returnToCurrent() }.islandButton(.primary).disabled(controller.isBusy)
+                Button("Back") { controller.back() }.islandButton(.secondary).disabled(index == 0 || controller.isBusy)
+                Button("Forward") { controller.forward() }.islandButton(.secondary).disabled(controller.isBusy)
+            } else if controller.proposal != nil {
                 Button("Start new task") { controller.acceptProposal() }.islandButton(.primary).disabled(controller.isBusy)
                 Button("Keep current task") { controller.keepTask() }.islandButton(.secondary)
             } else if controller.task?.phase == .completed || controller.demo?.completed == true {

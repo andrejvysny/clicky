@@ -134,6 +134,9 @@ nonisolated public struct GuideTaskState: Sendable {
     public private(set) var budget = GuideStepBudget()
     /// One automatic continuation after the stored goal checks fail final verification.
     public private(set) var goalRecoveriesUsed = 0
+    /// History view cursor into `milestones`; nil shows the active step. Browsing never changes the ledger.
+    public private(set) var historyIndex: Int?
+    public var historyItem: GuideMilestone? { historyIndex.flatMap { milestones.indices.contains($0) ? milestones[$0] : nil } }
     public private(set) var plan = GuidePlan()
     /// Every reason guidance is held. Only temporary reasons may clear without a deliberate user action.
     public private(set) var interruptions: Set<GuideInterruption> = []
@@ -222,8 +225,22 @@ nonisolated public struct GuideTaskState: Sendable {
         if verificationChecks >= 2 { phase = .uncertain }
         return false
     }
+    /// Back shows the previous instruction; it never undoes an application action or reopens a milestone.
+    @discardableResult
+    public mutating func browseBack() -> Bool {
+        guard !milestones.isEmpty else { return false }
+        historyIndex = max(0, (historyIndex ?? milestones.count) - 1); return true
+    }
+    /// Forward through history. True when this returned to the active step, which the host must revalidate.
+    @discardableResult
+    public mutating func browseForward() -> Bool {
+        guard let index = historyIndex else { return false }
+        if index + 1 >= milestones.count { historyIndex = nil; return true }
+        historyIndex = index + 1; return false
+    }
+    public mutating func returnToCurrent() { historyIndex = nil }
     public mutating func manualNext() {
-        guard step != nil, phase == .waiting || phase == .uncertain || phase == .paused else { return }
+        guard historyIndex == nil, step != nil, phase == .waiting || phase == .uncertain || phase == .paused else { return }
         advance(.manuallyAcknowledged)
     }
     /// Completion only after the stored goal checks were verified on this exact fresh capture. A step still

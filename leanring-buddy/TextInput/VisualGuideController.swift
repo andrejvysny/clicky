@@ -193,7 +193,7 @@ final class VisualGuideController: ObservableObject {
     }
     /// A matched interaction is an attempt, acknowledged locally before any provider latency; it is never success.
     func attemptObserved() {
-        guard let phase = task?.phase, phase == .waiting || phase == .uncertain else { return }
+        guard task?.historyIndex == nil, let phase = task?.phase, phase == .waiting || phase == .uncertain else { return }
         if phase == .waiting { guard let context = lastContext, task?.isCurrent(context) == true else { return } }
         guard task?.recordAttempt() == true else { return }
         targetGuard?.cancel(); targetGuard = nil
@@ -215,7 +215,7 @@ final class VisualGuideController: ObservableObject {
     }
     /// Starts a verification episode. Automatic episodes are budgeted per step; an explicit Re-check is not.
     func checkNow(automatic: Bool = false) {
-        guard !isBusy, !composerOpen, task?.beginVerification(automatic: automatic) == true else {
+        guard !isBusy, !composerOpen, task?.historyIndex == nil, task?.beginVerification(automatic: automatic) == true else {
             if automatic, task?.phase == .uncertain { status = "I couldn't confirm that · Re-check"; publish() }
             return
         }
@@ -224,20 +224,28 @@ final class VisualGuideController: ObservableObject {
     }
     func nextManually() {
         if demo != nil { demo?.next(); status = demo?.completed == true ? "Demo finished manually · no verification" : "Demo · no AI · manual checklist"; publish(); return }
-        guard !isBusy, task?.step != nil else { return }
+        guard !isBusy, task?.step != nil, task?.historyIndex == nil else { return }
         stopObservation(); onClearTarget?()
         if task?.phase == .paused { task?.resume() }
         task?.manualNext(); task?.beginRequest(); sideQuestion = false; metrics.count(.manualAcknowledgements)
         launch(message: recoveryMessage() + "\nUser manually acknowledged the last step; it is NOT verified. Locate the next step.", captureFirst: true)
     }
-    /// Re-locates the previous milestone against fresh context. The model presents it again; it is never marked verified.
+    /// Shows the previous instruction from history. No provider request, desktop action or old coordinates:
+    /// observation is frozen while browsing so nothing can complete, and returning revalidates the active step.
     func back() {
-        guard demo == nil, !isBusy, let previous = task?.milestones.last else { return }
+        guard demo == nil, !isBusy, task?.browseBack() == true else { return }
         stopObservation(); onClearTarget?()
-        if task?.phase == .paused { task?.resume() }
-        task?.beginRequest(); sideQuestion = false
-        launch(message: recoveryMessage() + "\nUser went back to the previous step: \"" + previous.instruction
-               + "\". Present that step again against fresh context.", captureFirst: true)
+        status = "Earlier step · past guidance, nothing to do"; publish()
+    }
+    func forward() {
+        guard demo == nil, !isBusy, task?.historyIndex != nil else { return }
+        if task?.browseForward() == true { returnToCurrent() } else { publish() }
+    }
+    func returnToCurrent() {
+        guard !isBusy, task != nil else { return }
+        task?.returnToCurrent()
+        guard let phase = task?.phase, phase != .paused, phase != .completed, phase != .canceled else { publish(); return }
+        if task?.step != nil { revalidateStep() } else { retry() }
     }
     func finishManually() {
         if demo != nil { while demo?.completed == false { demo?.resume(); demo?.next() }; status = "Demo finished manually · no verification"; publish(); return }

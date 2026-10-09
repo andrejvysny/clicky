@@ -135,7 +135,8 @@ final class AskController: ObservableObject {
         guard guide.task?.step != nil, let phase = guide.task?.phase else { return false }
         return [.waiting, .verifying, .uncertain].contains(phase)
     }
-    func guideNextShortcut() { guide.nextManually() }
+    /// While viewing history ⌥⇧→ moves forward; otherwise it is the explicit, unverified manual Next.
+    func guideNextShortcut() { guide.task?.historyIndex != nil ? guide.forward() : guide.nextManually() }
     func guideRetryShortcut() { guide.task?.phase == .uncertain ? guide.checkNow() : guide.retry() }
     func guideBackShortcut() { guide.back() }
     func guideEndShortcut() { guide.endTask() }

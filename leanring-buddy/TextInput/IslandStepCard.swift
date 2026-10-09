@@ -43,9 +43,24 @@ struct IslandStepCard: View {
         return max(GuidePreviewFixture.instructions.count, current)
     }
 
-    private var counter: String { total.map { "\(current)/\($0)" } ?? "Step \(current)" }
+    private var counter: String {
+        if let index = guide.task?.historyIndex { return "Earlier · Step \(index + 1)" }
+        return total.map { "\(current)/\($0)" } ?? "Step \(current)"
+    }
 
-    private var title: String { guide.demo?.instruction ?? guide.task?.step?.text ?? guide.task?.goal ?? "" }
+    private var title: String {
+        guide.task?.historyItem?.instruction ?? guide.demo?.instruction ?? guide.task?.step?.text ?? guide.task?.goal ?? ""
+    }
+
+    /// Provenance of a past instruction; manual and already-satisfied steps never read as verified.
+    private var historyProvenance: String? {
+        switch guide.task?.historyItem?.completion {
+        case .verified?: return "Past guidance · verified"
+        case .manuallyAcknowledged?: return "Past guidance · marked done manually, not verified"
+        case .satisfied?: return "Past guidance · already satisfied when checked"
+        case nil: return nil
+        }
+    }
 
     private var segments: some View {
         HStack(spacing: 2) {
@@ -62,7 +77,9 @@ struct IslandStepCard: View {
 
     @ViewBuilder private var statusRow: some View {
         HStack(spacing: 6) {
-            if guide.task?.phase == .waiting, !guide.isBusy {
+            if let historyProvenance {
+                Text(historyProvenance).foregroundStyle(DS.Colors.textSecondary)
+            } else if guide.task?.phase == .waiting, !guide.isBusy {
                 StatusDot(color: DS.Colors.blue400, glow: true)
                 Text(waitingText).foregroundStyle(DS.Colors.textSecondary)
             } else if guide.isBusy || guide.task?.phase == .verifying {

@@ -85,3 +85,39 @@ final class GuidePlanContractTests: XCTestCase {
         XCTAssertEqual(GuideContract.promptVersion, "clicky-guide-8")
     }
 }
+
+final class GuideHistoryTests: XCTestCase {
+    private let target = WindowCaptureTarget(processIdentifier: 5, windowIdentifier: 7, applicationIdentifier: "fixture", applicationName: "Fixture")
+
+    func testHistoryCursorWalksBackAndForwardWithoutTouchingTheLedger() {
+        var state = GuideTaskState(goal: "Fixture")
+        XCTAssertFalse(state.browseBack(), "nothing to show before any milestone")
+        state.authorize(target)
+        for name in ["A", "B"] { state.recordFixtureMilestone(name) }
+        XCTAssertTrue(state.browseBack()); XCTAssertEqual(state.historyItem?.instruction, "B")
+        XCTAssertTrue(state.browseBack()); XCTAssertEqual(state.historyItem?.instruction, "A")
+        XCTAssertTrue(state.browseBack()); XCTAssertEqual(state.historyIndex, 0, "cursor stays in bounds")
+        XCTAssertFalse(state.browseForward()); XCTAssertEqual(state.historyItem?.instruction, "B")
+        XCTAssertTrue(state.browseForward(), "forward past the last item returns to the active step")
+        XCTAssertNil(state.historyIndex)
+        XCTAssertEqual(state.milestones.map(\.instruction), ["A", "B"])
+    }
+}
+
+private extension GuideTaskState {
+    /// Records a manual milestone through the public path, as a user pressing Next would.
+    mutating func recordFixtureMilestone(_ text: String) {
+        let bytes = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==")!
+        let target = WindowCaptureTarget(processIdentifier: 5, windowIdentifier: 7, applicationIdentifier: "fixture", applicationName: "Fixture")
+        let image = try! PNGImageAttachment(data: bytes, context: ScreenContextIdentity(applicationIdentifier: "fixture", windowIdentifier: 7,
+                                                                                         displayIdentifier: 1, capturedAt: Date()),
+                                            capturedRegion: CGRect(x: 0, y: 0, width: 10, height: 10))
+        let lease = try! beginCapture()
+        let context = try! GuideCaptureContext(image: image, target: target, task: self)
+        _ = accept(context, lease: lease)
+        try! show(GuidePresentation(kind: .guide_step, text: text, captureID: context.captureID,
+                                    target: GuideRect(CGRect(x: 0, y: 0, width: 1, height: 1)),
+                                    action: GuideAction(kind: .click), outcome: GuideOutcome(description: text + " done")))
+        manualNext()
+    }
+}

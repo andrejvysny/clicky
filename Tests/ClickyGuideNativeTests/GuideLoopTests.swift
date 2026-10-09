@@ -215,6 +215,35 @@ final class GuideLoopTests: XCTestCase {
         XCTAssertEqual(harness.controller.metrics[.attempts], 5)
         print("five-step coordinator metrics:", harness.controller.metrics.summary)
     }
+
+    // MARK: Back (CLICKY-36)
+
+    func testBackBrowsesHistoryWithoutProviderRequestsOrDuplicateProgress() async throws {
+        let harness = GuideHarness()
+        try await harness.startStep()
+        try await harness.act(time: 10)
+        try await harness.reply { GuideHarness.step($0, text: "Click B") }
+        try await harness.act(time: 20)
+        try await harness.reply { GuideHarness.step($0, text: "Click C") }
+        let turns = await harness.turnCount
+        harness.controller.back()
+        XCTAssertEqual(harness.controller.task?.historyItem?.instruction, "Click B")
+        XCTAssertFalse(harness.controller.observer.isObserving, "nothing can complete while browsing")
+        harness.controller.back()
+        XCTAssertEqual(harness.controller.task?.historyItem?.instruction, "Click Settings")
+        harness.click(at: CGPoint(x: 15, y: 14), time: 30)
+        await harness.clock.advance(1)
+        let browsing = await harness.turnCount
+        XCTAssertEqual(browsing, turns, "Back sends nothing and clicks do not count")
+        harness.controller.forward(); harness.controller.forward()
+        await settle()
+        XCTAssertNil(harness.controller.task?.historyIndex)
+        XCTAssertEqual(harness.controller.task?.step?.text, "Click C")
+        XCTAssertTrue(harness.controller.observer.isObserving, "returning revalidated the active step")
+        XCTAssertEqual(harness.controller.task?.milestones.count, 2)
+        let after = await harness.turnCount
+        XCTAssertEqual(after, turns)
+    }
 }
 
 enum GuideHarnessTiming {
