@@ -59,7 +59,7 @@ nonisolated extension GuideContract {
         switch kind {
         case .context_request: return ["captureID", "crop"]
         case .guide_step: return ["captureID", "target", "action", "outcome", "mark", "label", "detail", "value", "ghost",
-                                  "milestone", "plan", "goalChecks"]
+                                  "milestone", "plan", "goalChecks", "warning"]
         case .annotation: return ["captureID", "target", "mark", "label", "value"]
         case .verification_result, .task_completed: return ["captureID", "matches", "evidence", "evidenceTarget"]
         case .task_proposal: return ["proposedGoal"]

@@ -46,6 +46,9 @@ nonisolated public enum GuideContract {
     together establish the user's requested end state, including every setting the user asked for.
     Give them on the first step and repeat them unchanged afterwards; the host keeps the original
     list. Never weaken, replace or narrow the user's goal. Do not state a fixed total step count.
+    warning: when the step's action deletes, sends, pays, publishes, overwrites or is otherwise hard
+    to undo, give its consequence in a few words (for example "Permanently deletes 3 files");
+    otherwise null. It is shown beside the target; the user's own click is the confirmation.
     Conceptual questions: explanation. Missing essential information: one clarification.
     context_request asks the host for approved window overview; crop optionally requests a
     detail rectangle in pixels of the current capture. No arbitrary windows, commands or tools.
@@ -68,7 +71,7 @@ nonisolated public enum GuideContract {
     Do not omit evidence on a false verdict. Never reuse the step's older captureID.
     annotation uses only kind, text, captureID, target, mark, label and nullable value;
     omit action, outcome, crop, matches, evidence, proposedGoal, detail, ghost, milestone, plan,
-    goalChecks and outcomeState.
+    goalChecks, outcomeState and warning.
     Do not infer success from pixel changes, confidence, or the previous instruction alone.
     After host-confirmed completion, propose the next grounded step or task_completed supported
     by current evidence. task_completed requires every goal check to hold now; the host verifies
@@ -111,6 +114,7 @@ nonisolated public enum GuideContract {
             "milestone": described(nullableString, "Guide_step only: short semantic intent of this step's milestone, never coordinates."),
             "plan": described(nullableStrings, "Guide_step only: remaining milestone intents in order starting with this one; at most 8; advisory."),
             "goalChecks": described(nullableStrings, "Guide_step only: at most 6 independently checkable conditions establishing the whole requested end state."),
+            "warning": described(nullableString, "Guide_step only: short consequence when the action deletes, sends, pays, publishes, overwrites or is otherwise hard to undo; null otherwise."),
             "outcomeState": described(.object(["type": .array([.string("string"), .string("null")]),
                                                "enum": .array(GuidePresentation.OutcomeState.allCases.map { .string($0.rawValue) } + [.null])]),
                                       "Verification_result only: confirmed, contradicted, pending (app still working) or unknown."),

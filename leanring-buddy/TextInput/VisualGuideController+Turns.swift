@@ -169,7 +169,8 @@ extension VisualGuideController {
         guard self.task?.accept(context, lease: lease) == true else { throw AttachmentError.targetChanged }
         lastImage = image; lastContext = context; capturedWindowBounds = bounds
         let purpose: GuideRequestPurpose = state.phase == .verifying ? .verification : (sideQuestion ? .sideQuestion : .continuation)
-        return GuideAgentTurn(message: message, image: image, context: context, purpose: purpose,
+        let hinted = selectionHint(for: context).map { message + "\n" + $0 } ?? message
+        return GuideAgentTurn(message: hinted, image: image, context: context, purpose: purpose,
                               taskContext: GuideHostTaskContext(state))
     }
 
@@ -204,10 +205,10 @@ extension VisualGuideController {
             if let completedAt = lastAdvanceAt { metrics.sample(.nextStep, seconds: environment.now().timeIntervalSince(completedAt)); lastAdvanceAt = nil }
             walkthroughPresented = true
             axOutcomeWasSatisfied = result.outcome.flatMap { environment.outcomeMatches($0, target) }
-            onTarget?(GuideMark(mark: result.mark ?? .circle, target: rect, label: nil,
+            onTarget?(GuideMark(mark: result.mark ?? .circle, target: rect, label: Self.stepLabel(result),
                                 value: result.mark == .value ? result.value : nil,
                                 ghost: result.ghost.flatMap(context.screenRect), within: context.region.rect,
-                                avoidRects: environment.annotationObstacles(target, context.region.rect)))
+                                avoidRects: environment.annotationObstacles(target, context.region.rect), warning: result.warning != nil))
             if !composerOpen {
                 observer.start(step: result, target: target, rect: rect)
                 startTargetGuard(image: image, context: context, pixelTarget: pixelTarget)

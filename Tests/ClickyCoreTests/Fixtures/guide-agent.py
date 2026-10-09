@@ -18,7 +18,7 @@ def presentation(text: str) -> dict:
                 action=None, outcome=None, matches=None, evidence=None, evidenceTarget=None,
                 proposedGoal=None, crop=None, mark=None, label=None,
                 detail=None, value=None, ghost=None, milestone=None, plan=None,
-                goalChecks=None, outcomeState=None)
+                goalChecks=None, outcomeState=None, warning=None)
 
 
 def response(result: dict, schema: dict) -> dict:

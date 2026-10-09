@@ -35,7 +35,7 @@ let package = Package(
 package.targets += [
     .target(name: "ClickyGuideNative", dependencies: ["ClickyCore"], path: "leanring-buddy/TextInput",
             exclude: ["Core"],
-            sources: ["VisualGuideController.swift", "VisualGuideController+Turns.swift", "VisualGuideController+Freshness.swift", "VisualGuideController+Verification.swift", "VisualGuideController+Interruptions.swift",
+            sources: ["VisualGuideController.swift", "VisualGuideController+Turns.swift", "VisualGuideController+Freshness.swift", "VisualGuideController+Verification.swift", "VisualGuideController+Interruptions.swift", "VisualGuideController+Correction.swift", "TargetSelectionPanel.swift",
                       "GuideObserver.swift", "GuideEnvironment.swift", "ScopedAccessibility.swift", "WindowSnapshotCapture.swift"],
             swiftSettings: appTargetSwiftSettings),
     .testTarget(name: "ClickyGuideNativeTests", dependencies: ["ClickyGuideNative", "ClickyCore"], path: "Tests/ClickyGuideNativeTests",

@@ -133,10 +133,17 @@ extension VisualGuideController {
         status = goal ? "Couldn't confirm the whole goal · Re-check or finish manually" : "I couldn't confirm that · Re-check"
         guard !goal, let step = task?.step, let rect = stepScreenRect, let target = currentTarget,
               environment.bounds(target) == stepWindowBounds else { publish(); return }
-        onTarget?(GuideMark(mark: step.mark ?? .circle, target: rect, label: nil, value: step.mark == .value ? step.value : nil,
-                            ghost: nil, within: stepWindowBounds))
+        onTarget?(GuideMark(mark: step.mark ?? .circle, target: rect, label: Self.stepLabel(step), value: step.mark == .value ? step.value : nil,
+                            ghost: nil, within: stepWindowBounds, warning: step.warning != nil))
         if !composerOpen { observer.start(step: step, target: target, rect: rect) }
         publish()
+    }
+
+    /// One short action beside the target ("Click Export"), or its consequence for a destructive step.
+    /// If the overlay finds no safe place it omits the plate; the island always shows the full instruction.
+    static func stepLabel(_ step: GuidePresentation) -> String {
+        if let warning = step.warning { return "⚠︎ " + warning }
+        return step.markLabel
     }
 
     func waitingStatus(_ step: GuidePresentation) -> String {

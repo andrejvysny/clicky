@@ -10,13 +10,15 @@ import ClickyCore
 struct GuideMark {
     let mark: GuidePresentation.Mark
     let target: CGRect
-    /// Drawn beside the mark; nil for walkthrough steps, whose instruction lives in the island.
+    /// Drawn beside the mark: the short action for a step (or its consequence warning), the label for an annotation.
     let label: String?
     let value: String?
     let ghost: CGRect?
     /// The shared window or display; labels stay inside it.
     let within: CGRect?
     var avoidRects: [CGRect] = []
+    /// A destructive or externally committing step: drawn in the warning tone with its consequence.
+    var warning = false
 }
 
 @MainActor
@@ -30,6 +32,10 @@ final class VisualGuideController: ObservableObject {
     @Published var currentTarget: WindowCaptureTarget?
     @Published var session: AgentSession?
     @Published var demo: GuidePreviewFixture?
+    /// Wrong-target select-only mode; nothing completes while it is on.
+    @Published var correcting = false
+    var selectionSurface: GuideSelectionSurface?
+    var pendingSelection: CGPoint?
     var onResponse: ((String) -> Void)?
     var onTarget: ((GuideMark) -> Void)?
     var onClearTarget: (() -> Void)?
@@ -128,6 +134,12 @@ final class VisualGuideController: ObservableObject {
         guard !isBusy else { throw AskError.busy }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AskError.emptyPrompt }
         guard text.utf8.count <= 65_536 else { throw AskError.promptTooLarge }
+        if correcting {
+            // Typed Wrong-target correction: the text describes the intended control for the same step.
+            lastUserText = text
+            if task?.clearTemporaryInterruption(.composer) == true { task?.resume() }
+            correct(description: text); return
+        }
         lastUserText = text; error = nil; proposal = nil; pendingContextRequest = nil; sharingHint = nil
         requestGeneration &+= 1
         onClearAnnotation?()
@@ -168,6 +180,7 @@ final class VisualGuideController: ObservableObject {
         let started = environment.uptime()
         defer { metrics.sample(.cancellation, seconds: environment.uptime() - started) }
         if demo != nil { demo?.pause(); status = "Demo paused · no AI"; publish(); return }
+        endSelection(); pendingSelection = nil
         let active = isBusy
         transaction &+= 1; work?.cancel(); work = nil; isBusy = false
         task?.pause(reason); stopObservation(); onClearTarget?()
@@ -262,6 +275,7 @@ final class VisualGuideController: ObservableObject {
         if task != nil { Logger(subsystem: "clicky", category: "guide").info("task metrics \(self.metrics.summary, privacy: .public)") }
         #endif
         demo = nil
+        endSelection(); pendingSelection = nil
         walkthroughPresented = false
         awaitingClarification = false
         transaction &+= 1; work?.cancel(); work = nil

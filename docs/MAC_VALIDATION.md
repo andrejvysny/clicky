@@ -123,7 +123,10 @@ PNGs remain capped at 3 MiB and 4096 px per axis. Overviews are at most 1568 px 
 - Expected keys/combinations only: unrelated Enter and Quick Ask Enter never satisfy target steps. No character reconstruction or keylogging.
 - Committed nonsecure fields: verify scoped AX values after commit or fresh vision; never read secure fields or reconstruct typing.
 - Alternative route: an independently satisfied intended outcome can advance without the prescribed click.
-- Failed action: initial check plus one fresh recheck; then Retry/manual Next. Manual Next stays explicitly unverified.
+- Failed action: initial check plus one fresh recheck per episode; then the target stays observed and Re-check is primary. Mark done stays explicitly unverified.
+- Wrong target: selecting a scratch Delete/Reset button in correction mode must not invoke its handler (activation counter unchanged), must not count as an attempt, and the selection panel must be absent from the next capture.
+- Hover: keep the pointer on a hover-highlighting target across several guard intervals; no re-location or uncertainty. Move or scroll the window: the step is re-grounded without progress.
+- Interruptions: open/Escape Quick Ask, ask and dismiss a side question, and visit another app briefly; each resumes without Resume. Explicit Pause during the visit stays paused.
 - Denied Accessibility/custom controls: visual/manual path and Check now; no periodic cloud screenshots.
 - Related question: pause, answer readably, retain step/process; Resume relocates against current evidence.
 - Distinct goal: Keep current task/Start new task; replacement starts fresh session only after the choice.

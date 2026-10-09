@@ -40,6 +40,18 @@ struct IslandGuideControls: View {
 
     private var uncertain: Bool { controller.task?.phase == .uncertain }
 
+    /// Actual scope: the exact window or the session-approved display, never implied wider sharing.
+    private var sharingScope: String {
+        guard let target = controller.currentTarget else { return "Nothing shared" }
+        let paused = controller.task?.grant?.paused == true ? " · paused" : ""
+        if let display = target.displayIdentifier { return "Sharing: display \(display) for this session" + paused }
+        return "Sharing: " + target.applicationName + " window only" + paused
+    }
+
+    private static func symbol(_ completion: GuideCompletion) -> String {
+        switch completion { case .verified: return "✓ "; case .manuallyAcknowledged: return "○ "; case .satisfied: return "◇ " }
+    }
+
     private var headline: String {
         if uncertain { return controller.task?.step?.outcome?.description.isEmpty == false
             ? "Did this happen: \(controller.task?.step?.outcome?.description ?? "")?" : controller.status }
@@ -69,16 +81,28 @@ struct IslandGuideControls: View {
                 Button("Resume") { controller.resume() }.islandButton(.secondary).disabled(!available.resume)
             } else if controller.task?.phase == .paused || controller.demo?.paused == true {
                 Button("Resume") { controller.resume() }.islandButton(.primary).disabled(!available.resume && controller.demo == nil)
+            } else if controller.correcting {
+                Text("Click the control Clicky should use · Esc cancels").font(.system(size: 11)).foregroundStyle(DS.Colors.textSecondary)
+                Button("Cancel") { controller.cancelCorrection() }.islandButton(.secondary)
             } else if uncertain {
-                // The only state that asks: Next is the default so one keystroke unblocks.
-                Button("Next ⌥⇧→") { controller.nextManually() }.islandButton(.warning).accessibilityLabel("Next")
-                    .disabled(!available.next)
-                Button("Re-check") { controller.checkNow() }.islandButton(.secondary).disabled(!available.recheck)
-                Button("Retry") { controller.retry() }.islandButton(.secondary).disabled(!available.retry)
+                // Re-check is the primary recovery; manual acknowledgement is explicit and stays unverified.
+                Button("Re-check") { controller.checkNow() }.islandButton(.primary).disabled(!available.recheck)
+                Button("Mark done") { controller.nextManually() }.islandButton(.secondary).disabled(!available.next)
+                    .accessibilityLabel("Mark done manually, not verified")
+                Button("Find again") { controller.retry() }.islandButton(.secondary).disabled(!available.retry)
+                    .accessibilityLabel("Locate the control again")
+                Button("Wrong target") { controller.beginCorrection() }.islandButton(.secondary).disabled(!available.recheck)
             } else {
-                Button("Next") { controller.nextManually() }.islandButton(.secondary).disabled(!available.next)
-                Button("Retry") { controller.retry() }.islandButton(.secondary).disabled(!available.retry)
+                // The normal interaction is with the application; no routine Next here.
                 Button("Pause") { controller.pause() }.islandButton(.secondary).disabled(!available.pause && controller.demo == nil)
+                if controller.demo != nil {
+                    Button("Next") { controller.nextManually() }.islandButton(.secondary)
+                } else {
+                    Button("Wrong target") { controller.beginCorrection() }.islandButton(.secondary)
+                        .disabled(controller.isBusy || controller.task?.phase != .waiting)
+                    Button("Back") { controller.back() }.islandButton(.secondary)
+                        .disabled(controller.isBusy || controller.task?.milestones.isEmpty != false)
+                }
             }
             Spacer(minLength: 0)
             Button("End") { controller.endTask() }.islandButton(.quiet)
@@ -93,16 +117,25 @@ struct IslandGuideControls: View {
                     Text((index < demo.index ? "○ " : "· ") + instruction)
                 }
             } else {
-                Text(controller.currentTarget.map { "Sharing: " + $0.applicationName + " window" } ?? "No window shared")
+                Text(sharingScope)
+                if let sent = controller.lastSent {
+                    Text("Last sent to \(controller.provider.displayName): " + sent.formatted(date: .omitted, time: .standard))
+                }
                 ForEach(controller.task?.milestones ?? []) { milestone in
-                    Text((milestone.completion == .verified ? "✓ " : "○ ") + milestone.instruction)
+                    Text(Self.symbol(milestone.completion) + milestone.instruction)
                 }
-                Text("○ means you moved on with Next; it was not verified.").foregroundStyle(DS.Colors.textTertiary)
+                ForEach(controller.task?.plan.items.filter { $0.status == .current || $0.status == .upcoming } ?? []) { item in
+                    Text((item.status == .current ? "▸ " : "· ") + item.intent).foregroundStyle(DS.Colors.textTertiary)
+                }
+                Text("✓ verified · ○ marked done, not verified · ◇ already satisfied. Upcoming steps are an approximate route.")
+                    .foregroundStyle(DS.Colors.textTertiary)
                 HStack(spacing: 6) {
-                    Button("Change window") { controller.chooseTarget() }.islandButton(.secondary)
-                    Button("Finished manually") { controller.finishManually() }.islandButton(.secondary)
+                    // Revocation stays available while busy; it pauses the grant and invalidates pending work.
+                    Button("Stop sharing") { controller.stopSharing() }.islandButton(.secondary)
+                        .disabled(controller.task?.grant == nil || controller.task?.grant?.paused == true)
+                    Button("Change window") { controller.chooseTarget() }.islandButton(.secondary).disabled(controller.isBusy)
+                    Button("Finished manually") { controller.finishManually() }.islandButton(.secondary).disabled(controller.isBusy)
                 }
-                .disabled(controller.isBusy)
             }
         }
         .font(.system(size: 11)).foregroundStyle(DS.Colors.textSecondary)

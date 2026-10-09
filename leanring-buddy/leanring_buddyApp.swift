@@ -48,10 +48,10 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
         askController.onPointTarget = { [weak self] mark in
-            // The island carries the instruction; the target shows only the mark.
+            // The target carries one short action (or consequence warning); the island keeps full status.
             // A walkthrough step needs the user in their app, so Quick Ask steps aside.
             self?.quickAskPanelManager?.close(restoreFocus: true)
-            self?.pointingPresenter.show(Self.spec(mark), persistent: true)
+            self?.pointingPresenter.show(Self.spec(mark), persistent: true, tone: mark.warning ? .warning : .waiting)
         }
         askController.onPointingCleared = { [weak self] in self?.pointingPresenter.hide() }
         pointingPresenter.onHidden = { [weak self] in self?.companionManager.clearDetectedElementLocation() }

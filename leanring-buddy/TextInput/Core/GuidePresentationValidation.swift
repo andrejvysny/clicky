@@ -11,6 +11,7 @@ nonisolated extension GuidePresentation {
         }
         if mark == .value, value?.isEmpty != false { throw failure(.missingField, "value") }
         if let milestone, milestone.utf8.count > Self.milestoneBytes { throw failure(.textTooLong, "milestone") }
+        if let warning, warning.utf8.count > Self.warningBytes { throw failure(.textTooLong, "warning") }
         if let plan, plan.count > Self.planLimit { throw failure(.textTooLong, "plan") }
         if let goalChecks, goalChecks.count > Self.goalCheckLimit { throw failure(.textTooLong, "goalChecks") }
         try validateFields()
@@ -47,6 +48,7 @@ nonisolated extension GuidePresentation {
             ("plan", plan != nil, kind == .guide_step),
             ("goalChecks", goalChecks != nil, kind == .guide_step),
             ("outcomeState", outcomeState != nil, kind == .verification_result),
+            ("warning", warning != nil, kind == .guide_step),
         ]
         if let invalid = fields.first(where: { $0.1 && !$0.2 }) { throw failure(.forbiddenField, invalid.0) }
     }

@@ -87,7 +87,7 @@ final class GuideTests: XCTestCase {
         var fields: [String: JSONValue] = ["kind": .string("explanation"), "text": .string("Answer")]
         for key in ["captureID", "target", "crop", "action", "outcome", "matches", "evidence", "evidenceTarget", "proposedGoal",
                     "mark", "label", "detail", "value", "ghost", "milestone", "plan", "goalChecks",
-                    "outcomeState"] { fields[key] = .null }
+                    "outcomeState", "warning"] { fields[key] = .null }
         XCTAssertEqual(try GuidePresentation.parse(JSONEncoder().encode(JSONValue.object(fields))).text, "Answer")
         fields["target"] = .object(["x": .number(0), "y": .number(0), "width": .number(1), "height": .number(1), "command": .string("forbidden")])
         XCTAssertThrowsError(try GuidePresentation.parse(JSONEncoder().encode(JSONValue.object(fields))))

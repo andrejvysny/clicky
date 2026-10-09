@@ -106,7 +106,7 @@ final class PresentationNormalizationTests: XCTestCase {
                                            "captureID": .string(UUID().uuidString), "evidence": .string("Capture shows a terminal")]
         for key in ["target", "crop", "action", "outcome", "matches", "evidenceTarget", "proposedGoal",
                     "mark", "label", "detail", "value", "ghost", "milestone", "plan", "goalChecks",
-                    "outcomeState"] { fields[key] = .null }
+                    "outcomeState", "warning"] { fields[key] = .null }
         let result = try GuidePresentation.parse(JSONEncoder().encode(JSONValue.object(fields)))
         XCTAssertEqual(result.kind, .explanation)
         XCTAssertNil(result.evidence)

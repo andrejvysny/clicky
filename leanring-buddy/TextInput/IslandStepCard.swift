@@ -17,9 +17,14 @@ struct IslandStepCard: View {
                 Text(detail).font(.system(size: 12)).foregroundStyle(DS.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let warning = guide.task?.step?.warning, guide.task?.historyIndex == nil {
+                Text("⚠︎ " + warning + " · your click in the app confirms it")
+                    .font(.system(size: 12, weight: .medium)).foregroundStyle(DS.Colors.warningText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             statusRow
             Divider().overlay(Color.white.opacity(0.1)).padding(.top, 2)
-            Text("⌥⇧← back · ⌥⇧→ skip · ⌥⇧R retry · ⌥⇧⌫ end")
+            Text("⌥⇧← back · ⌥⇧R re-check · ⌥⇧→ mark done · ⌥⇧⌫ end")
                 .font(.system(size: 11)).foregroundStyle(DS.Colors.textTertiary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -104,8 +104,12 @@ final class FakeScreen {
         }
     }
 
+    /// Runs before every capture so tests can assert what was on screen (e.g. Clicky's selection UI).
+    var beforeCapture: (() -> Void)?
+
     func capture(_ requested: WindowCaptureTarget? = nil) async throws -> PNGImageAttachment {
         let target = requested ?? self.target
+        beforeCapture?()
         captures += 1
         if holdCaptures { await withCheckedContinuation { captureGate = $0 } }
         guard let bounds else { throw AttachmentError.targetChanged }
@@ -127,6 +131,28 @@ final class FakeScreen {
 
     /// Screen point for an image-pixel point (1 pixel = 1 point in this fixture).
     func point(_ pixel: CGPoint) -> CGPoint { CGPoint(x: (bounds?.minX ?? 0) + pixel.x, y: (bounds?.minY ?? 0) + pixel.y) }
+}
+
+/// Stands in for the interactive Wrong-target surface; records whether it was closed before any capture.
+@MainActor
+final class SelectionScript {
+    final class Surface: GuideSelectionSurface {
+        var closed = false
+        func close() { closed = true }
+    }
+    var available = true
+    private(set) var surface: Surface?
+    private(set) var region: CGRect?
+    private var onSelect: ((CGPoint) -> Void)?
+    private var onCancel: (() -> Void)?
+
+    func open(_ region: CGRect, _ select: @escaping (CGPoint) -> Void, _ cancel: @escaping () -> Void) -> GuideSelectionSurface? {
+        guard available else { return nil }
+        let surface = Surface(); self.surface = surface; self.region = region; onSelect = select; onCancel = cancel
+        return surface
+    }
+    func select(_ point: CGPoint) { onSelect?(point) }
+    func cancel() { onCancel?() }
 }
 
 /// Scripted answers to the session display-consent prompt.
@@ -151,6 +177,7 @@ final class GuideHarness {
     private(set) var responses: [String] = []
     let defaults: UserDefaults
     let consent = ConsentScript()
+    let selection = SelectionScript()
     private let suite = "ClickyGuideHarness." + UUID().uuidString
 
     init() {
@@ -180,6 +207,8 @@ final class GuideHarness {
         environment.makeAgent = { _, _, _, _, _ in agent }
         environment.installEventSources = { _, _ in nil }
         environment.watchActivation = { _ in nil }
+        let selection = selection
+        environment.beginSelection = { region, select, cancel in selection.open(region, select, cancel) }
         controller = VisualGuideController(environment: environment)
         controller.defaults = defaults
         controller.provider = .claude

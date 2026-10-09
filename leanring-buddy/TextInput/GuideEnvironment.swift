@@ -34,6 +34,9 @@ struct GuideEnvironment {
     /// Watches application activation while guidance is away on a temporary app switch. Only the event
     /// itself is observed; the other application is never inspected or captured.
     var watchActivation: (@escaping () -> Void) -> GuideEventSources?
+    /// Shows the interactive Wrong-target selection surface over a region (global top-left points).
+    /// It consumes the selection click; nil when live selection is unavailable, so typed correction is used.
+    var beginSelection: (CGRect, @escaping (CGPoint) -> Void, @escaping () -> Void) -> GuideSelectionSurface?
     /// Installs the system event sources for one observation; returns a token that removes them.
     var installEventSources: (GuideObserver, _ keys: Bool) -> GuideEventSources?
     var makeAgent: (_ provider: AgentProvider, _ executable: URL, _ root: URL, _ effort: AskEffort,
@@ -73,6 +76,7 @@ struct GuideEnvironment {
             return alert.runModal() == .alertFirstButtonReturn
         },
         watchActivation: { handler in GuideEventSources.activationWatch(handler) },
+        beginSelection: { TargetSelectionPanel.present(over: $0, onSelect: $1, onCancel: $2) },
         installEventSources: { GuideEventSources.installSystem(for: $0, keys: $1) },
         makeAgent: { provider, executable, root, effort, onUnexpectedExit in
             let profile = try GuideAgentProfile(provider: provider, root: root, taskID: UUID(), effort: effort)

@@ -71,19 +71,22 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
     public let goalChecks: [String]?
     /// Verification only: confirmed, contradicted, still processing, or unknown.
     public let outcomeState: OutcomeState?
+    /// Step only: short consequence of a destructive or externally committing action, shown beside the target.
+    /// It grants nothing; the user's own click in the application is the confirmation.
+    public let warning: String?
 
     public init(kind: Kind, text: String, captureID: UUID? = nil, target: GuideRect? = nil,
                 action: GuideAction? = nil, outcome: GuideOutcome? = nil, matches: Bool? = nil,
                 evidence: String? = nil, evidenceTarget: GuideRect? = nil, proposedGoal: String? = nil, crop: GuideRect? = nil,
                 mark: Mark? = nil, label: String? = nil, detail: String? = nil, value: String? = nil,
                 ghost: GuideRect? = nil, milestone: String? = nil, plan: [String]? = nil, goalChecks: [String]? = nil,
-                outcomeState: OutcomeState? = nil) {
+                outcomeState: OutcomeState? = nil, warning: String? = nil) {
         self.kind = kind; self.text = text; self.captureID = captureID; self.target = target
         self.action = action; self.outcome = outcome; self.matches = matches
         self.evidence = evidence; self.evidenceTarget = evidenceTarget; self.proposedGoal = proposedGoal; self.crop = crop
         self.mark = mark; self.label = label; self.detail = detail; self.value = value
         self.ghost = ghost; self.milestone = milestone; self.plan = plan; self.goalChecks = goalChecks
-        self.outcomeState = outcomeState
+        self.outcomeState = outcomeState; self.warning = warning
     }
 
     public enum Mark: String, Codable, Sendable, CaseIterable {
@@ -96,13 +99,14 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
     }
 
     /// Bounds shared by the schema, validation and normalization.
-    public static let milestoneBytes = 80, planLimit = 8, goalCheckLimit = 6, goalCheckBytes = 200
+    public static let milestoneBytes = 80, planLimit = 8, goalCheckLimit = 6, goalCheckBytes = 200, warningBytes = 120
 
     /// The same step re-bound to a fresh capture after local revalidation; nothing else changes.
     public func rebound(captureID: UUID) -> Self {
         Self(kind: kind, text: text, captureID: captureID, target: target, action: action, outcome: outcome, matches: matches,
              evidence: evidence, evidenceTarget: evidenceTarget, proposedGoal: proposedGoal, crop: crop, mark: mark, label: label,
-             detail: detail, value: value, ghost: ghost, milestone: milestone, plan: plan, goalChecks: goalChecks, outcomeState: outcomeState)
+             detail: detail, value: value, ghost: ghost, milestone: milestone, plan: plan, goalChecks: goalChecks, outcomeState: outcomeState,
+             warning: warning)
     }
 
     /// Label drawn at the mark: the model's label, else the first words of the text.
@@ -208,7 +212,8 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
                         mark: cleanMark, label: cleanLabel, detail: cleanDetail, value: cleanValue,
                         ghost: ghost?.isValid == true ? ghost : nil, milestone: milestone.map { Self.trimmed($0, bytes: Self.milestoneBytes) },
                         plan: Self.cleanList(plan, limit: Self.planLimit, bytes: Self.milestoneBytes),
-                        goalChecks: Self.cleanList(goalChecks, limit: Self.goalCheckLimit, bytes: Self.goalCheckBytes))
+                        goalChecks: Self.cleanList(goalChecks, limit: Self.goalCheckLimit, bytes: Self.goalCheckBytes),
+                        warning: warning.map { Self.trimmed($0, bytes: Self.warningBytes) }.flatMap { $0.isEmpty ? nil : $0 })
         case .verification_result:
             return Self(kind: kind, text: text, captureID: captureID, matches: matches, evidence: evidence,
                         evidenceTarget: evidenceTarget, outcomeState: outcomeState)

@@ -10,7 +10,7 @@ final class GuideResponseSchemaTests: XCTestCase {
          "action": .object(["kind": .string("click"), "keyCode": .null, "modifiers": .null]),
          "outcome": .object(["description": .string("Panel is visible"), "axRole": .null, "axTitle": .null, "axValue": .null]),
          "mark": .null, "label": .null, "detail": .null, "value": .null, "ghost": .null,
-         "milestone": .string("Open panel"), "plan": .array([.string("Open panel")]), "goalChecks": .array([.string("Panel is visible")])]
+         "milestone": .string("Open panel"), "plan": .array([.string("Open panel")]), "goalChecks": .array([.string("Panel is visible")]), "warning": .null]
     }
 
     private func data(_ fields: [String: JSONValue]) throws -> Data {
@@ -27,7 +27,7 @@ final class GuideResponseSchemaTests: XCTestCase {
 
     func testStepVariantCannotOmitOrNullItsSemanticFields() throws {
         XCTAssertEqual(try GuidePresentation.parseResponse(data(step()), purpose: .planning).outcome?.description, "Panel is visible")
-        for field in ["captureID", "target", "action", "outcome"] {
+        for field in ["captureID", "target", "action", "outcome", "milestone", "plan", "goalChecks"] {
             var missing = step(); missing.removeValue(forKey: field)
             assertFailure(missing, "missing_field at $." + field)
             let wrapper = JSONValue.object(["presentation": .object(missing)])
@@ -91,7 +91,7 @@ final class GuideResponseSchemaTests: XCTestCase {
         XCTAssertEqual(schema["type"], .string("object")); XCTAssertEqual(schema["anyOf"], .null)
         XCTAssertEqual(schema["required"], .array([.string("presentation")]))
         XCTAssertEqual(schema["additionalProperties"], .bool(false))
-        XCTAssertEqual(unionCount(schema), 13)
+        XCTAssertEqual(unionCount(schema), 14)
         for purpose in [GuideRequestPurpose.planning, .verification, .sideQuestion, .continuation, .recovery, .oneOffContext] {
             let variants = GuideContract.responseSchema(for: purpose)["properties"]["presentation"]["anyOf"].array
             XCTAssertEqual(variants.map { $0["properties"]["kind"]["enum"].array.first! },

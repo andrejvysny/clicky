@@ -22,12 +22,12 @@ final class PointingPresenter {
         show(AnnotationOverlay.AnnotationSpec(mark: .circle, target: rect, label: label.isEmpty ? nil : label), persistent: persistent)
     }
 
-    func show(_ spec: AnnotationOverlay.AnnotationSpec, persistent: Bool) {
+    func show(_ spec: AnnotationOverlay.AnnotationSpec, persistent: Bool, tone: GuidanceOverlay.Tone = .waiting) {
         // Clearing the old companion target first lets the companion fly to the new mark instead of staying parked.
         dismiss(notify: true)
         let current = generation
         let rect = spec.target
-        overlay.show(spec, tone: .waiting)
+        overlay.show(spec, tone: tone)
         let center = CGPoint(x: rect.midX, y: primaryHeight - rect.midY)
         if let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) ?? NSScreen.main {
             onFlyCompanion?(center, screen.frame, spec.label ?? "")
