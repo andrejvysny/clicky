@@ -149,4 +149,13 @@ final class GuideTimingTests: XCTestCase {
         let after = await harness.turnCount
         XCTAssertEqual(after, turns + 1, "Resume with focus back re-locates once")
     }
+
+    func testClarificationDuringAWalkthroughAsksForAnAnswerInsteadOfReady() async throws {
+        let harness = GuideHarness()
+        try await harness.startStep()
+        try await harness.act(time: 10, verdict: .confirmed)
+        try await harness.reply { _ in GuidePresentation(kind: .clarification, text: "Anything else?") }
+        XCTAssertEqual(harness.controller.status, "Question for you · answer in Quick Ask")
+        XCTAssertTrue(harness.controller.awaitingClarification)
+    }
 }

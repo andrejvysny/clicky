@@ -376,7 +376,7 @@ final class VisualGuideController: ObservableObject {
         guard metricsPending else { return }
         metricsPending = false; taskStartedAt = nil
         #if DEBUG
-        Logger(subsystem: "clicky", category: "guide").info("task metrics \(self.metrics.summary, privacy: .public)")
+        Logger(subsystem: "clicky", category: "guide").notice("task metrics \(self.metrics.summary, privacy: .public)")
         #endif
     }
     func publish() {

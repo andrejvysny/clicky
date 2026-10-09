@@ -4,7 +4,7 @@ The development app uses one Clicky-owned task and one provider process. The use
 
 ## Contracts and ownership
 
-`GuideContract` packages prompt `clicky-guide-8`, isolation profile `clicky-isolation-1`, and the shared strict JSON schema. All portable contracts are explicitly `nonisolated`. The app compiles these sources directly; it does not link another copy of ClickyCore.
+`GuideContract` packages prompt `clicky-guide-9`, isolation profile `clicky-isolation-1`, and the shared strict JSON schema. All portable contracts are explicitly `nonisolated`. The app compiles these sources directly; it does not link another copy of ClickyCore.
 
 `GuideAgentTurn` sends a JSON host request containing `protocolVersion`, `purpose`, `allowedKinds`, `responseContract`, `text`, optional `task`, and optional `capture` (window or display). Purposes are planning, sideQuestion, verification, continuation, recovery, and oneOffContext. Task context contains the goal, task ID, step/context revisions, current step, and milestone provenance. Images accompany the request as Claude image blocks or Codex image data URLs over stdin.
 

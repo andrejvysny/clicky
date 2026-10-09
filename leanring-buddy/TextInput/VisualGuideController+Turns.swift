@@ -66,6 +66,11 @@ extension VisualGuideController {
         metrics.count(.providerTurns)
         let result = try await value.turn(turn)
         try check(current)
+        #if DEBUG
+        // Kinds and states only (never text, targets or images), persisted so a native run can be reconstructed.
+        Logger(subsystem: "clicky", category: "guide").notice(
+            "turn purpose=\(turn.purpose.rawValue, privacy: .public) kind=\(result.kind.rawValue, privacy: .public) phase=\(String(describing: self.task?.phase), privacy: .public) outcome=\(result.outcomeState?.rawValue ?? "-", privacy: .public) image=\(turn.image != nil, privacy: .public)")
+        #endif
         guard turn.purpose.permits(result.kind) else {
             throw AskError.protocolFailure("The agent returned \(result.kind.rawValue) for \(turn.purpose.rawValue). Retry explicitly.")
         }
@@ -247,6 +252,7 @@ extension VisualGuideController {
         case .explanation, .clarification:
             onResponse?(sharingHint.map { result.text + "\n\n" + $0 } ?? result.text); sharingHint = nil; status = "Ready"
             awaitingClarification = result.kind == .clarification && !sideQuestion
+            if awaitingClarification && walkthroughPresented { status = "Question for you · answer in Quick Ask" }
             if sideQuestion || (result.kind == .explanation && walkthroughPresented) {
                 task?.pause(.sideAnswer); status = "Answer ready · guide continues when you close it"
             } else if result.kind == .explanation {
