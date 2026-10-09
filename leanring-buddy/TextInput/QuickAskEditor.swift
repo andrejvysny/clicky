@@ -18,6 +18,10 @@ struct QuickAskEditor: NSViewRepresentable {
     var onDeleteEmpty: (() -> Void)? = nil
     /// Command+N starts a new conversation.
     var onNewConversation: (() -> Void)? = nil
+    /// Slash picker navigation; returns true when the picker consumed the key (it never submits by itself).
+    var onPickerKey: ((SlashPickerState.PickerKey) -> Bool)? = nil
+    /// Caret (UTF-16 offset) and whether IME composition is in progress, for the picker's query.
+    var onCaretChange: ((Int, Bool) -> Void)? = nil
     let onSubmit: () -> Void
     let onCancel: () -> Void
 
@@ -41,6 +45,7 @@ struct QuickAskEditor: NSViewRepresentable {
         editor.onPasteSnippet = onPasteSnippet
         editor.onDeleteEmpty = onDeleteEmpty
         editor.onNewConversation = onNewConversation
+        editor.onPickerKey = onPickerKey
         editor.isRichText = false
         editor.isAutomaticQuoteSubstitutionEnabled = false
         editor.isAutomaticDashSubstitutionEnabled = false
@@ -81,11 +86,23 @@ struct QuickAskEditor: NSViewRepresentable {
         editor.onPasteSnippet = onPasteSnippet
         editor.onDeleteEmpty = onDeleteEmpty
         editor.onNewConversation = onNewConversation
-        if editor.string != text, !editor.hasMarkedText() { editor.string = text }
+        editor.onPickerKey = onPickerKey
+        if editor.string != text, !editor.hasMarkedText() {
+            // Selection callbacks fired by this programmatic change must not write SwiftUI state mid-update.
+            context.coordinator.suppressCaretReports = true
+            defer { context.coordinator.suppressCaretReports = false }
+            editor.string = text
+            // A programmatic change (e.g. a completed slash command) leaves the caret after the text.
+            let end = (text as NSString).length
+            editor.setSelectedRange(NSRange(location: end, length: 0))
+            let report = onCaretChange
+            DispatchQueue.main.async { report?(end, false) }
+        }
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: QuickAskEditor
+        var suppressCaretReports = false
         init(_ parent: QuickAskEditor) { self.parent = parent }
         func textDidChange(_ notification: Notification) {
             guard let editor = notification.object as? NSTextView else { return }
@@ -98,6 +115,11 @@ struct QuickAskEditor: NSViewRepresentable {
                                                        minimum: parent.compact ? 20 : 88, maximum: parent.compact ? 120 : 180)
             }
             editor.needsDisplay = true
+            parent.onCaretChange?(editor.selectedRange().location, editor.hasMarkedText())
+        }
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard !suppressCaretReports, let editor = notification.object as? NSTextView else { return }
+            parent.onCaretChange?(editor.selectedRange().location, editor.hasMarkedText())
         }
     }
 }
@@ -111,6 +133,7 @@ private final class PromptTextView: NSTextView {
     var onPasteSnippet: ((String) -> Void)?
     var onDeleteEmpty: (() -> Void)?
     var onNewConversation: (() -> Void)?
+    var onPickerKey: ((SlashPickerState.PickerKey) -> Bool)?
     var placeholder = ""
 
     override func draw(_ dirtyRect: NSRect) {
@@ -127,6 +150,7 @@ private final class PromptTextView: NSTextView {
 
     override func keyDown(with event: NSEvent) {
         if !hasMarkedText() {
+            if let onPickerKey, let key = Self.pickerKey(event), onPickerKey(key) { return }
             if [UInt16(36), UInt16(76)].contains(event.keyCode), !event.modifierFlags.contains(.shift) { onSubmit?(); return }
             if event.keyCode == 53 { onCancel?(); return }
             if let onAttach, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
@@ -142,6 +166,20 @@ private final class PromptTextView: NSTextView {
                event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty { onDeleteEmpty(); return }
         }
         super.keyDown(with: event)
+    }
+
+    /// Plain arrows, Tab, Return and Escape only; modified keys keep their editor meaning.
+    private static func pickerKey(_ event: NSEvent) -> SlashPickerState.PickerKey? {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard modifiers.isEmpty else { return nil }
+        switch event.keyCode {
+        case 125: return .down
+        case 126: return .up
+        case 48: return .tab
+        case 36, 76: return .enter
+        case 53: return .escape
+        default: return nil
+        }
     }
 
     override func paste(_ sender: Any?) {

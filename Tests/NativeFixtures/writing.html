@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Clicky writing fixture</title>
+<style>
+body { font: 16px system-ui; max-width: 760px; margin: 40px auto; background: #f3f6fb; color: #18253d; }
+section { background: white; padding: 18px 22px; border-radius: 14px; margin-bottom: 18px; }
+textarea, [contenteditable] { width: 100%; box-sizing: border-box; font: 15px ui-monospace, monospace; padding: 10px;
+  min-height: 110px; border: 1px solid #b8c4d9; border-radius: 8px; background: #fbfcff; white-space: pre-wrap; }
+input { font: inherit; padding: 6px; width: 60%; }
+output { display: block; margin-top: 8px; font: 13px ui-monospace, monospace; color: #445; }
+button { font: inherit; padding: 6px 14px; }
+</style>
+<h1>Clicky writing fixture</h1>
+<p>Synthetic content only. Counters prove that Clicky never sends, submits or replaces outside the edited range.</p>
+
+<section>
+<h2>Plain textarea</h2>
+<textarea id="plain" autofocus aria-label="Plain textarea">First paragraph stays.
+
+Last paragraph stays.
+--
+Signature line</textarea>
+<output id="plainState"></output>
+</section>
+
+<section>
+<h2>Contenteditable</h2>
+<div id="rich" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Contenteditable">Prefix stays. Duplicate passage. Middle. Duplicate passage. Suffix stays.</div>
+<output id="richState"></output>
+</section>
+
+<section>
+<h2>Fake message composer</h2>
+<label>To <input id="to" value="nobody@example.invalid" aria-label="To"></label><br>
+<label>Subject <input id="subject" value="" aria-label="Subject"></label>
+<textarea id="body" aria-label="Message body"></textarea>
+<button id="send" type="button">Send</button>
+<output id="sendCount">Send count: 0</output>
+</section>
+
+<section>
+<h2>Dynamic replacement</h2>
+<p><button id="replace" type="button">Replace the textarea element (DOM replacement)</button></p>
+<output id="events"></output>
+</section>
+
+<script>
+let sends = 0;
+document.querySelector('#send').addEventListener('click', () => {
+  sends += 1; document.querySelector('#sendCount').textContent = 'Send count: ' + sends;
+});
+// Submitting via Enter in the composer must never happen through Clicky; count any form-like Enter with Cmd.
+document.querySelector('#body').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { sends += 1; document.querySelector('#sendCount').textContent = 'Send count: ' + sends; }
+});
+function describe(el) {
+  const text = el.value ?? el.innerText;
+  return 'length ' + [...text].length + ' · utf16 ' + text.length + ' · lines ' + text.split('\n').length;
+}
+for (const [id, out] of [['plain', 'plainState'], ['rich', 'richState']]) {
+  const el = document.getElementById(id);
+  const update = () => document.getElementById(out).textContent = describe(el);
+  el.addEventListener('input', update); update();
+}
+// writing.html#rich focuses the contenteditable for the native probe.
+if (location.hash === '#rich') { const rich = document.getElementById('rich'); rich.focus(); getSelection().collapse(rich.firstChild, 0); }
+document.querySelector('#replace').addEventListener('click', () => {
+  const old = document.querySelector('#plain');
+  const fresh = old.cloneNode(true); fresh.value = old.value; old.replaceWith(fresh);
+  document.querySelector('#events').textContent = 'Textarea replaced at ' + new Date().toISOString();
+});
+</script>

@@ -6,6 +6,12 @@ import SwiftUI
 final class AskController: ObservableObject {
     private let preferences: UserDefaults
     let guide = VisualGuideController()
+    let writingDefinitions: WritingDefinitionsStore
+    /// Host-controlled Write/Rewrite/snippet transactions; separate from guide conversations.
+    let writing: WritingCoordinator
+    private let writingTargets: WritingNativeTargets
+    /// Guide observation stays held until a host edit finishes, so synthetic paste never counts as a user action.
+    private var composerClosePending: Bool?
     let replySpeech = LocalReplySpeech()
     @Published var draft = ""
     @Published private(set) var response = ""
@@ -49,7 +55,7 @@ final class AskController: ObservableObject {
             guard oldValue != provider else { return }
             preferences.set(provider.rawValue, forKey: "askProvider")
             cancelLogin()
-            guide.endTask(); syncGuideSettings(); response = ""; removeAttachment(); replySpeech.stop()
+            guide.endTask(); writing.reset(); syncGuideSettings(); response = ""; removeAttachment(); replySpeech.stop()
         }
     }
     @Published var claudeExecutable: String { didSet { preferences.set(claudeExecutable, forKey: "askClaudeExecutable"); syncGuideSettings() } }
@@ -72,6 +78,10 @@ final class AskController: ObservableObject {
         let defaults = testing ? UserDefaults(suiteName: "ClickyUITests")! : UserDefaults.standard
         if testing { defaults.removePersistentDomain(forName: "ClickyUITests") }
         preferences = defaults
+        writingDefinitions = WritingDefinitionsStore(defaults: defaults)
+        let targets = WritingNativeTargets()
+        writingTargets = targets
+        writing = WritingCoordinator(environment: targets.environment)
         provider = AgentProvider(rawValue: defaults.string(forKey: "askProvider") ?? "") ?? .preview
         speechPreference = SpeechReplyPreference(rawValue: defaults.string(forKey: "askSpeechPreference") ?? "") ?? .voiceOnly
         let savedSharing = defaults.string(forKey: "askTaskSharing") ?? defaults.string(forKey: "askScreenInclusion") ?? ""
@@ -91,6 +101,9 @@ final class AskController: ObservableObject {
         guide.onTarget = { [weak self] mark in self?.onPointTarget?(mark) }
         guide.onClearTarget = { [weak self] in self?.onPointingCleared?() }
         guide.onStateChanged = { [weak self] in self?.syncGuideState() }
+        writing.profileRoot = guide.profileRoot
+        writing.definitions = { [weak self] in self?.writingDefinitions.definitions ?? .empty }
+        writing.onApplyFinished = { [weak self] in self?.releaseComposerHold() }
     }
     var hasScreenAttachment: Bool { guide.task?.grant?.paused == false }
     var canSubmit: Bool { !isBusy && AskComposition.hasContent(draft: draft, selection: selection, snippets: snippets) }
@@ -103,7 +116,14 @@ final class AskController: ObservableObject {
     }
     @discardableResult
     func submit() -> Bool {
-        guard !isBusy else { return false }
+        guard !isBusy, !writing.isBusy else { return false }
+        var chatText = draft
+        if !isCapturing {
+            switch routeWriting() {
+            case .handled(let accepted): return accepted
+            case .chat(let text): chatText = text
+            }
+        }
         if isCapturing { submitAfterCapture = canSubmit; return submitAfterCapture }
         guard canSubmit else { return false }
         do {
@@ -111,7 +131,7 @@ final class AskController: ObservableObject {
                 guard let selectedExecutable, FileManager.default.isExecutableFile(atPath: selectedExecutable.path) else { throw AskError.missingExecutable(provider.displayName) }
             }
             syncGuideSettings(); replySpeech.stop()
-            let message = AskComposition.message(draft: draft, selection: selection, snippets: snippets)
+            let message = AskComposition.message(draft: chatText, selection: selection, snippets: snippets)
             try guide.ask(message, target: presentationTarget, explicitlyVisual: attachment != nil, effort: effort)
             draft = ""; response = ""; errorMessage = nil; presentationHasSubmission = true
             selection = nil; snippets = []; effort = .low
@@ -119,6 +139,7 @@ final class AskController: ObservableObject {
         } catch { errorMessage = error.localizedDescription; return false }
     }
     func stopReply() {
+        if writing.isBusy { writing.stop(); return }
         guide.pause(message: "Stopped · Retry explicitly")
         if draft.isEmpty { draft = guide.lastUserText }
         replySpeech.stop()
@@ -145,7 +166,7 @@ final class AskController: ObservableObject {
     func removeSelection() { selection = nil }
     func removeSnippet(_ id: UUID) { snippets.removeAll { $0.id == id } }
     func addSnippet(_ text: String) { if !isBusy { snippets.append(PastedSnippet(text: text)) } }
-    func newConversation() { guide.endTask(); response = ""; errorMessage = nil; removeAttachment(); replySpeech.stop(); lastReplyAt = nil }
+    func newConversation() { writing.discard(); guide.endTask(); response = ""; errorMessage = nil; removeAttachment(); replySpeech.stop(); lastReplyAt = nil }
     func beginPresentation(target: WindowCaptureTarget?) {
         isComposing = true
         presentationHasSubmission = false; removeAttachment(); presentationTarget = target
@@ -155,11 +176,51 @@ final class AskController: ObservableObject {
         } : nil
         attachmentState.beginPresentation(target: target); captureTargetName = target?.applicationName
         guide.composerWillOpen()
+        // Bound before the panel is key; metadata only, no field content.
+        let process = target?.displayIdentifier == nil ? target?.processIdentifier : nil
+        writing.beginBinding(processIdentifier: process)
     }
     func endPresentation() {
         isComposing = false
         removeAttachment(); attachmentState.endPresentation(); captureTargetName = nil; selection = nil
-        guide.composerDidClose(submitted: presentationHasSubmission)
+        if writing.phase == .applying { composerClosePending = presentationHasSubmission }
+        else { guide.composerDidClose(submitted: presentationHasSubmission) }
+    }
+
+    private func releaseComposerHold() {
+        guard let submitted = composerClosePending else { return }
+        composerClosePending = nil
+        if !isComposing { guide.composerDidClose(submitted: submitted) }
+    }
+
+    private enum WritingRouting { case handled(Bool), chat(String) }
+
+    /// Slash commands and plainly worded writing requests go to the writing coordinator; questions stay chat.
+    private func routeWriting() -> WritingRouting {
+        let target = writing.target
+        let route = QuickAskRoute.route(draft: draft, definitions: writingDefinitions.definitions,
+                                        hasSelection: target?.hasSelection ?? false,
+                                        hasEditableTarget: target.map { $0.blockedReason == nil } ?? false)
+        switch route {
+        case .chat(let text):
+            // A plain follow-up while a draft is under review refines it instead of starting a chat.
+            if writing.canRefine, SlashParser.parse(draft) == .text(draft) {
+                writing.refine(text); draft = ""; errorMessage = nil; return .handled(true)
+            }
+            return .chat(text)
+        case .localError(let message):
+            errorMessage = message; return .handled(false)
+        case .snippet, .write, .rewrite:
+            if case .snippet = route {} else if provider != .preview {
+                guard let selectedExecutable, FileManager.default.isExecutableFile(atPath: selectedExecutable.path) else {
+                    errorMessage = AskError.missingExecutable(provider.displayName).localizedDescription; return .handled(false)
+                }
+            }
+            syncGuideSettings(); replySpeech.stop()
+            let started = writing.start(route, effort: effort)
+            if started { draft = ""; errorMessage = nil; presentationHasSubmission = true; effort = .low; snippets = [] }
+            return .handled(started)
+        }
     }
     func attachWindowSnapshot() {
         guard !isBusy, !isCapturing else { return }
@@ -232,9 +293,10 @@ final class AskController: ObservableObject {
     }
     private func syncGuideSettings() {
         guide.provider = provider; guide.executable = selectedExecutable; guide.sharingPreference = screenInclusion
+        writing.provider = provider; writing.executable = selectedExecutable
     }
     func cancelLogin() { loginTask?.cancel(); loginTask = nil }
-    func shutdown() { cancelLogin(); removeAttachment(); guide.endTask(); replySpeech.stop() }
+    func shutdown() { writing.reset(); cancelLogin(); removeAttachment(); guide.endTask(); replySpeech.stop() }
     private func syncGuideState() {
         if guide.isBusy != isBusy { busySince = guide.isBusy ? Date() : nil }
         status = guide.status; errorMessage = guide.error; isBusy = guide.isBusy; session = guide.session

@@ -112,6 +112,8 @@ final class GuideEventSources {
         }) { sources.tokens.append(monitor) }
         if keys, let monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { [weak observer] event in
             // Extract no characters; unrelated key metadata is discarded synchronously by the observer.
+            // Clicky's own host-edit keystrokes (tagged paste/delete) are never a user's walkthrough attempt.
+            if event.cgEvent?.getIntegerValueField(.eventSourceUserData) == WritingSyntheticInput.eventTag { return }
             let code = event.keyCode, time = event.timestamp, repeated = event.isARepeat
             let modifiers = UInt64(event.modifierFlags.intersection([.command, .option, .shift, .control]).rawValue)
             MainActor.assumeIsolated {

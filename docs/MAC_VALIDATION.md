@@ -153,3 +153,32 @@ Record per run (results go to the Plane Validation page, not Git): revision, pro
 5. **Cancel during focus recovery:** switch apps during “Checking the control”, then press End. Expected: ends immediately, nothing sent afterwards.
 
 Also verify IME/multiline/Unicode/indentation, focus restoration, shortcut rebinding, nonactivating controls, click-through annotations, and quiet memory-only storage. Native no-AI demo acceptance is separate from real outcome verification. Keep release flags false until every required native case passes.
+
+## Writing, snippets and terminal insertion (CLICKY-42) — 9 October 2026
+
+Protocol and adapter design: [WRITING_PROTOCOL.md](WRITING_PROTOCOL.md). Evidence is separated by layer; nothing below is signed-GUI or real-provider evidence unless it says so.
+
+Environment: macOS 26.6.2 (Apple Silicon), Chrome 154.0.8037.98, Terminal 2.15 with zsh 5.9, VS Code 1.141.0.
+
+| Layer | Command | Result |
+|---|---|---|
+| Portable + coordinator | `bash scripts/test-core.sh` | 338 XCTest cases pass, including `WritingContractTests`, `SlashCommandTests`, `WritingDefinitionsTests`, `QuickAskRouteTests`, `VSCodeBridgeTests` and 22 `WritingCoordinatorTests` (fakes; production coordinator) |
+| Bridge logic | `cd Tools/clicky-vscode-bridge && node --test` | 7 pass |
+| App typecheck | `bash scripts/typecheck-app.sh` and `--debug` | no errors; no new warnings |
+| Native adapters (production adapter sources driven by `Tools/ClickyWritingProbe`, no Clicky GUI) | `scripts/probe-writing-native.sh chrome` | Pass: textarea capture, focus gate, exact insertion of Unicode/emoji/combining marks/tabs/blank lines/`$(x)`/backticks at the caret, user clipboard (string + custom type) restored, guarded restore, exact substring source read, replace only the selected range, caret move detected as `selectionChanged`, stale expected source refused |
+| | `scripts/probe-writing-native.sh terminal` | Pass: ready zsh prompt bound by window id + tty, complex single-line command inserted verbatim with no confirmation, execution-counter file absent after insertion, present only after the tester's separate Return; multiline refused; busy tab (`sleep`) bound as not ready |
+| | `scripts/probe-writing-native.sh chrome-rich` | **Not passed.** Contenteditable located and focused, but another application became frontmost during the run; the adapter refused both writes (`focusChanged`) and the content stayed unchanged. Rerun on an idle desktop |
+| | `scripts/probe-writing-native.sh vscode`, `vscode-terminal` | **Not run.** An isolated VS Code instance could not start from the session scratch directory (IPC socket path > 103 bytes), and installing the bridge into the user's VS Code needs explicit approval |
+| Signed GUI (Xcode, `leanring-buddy` scheme) | Quick Ask picker, Write/Rewrite/snippet end to end, key hold/repeat, notice panel, Settings › Writing | **Not run** |
+| Real provider | Claude/Codex `writing` contract (`clicky-writing-1`) drafts, rewrites, clarifications | **Not run** |
+
+Findings fixed during native probing: Chrome applies AX selection asynchronously (the adapter now waits for the exact range to read back); Chrome ignores `AXSelectedText` and `AXReplaceRangeWithText` writes even though they report success (paste is the only write path); Terminal's `processes` must be bound to a variable before `last item` and `tab` inside `tell application "Terminal"` is Terminal's tab class; Terminal's AX character count drops one character per soft-wrapped line (the insertion caret delta is the evidence instead); key events reach only the frontmost application (every adapter re-checks frontmost and the focused control immediately before ⌘V).
+
+Remaining native acceptance (run in the signed app, on an otherwise idle desktop):
+
+1. Chrome `Tests/NativeFixtures/writing.html`: Write into the empty composer body and between paragraphs of the textarea (auto-insert, no confirmation); `/rewrite` on one of the two duplicate passages in the contenteditable (preview → Replace selection → only that range changes); signature, To and Subject unchanged; Send count stays 0; switch tabs or click another field during generation → preview kept, nothing inserted; Restore original after a later edit is refused.
+2. Snippets with Local preview and no signed-in provider: `/docker-logs` (`docker compose logs --follow --tail 200`) at a ready Terminal prompt and in VS Code's integrated terminal; hold Return through submission (nothing reaches the shell); execution counter changes only on the tester's Return; multiline and tab snippets stay preview + Copy.
+3. VS Code with the bridge installed per `Tools/clicky-vscode-bridge/README.md`: insertion at a caret and selected-range replacement in a scratch document, version change during generation → refused, destination switch to the integrated terminal, `sendText(…, false)` insertion without execution.
+4. Picker: `/` lists, ↑↓/Tab/↩ complete without invoking, exact alias ↩ submits once, Escape hides then closes, IME composition (e.g. Japanese) never submits, `/usr/bin/env` and `//write` are sent as text.
+5. A walkthrough waiting on a step while a snippet is inserted: the step does not advance and resumes after the host edit.
+6. Real provider (Claude Haiku 5.5 / Codex): email body only with a separate subject, rewrite preserving facts and source language, clarification shown and never inserted.

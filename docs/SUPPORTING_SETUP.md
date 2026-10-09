@@ -4,6 +4,10 @@ The active development delivery is the visual task guide described in [VISUAL_GU
 
 Audio, dictation, and MCP notes below are deferred reference material, outside the current implementation scope.
 
+## Writing targets
+
+Writing and snippet insertion ([WRITING_PROTOCOL.md](WRITING_PROTOCOL.md)) uses the existing Accessibility permission. Inserting into macOS Terminal also asks once for Automation (Terminal): Clicky reads only the front tab's window id, tty, busy state and foreground process to confirm a ready shell prompt, and never runs scripts or commands in Terminal. VS Code needs the opt-in bridge extension in `Tools/clicky-vscode-bridge` (install steps in its README) plus Settings › Writing › VS Code; without it VS Code results stay preview + Copy.
+
 ## Local audio
 
 Recommended candidate: FluidAudio revision `0c0f113e8db4b862b19a99ce9fd7c9da73324f5f` (Apache-2.0), Swift 6+, macOS 14+. Add its Swift package to a separate integration target first. Its documented baseline is `AsrModels.downloadAndLoad(version: .ultra)`, followed by `AsrManager.loadModels` and `transcribe`. Ultra is not proof of smart cleanup or technical-token preservation. Validate its model license, download destinations, cache behavior, memory, and technical English speech on the M4 Pro before enabling it. WhisperKit remains an alternative requiring the same gates.

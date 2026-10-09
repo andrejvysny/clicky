@@ -33,6 +33,10 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
     init(controller: AskController) {
         self.controller = controller
         super.init()
+        // A host edit closes Quick Ask without restoring focus; the writing coordinator returns focus to the
+        // exact bound control itself, and only after the submit key is released.
+        controller.writing.closeComposer = { [weak self] in self?.close(restoreFocus: false) }
+        controller.writing.showNotice = { WritingNoticePanel.show($0) }
         // Quick Ask stays open after Enter: the answer appears under the input, which keeps focus for a follow-up.
     }
 
@@ -150,11 +154,11 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
 
     /// Escape stops a running reply first; the next Escape closes Quick Ask.
     private func escape() {
-        if controller.isBusy { controller.stopReply() } else { close(restoreFocus: true) }
+        if controller.isBusy || controller.writing.isBusy { controller.stopReply() } else { close(restoreFocus: true) }
     }
 
     /// While a reply is running Quick Ask stays put, so the answer always lands under the input.
-    private var pinned: Bool { controller.isBusy }
+    private var pinned: Bool { controller.isBusy || controller.writing.isBusy }
 
     func close(restoreFocus: Bool) {
         guard let panel, panel.isVisible, !isClosing else { return }

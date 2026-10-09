@@ -5,11 +5,31 @@ import SwiftUI
 /// and effort dots by the send button. An existing reply is pushed below the input, unchanged.
 struct CursorAskView: View {
     @ObservedObject var controller: AskController
+    @ObservedObject private var writing: WritingCoordinator
     let onCancel: () -> Void
     let onLayoutChanged: () -> Void
     @State private var editorHeight: CGFloat = 22
+    @State private var picker = SlashPickerState()
+    @State private var caret = 0
+    @State private var composing = false
+
+    init(controller: AskController, onCancel: @escaping () -> Void, onLayoutChanged: @escaping () -> Void) {
+        self.controller = controller; _writing = ObservedObject(wrappedValue: controller.writing)
+        self.onCancel = onCancel; self.onLayoutChanged = onLayoutChanged
+    }
+
+    private var pickerQuery: String? { SlashPickerState.query(draft: controller.draft, caretUTF16: caret, hasMarkedText: composing) }
+    private var suggestions: [SlashCommand] {
+        guard let query = pickerQuery else { return [] }
+        return SlashCommandRegistry(definitions: controller.writingDefinitions.definitions,
+                                    hasSelection: writing.target?.hasSelection ?? false).suggestions(for: query)
+    }
+    private var pickerVisible: Bool { picker.isVisible(query: pickerQuery, count: suggestions.count) }
+    private var emptyDraft: Bool { controller.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var canSend: Bool { controller.canSubmit || (emptyDraft && writing.canApply) }
 
     private var placeholder: String {
+        if writing.canRefine { return "Refine the draft… (↩ alone applies)" }
         if controller.selection != nil { return "Ask about the selection…" }
         if controller.provider == .preview { return "Ask Clicky (preview, no AI)…" }
         // A live session means this is a follow-up in the same conversation.
@@ -25,6 +45,14 @@ struct CursorAskView: View {
         // Ghost layout: no surrounding card. The input pill and the answer float as separate translucent pieces.
         VStack(alignment: .leading, spacing: 6) {
             inputRow
+            if pickerVisible {
+                SlashPickerView(suggestions: suggestions, highlighted: picker.highlighted) { command in
+                    controller.draft = "/" + command.alias + " "
+                }
+            }
+            if writing.phase != .idle || writing.hasProposal {
+                WritingProposalView(writing: writing)
+            }
             if hasMessage {
                 VStack(alignment: .leading, spacing: 6) {
                     if let error = controller.attachmentError ?? controller.errorMessage {
@@ -49,6 +77,7 @@ struct CursorAskView: View {
         .background(GeometryReader { Color.clear.preference(key: AskHeightKey.self, value: $0.size.height) })
         .onPreferenceChange(AskHeightKey.self) { _ in onLayoutChanged() }
         .onChange(of: editorHeight) { _ in onLayoutChanged() }
+        .onChange(of: pickerQuery) { _, query in picker.update(query: query, count: suggestions.count) }
     }
 
     private var showsStatus: Bool {
@@ -81,17 +110,20 @@ struct CursorAskView: View {
                            onPasteSnippet: { controller.addSnippet($0) },
                            onDeleteEmpty: deleteNewestContext,
                            onNewConversation: { controller.newConversation() },
-                           onSubmit: { _ = controller.submit() }, onCancel: onCancel)
+                           onPickerKey: handlePickerKey,
+                           onCaretChange: { caret = $0; composing = $1 },
+                           onSubmit: submitOrApply, onCancel: onCancel)
                 .frame(height: editorHeight)
                 .id(controller.editorGeneration)
+            writingChips
             effortPips
-            Button { _ = controller.submit() } label: {
+            Button { submitOrApply() } label: {
                 ZStack {
-                    Circle().fill(controller.canSubmit ? ClickyChrome.ask : ClickyChrome.ask.opacity(0.35)).frame(width: 18, height: 18)
+                    Circle().fill(canSend ? ClickyChrome.ask : ClickyChrome.ask.opacity(0.35)).frame(width: 18, height: 18)
                     Image(systemName: "arrow.up").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.black)
                 }
             }
-            .buttonStyle(.plain).disabled(!controller.canSubmit)
+            .buttonStyle(.plain).disabled(!canSend)
             .help("Send (Enter) · ⌘N new conversation")
             .accessibilityLabel("Send").accessibilityIdentifier("quickAskSend").clickyPointerCursor()
         }
@@ -120,6 +152,47 @@ struct CursorAskView: View {
         } else if let name = controller.captureTargetName, controller.screenInclusion.isAvailable {
             IslandGlyph.window(attached: false)
                 .help("Clicky may look at the \(name) window if your question needs it · ⌘⇧A attaches now")
+        }
+    }
+
+    /// Enter in an empty input applies a reviewed draft; otherwise it submits the prompt.
+    private func submitOrApply() {
+        if emptyDraft, writing.canApply { writing.apply() } else { _ = controller.submit() }
+    }
+
+    private func handlePickerKey(_ key: SlashPickerState.PickerKey) -> Bool {
+        var state = picker
+        let decision = state.handle(key, query: pickerQuery, suggestions: suggestions)
+        picker = state
+        switch decision {
+        case .complete(let draft): controller.draft = draft; return true
+        case .dismiss, .moveHighlight: return true
+        case .submit, .passThrough: return false
+        }
+    }
+
+    /// Per-request context opt-in and the explicit VS Code editor/terminal choice.
+    @ViewBuilder private var writingChips: some View {
+        if let target = writing.target, !writing.isBusy {
+            if target.hasSelection, target.kind != .terminal {
+                Button { writing.includeSurrounding.toggle() } label: {
+                    Image(systemName: "text.append").font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(writing.includeSurrounding ? ClickyChrome.ask : DS.Colors.textTertiary)
+                }
+                .buttonStyle(.plain).clickyPointerCursor()
+                .help(writing.includeSurrounding ? "Next request includes up to 1,000 characters around the selection · click to turn off"
+                      : "Selection only · click to also send up to 1,000 characters around it with the next request")
+                .accessibilityLabel("Include surrounding text").accessibilityIdentifier("quickAskSurrounding")
+            }
+            if writing.alternateTarget != nil {
+                Button { writing.switchDestination() } label: {
+                    Image(systemName: target.kind == .terminal ? "terminal" : "doc.plaintext").font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(DS.Colors.textTertiary)
+                }
+                .buttonStyle(.plain).clickyPointerCursor()
+                .help(target.kind == .terminal ? "Destination: VS Code terminal · click for the editor" : "Destination: VS Code editor · click for the terminal")
+                .accessibilityLabel("Switch VS Code destination").accessibilityIdentifier("quickAskDestination")
+            }
         }
     }
 

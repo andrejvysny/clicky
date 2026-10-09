@@ -36,7 +36,13 @@ struct QuickAskView: View {
                 Button(controller.showSettings ? "Last reply" : "Settings") { controller.showSettings.toggle() }.islandButton(.secondary)
                 Button("Close", action: onCancel).islandButton(.quiet).keyboardShortcut(.cancelAction)
             }
-            if controller.showSettings { AskSettingsView(controller: controller) } else { reply }
+            if controller.showSettings {
+                AskSettingsView(controller: controller)
+                Button("Snippets & skills…") {
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                }.islandButton(.secondary)
+            } else { reply }
         }
         .padding(16)
         .frame(width: 440, alignment: .leading)

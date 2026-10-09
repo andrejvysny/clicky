@@ -23,6 +23,8 @@
 	<string>assemblyai</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Clicky uses your microphone so you can talk to it</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Clicky reads whether a Terminal tab is at a ready shell prompt before inserting text you invoked. It never runs commands in Terminal.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>Clicky needs screen recording access to see your screen and help you.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
