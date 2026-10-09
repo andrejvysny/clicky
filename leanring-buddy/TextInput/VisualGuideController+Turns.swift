@@ -94,7 +94,7 @@ extension VisualGuideController {
             // A mark or step against an older capture gets one fresh look instead of failing the question.
             let staleMark = result.kind == .annotation && annotationRect(result) == nil
             let staleStep = result.kind == .guide_step && (lastContext == nil || result.captureID != lastContext?.captureID)
-            if staleMark || staleStep, !markRelocated, screenAvailable {
+            if staleMark || staleStep, !markRelocated, screenAvailable, displayGranted {
                 markRelocated = true
                 if task?.grant == nil, let currentTarget { task?.authorize(currentTarget) }
                 turn = try await captureTurn(message: "Your reply referenced an older capture or fell outside it. "
@@ -110,19 +110,35 @@ extension VisualGuideController {
 
     private var screenAvailable: Bool { sharingPreference != .off && currentTarget != nil }
 
-    /// Fresh context for the agent, or nil when sharing does not allow any. Never prompts: consent was given at setup.
+    /// Fresh context for the agent, or nil when sharing does not allow any. A bound task window needs no prompt;
+    /// a display asks once per Clicky session, before any capture, and Text only answers without the screen.
     private func contextTurn(for result: GuidePresentation, current: UInt64) async throws -> GuideAgentTurn? {
-        guard screenAvailable, let currentTarget else { return nil }
+        guard screenAvailable, let currentTarget, displayConsentForRequest(currentTarget) else { return nil }
         if task?.grant == nil { task?.authorize(currentTarget) }
         // A crop is only meaningful against the window capture it names.
         let crop = result.crop != nil && result.captureID == lastContext?.captureID ? result.crop : nil
         return try await captureTurn(message: "Requested approved context. " + recoveryMessage(), crop: crop, current: current)
     }
 
+    /// Resolves display consent for the current request without capturing anything.
+    func displayConsentForRequest(_ target: WindowCaptureTarget) -> Bool {
+        guard let display = target.displayIdentifier else { return true }
+        switch displayConsent.decision(display: display, provider: provider, request: requestGeneration,
+                                       preferenceAllows: displayFallbackAllowed) {
+        case .granted: return true
+        case .declined, .disallowed: return false
+        case .needsPrompt:
+            guard environment.requestDisplayConsent(target, provider) else {
+                displayConsent.decline(request: requestGeneration); return false
+            }
+            displayConsent.approve(display: display, provider: provider); return true
+        }
+    }
+
     private func captureTurn(message: String, crop: GuideRect? = nil, current: UInt64) async throws -> GuideAgentTurn {
         try check(current)
         guard let target = currentTarget, let task, task.grant?.paused == false else { throw AttachmentError.noTarget }
-        guard target.displayIdentifier == nil || displaySharingApproved else { throw AttachmentError.noTarget }
+        guard displayGranted else { throw AttachmentError.noTarget }
         guard await environment.waitForFocus(target) else { throw AttachmentError.targetChanged }
         try check(current)
         if task.phase != .verifying { try self.task?.requestContext() }

@@ -27,6 +27,8 @@ struct GuideEnvironment {
     var focusedElement: (WindowCaptureTarget) -> AXUIElement?
     var fieldFrame: (AXUIElement, WindowCaptureTarget) -> CGRect?
     var frontmostProcess: () -> Int32?
+    /// Asks before the first capture of a display in this Clicky session; false means Text only.
+    var requestDisplayConsent: (WindowCaptureTarget, AgentProvider) -> Bool
     /// Installs the system event sources for one observation; returns a token that removes them.
     var installEventSources: (GuideObserver, _ keys: Bool) -> GuideEventSources?
     var makeAgent: (_ provider: AgentProvider, _ executable: URL, _ root: URL, _ effort: AskEffort,
@@ -55,6 +57,15 @@ struct GuideEnvironment {
         focusedElement: { ScopedAccessibility.focusedElement($0) },
         fieldFrame: { ScopedAccessibility.fieldFrame($0, target: $1) },
         frontmostProcess: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+        requestDisplayConsent: { target, provider in
+            let alert = NSAlert()
+            alert.messageText = "Share this display with \(provider.displayName)?"
+            alert.informativeText = "No window was focused, so Clicky would capture the whole display under the pointer when a question needs it. "
+                + "Approval lasts until Clicky quits or you turn it off in Settings; another display or provider asks again. Images stay in memory."
+            alert.addButton(withTitle: "Share display"); alert.addButton(withTitle: "Text only")
+            NSApp.activate(ignoringOtherApps: true)
+            return alert.runModal() == .alertFirstButtonReturn
+        },
         installEventSources: { GuideEventSources.installSystem(for: $0, keys: $1) },
         makeAgent: { provider, executable, root, effort, onUnexpectedExit in
             let profile = try GuideAgentProfile(provider: provider, root: root, taskID: UUID(), effort: effort)

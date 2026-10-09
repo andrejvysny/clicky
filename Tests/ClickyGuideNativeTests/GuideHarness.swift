@@ -102,7 +102,8 @@ final class FakeScreen {
         }
     }
 
-    func capture() async throws -> PNGImageAttachment {
+    func capture(_ requested: WindowCaptureTarget? = nil) async throws -> PNGImageAttachment {
+        let target = requested ?? self.target
         captures += 1
         if holdCaptures { await withCheckedContinuation { captureGate = $0 } }
         guard let bounds else { throw AttachmentError.targetChanged }
@@ -126,6 +127,15 @@ final class FakeScreen {
     func point(_ pixel: CGPoint) -> CGPoint { CGPoint(x: (bounds?.minX ?? 0) + pixel.x, y: (bounds?.minY ?? 0) + pixel.y) }
 }
 
+/// Scripted answers to the session display-consent prompt.
+@MainActor
+final class ConsentScript {
+    /// Display bound when Quick Ask has no originating window; nil means none is under the pointer.
+    var display: WindowCaptureTarget?
+    var answer = true
+    var prompts = 0
+}
+
 /// Builds a `VisualGuideController` wired to fakes. Everything else is the production coordinator.
 @MainActor
 final class GuideHarness {
@@ -138,6 +148,7 @@ final class GuideHarness {
     private(set) var clearedTargets = 0
     private(set) var responses: [String] = []
     let defaults: UserDefaults
+    let consent = ConsentScript()
     private let suite = "ClickyGuideHarness." + UUID().uuidString
 
     init() {
@@ -146,14 +157,16 @@ final class GuideHarness {
         var environment = GuideEnvironment.live
         environment.now = { clock.now }
         environment.sleep = { try await clock.sleep($0) }
-        environment.capture = { _, _, _, _ in try await screen.capture() }
+        environment.capture = { target, _, _, _ in try await screen.capture(target) }
         environment.focused = { _ in screen.focused }
         environment.waitForFocus = { _ in screen.focused }
         environment.bounds = { _ in screen.bounds }
         environment.related = { _ in screen.related }
         environment.outcomeMatches = { _, _ in screen.outcome }
         environment.annotationObstacles = { _, _ in [] }
-        environment.displayTarget = { _ in nil }
+        let consent = consent
+        environment.displayTarget = { _ in consent.display }
+        environment.requestDisplayConsent = { _, _ in consent.prompts += 1; return consent.answer }
         environment.pointer = { .zero }
         environment.accessibilityTrusted = { false }
         environment.field = { _, _ in nil }

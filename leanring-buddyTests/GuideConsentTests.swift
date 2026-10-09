@@ -10,17 +10,20 @@ struct GuideConsentTests {
         defer { defaults.removePersistentDomain(forName: name) }
         let controller = VisualGuideController()
         controller.defaults = defaults
-        controller.displaySharingApproved = true
+        controller.displayFallbackAllowed = true
         let target = WindowCaptureTarget.display(42)
+        controller.displayConsent.approve(display: 42, provider: controller.provider)
         controller.task = GuideTaskState(goal: "Scratch consent test")
         controller.task?.authorize(target)
         controller.currentTarget = target
-        controller.displaySharingApproved = false
+        controller.displayFallbackAllowed = false
+        #expect(controller.displayConsent.grant == nil)
         #expect(controller.task?.phase == .paused)
         #expect(controller.task?.grant?.paused == true)
+        #expect(controller.task?.interruptions.contains(.sharingRevoked) == true)
         controller.resume()
         #expect(controller.task?.phase == .paused)
-        #expect(controller.error == "Display sharing is off. Enable it in Settings or choose a window.")
+        #expect(controller.error == "Display sharing is not approved. Ask again to approve it, or choose a window.")
         #expect(!controller.isBusy)
     }
 }

@@ -28,11 +28,12 @@ enum WindowSnapshotCapture {
         defaults.set(setupVersion, forKey: setupVersionKey)
         let alert = NSAlert()
         alert.messageText = "Let Clicky look at your screen when a question needs it?"
-        alert.informativeText = "Clicky shares the window you asked from, or the display under the pointer when no window is focused. Images stay in memory. You can change this anytime in Settings."
+        alert.informativeText = "Clicky shares the window you asked from. When no window is focused it asks before sharing a display, once per session. Images stay in memory. You can change this anytime in Settings."
         alert.addButton(withTitle: "Allow"); alert.addButton(withTitle: "Not now")
         NSApp.activate(ignoringOtherApps: true)
         let allowed = alert.runModal() == .alertFirstButtonReturn
-        defaults.set(allowed, forKey: VisualGuideController.displaySharingKey)
+        // A preference only: display sharing still asks once per running Clicky session.
+        defaults.set(allowed, forKey: GuideDisplayConsent.preferenceKey)
         apply(allowed)
         // Accessibility identifies the focused window and selection; asked once here instead of mid-task.
         if allowed, !AXIsProcessTrusted() {

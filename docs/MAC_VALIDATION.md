@@ -103,7 +103,8 @@ Use scratch data only. Test both providers and record OS/CLI/prompt versions, pe
 | Open/close Quick Ask without sending | No capture/provider request; popup stays beside its opening position |
 | Screen-independent answer | Text only, even with Task window enabled |
 | First visual task | Text-first request, fresh exact originating-window evidence when requested |
-| Setup consent / Off | One alert at first launch (Allow = Automatic + display, Not now = Off); never prompted mid-task; Confirm per task migrates to Automatic |
+| Setup consent / Off | One alert at first launch (Allow = Automatic + display-fallback preference, Not now = Off); Confirm per task migrates to Automatic |
+| Display with no window | First display-needed request asks before any capture (Share display / Text only); same display and provider not asked again this session; relaunch with legacy `displaySharingApproved=true` asks again; Text only sends no image and does not loop; Settings toggle off revokes immediately |
 | Menus/sheets/dialogs | Include only established related windows; explicit window list, child inclusion off |
 | Unrelated same-app window | Excluded; selecting another window requires one grant |
 | Another app or ambiguous relationship | Pause; choose/approve exact target |

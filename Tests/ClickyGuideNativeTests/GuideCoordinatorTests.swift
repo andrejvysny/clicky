@@ -130,4 +130,63 @@ final class GuideCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.controller.task?.phase, .paused)
         XCTAssertFalse(harness.controller.observer.isObserving)
     }
+
+    // MARK: Session display consent (CLICKY-8)
+
+    private func askWithoutWindow(_ harness: GuideHarness) async throws {
+        try harness.controller.ask("What is on my desktop?", target: nil)
+        try await harness.reply { _ in GuideHarness.contextRequest() }
+    }
+
+    func testDisplayAsksBeforeFirstCaptureThenReusesSessionGrant() async throws {
+        let harness = GuideHarness()
+        harness.consent.display = .display(9)
+        try await askWithoutWindow(harness)
+        XCTAssertEqual(harness.consent.prompts, 1)
+        let turn = try await harness.nextTurn()
+        XCTAssertNotNil(turn.image)
+        try await harness.reply { _ in GuidePresentation(kind: .explanation, text: "Your desktop") }
+        try await askWithoutWindow(harness)
+        _ = try await harness.nextTurn()
+        XCTAssertEqual(harness.consent.prompts, 1, "same display and provider is not asked again")
+        XCTAssertEqual(harness.screen.captures, 2)
+    }
+
+    func testTextOnlyCapturesNothingAndAnswersWithoutScreen() async throws {
+        let harness = GuideHarness()
+        harness.consent.display = .display(9); harness.consent.answer = false
+        try await askWithoutWindow(harness)
+        let turn = try await harness.nextTurn()
+        XCTAssertNil(turn.image)
+        XCTAssertEqual(harness.screen.captures, 0)
+        XCTAssertEqual(harness.consent.prompts, 1, "Text only does not re-prompt within the request")
+    }
+
+    func testNewProcessAsksAgainDespitePersistedPreference() async throws {
+        let first = GuideHarness()
+        first.consent.display = .display(9)
+        try await askWithoutWindow(first)
+        let relaunched = GuideHarness()
+        relaunched.controller.defaults = first.defaults
+        XCTAssertTrue(relaunched.controller.displayFallbackAllowed)
+        relaunched.consent.display = .display(9)
+        try await askWithoutWindow(relaunched)
+        XCTAssertEqual(relaunched.consent.prompts, 1)
+    }
+
+    func testRevokedDisplayIsAskedAgainAndOffNeverCaptures() async throws {
+        let harness = GuideHarness()
+        harness.consent.display = .display(9)
+        try await askWithoutWindow(harness)
+        try await harness.reply { _ in GuidePresentation(kind: .explanation, text: "Desktop") }
+        harness.controller.displayFallbackAllowed = false
+        XCTAssertNil(harness.controller.displayConsent.grant)
+        try harness.controller.ask("And now?", target: nil)
+        try await harness.reply { _ in GuideHarness.contextRequest() }
+        XCTAssertEqual(harness.screen.captures, 1, "preference off: no display is bound or captured")
+        harness.controller.displayFallbackAllowed = true
+        try await harness.reply { _ in GuidePresentation(kind: .explanation, text: "Text answer") }
+        try await askWithoutWindow(harness)
+        XCTAssertEqual(harness.consent.prompts, 2)
+    }
 }

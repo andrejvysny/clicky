@@ -37,18 +37,30 @@ final class VisualGuideController: ObservableObject {
     var onAnnotate: ((GuideMark) -> Void)?
     var onClearAnnotation: (() -> Void)?
     var defaults = UserDefaults.standard
-    /// Consent given once at setup to share the display under the pointer when no window is focused; revocable in Settings.
-    var displaySharingApproved: Bool {
-        get { defaults.bool(forKey: Self.displaySharingKey) }
+    /// Preference: may Clicky offer to share the display when no window is focused. Never a live grant;
+    /// each running Clicky process asks once per display and provider (`displayConsent`).
+    var displayFallbackAllowed: Bool {
+        get { defaults.object(forKey: GuideDisplayConsent.preferenceKey) as? Bool ?? true }
         set {
             objectWillChange.send()
-            defaults.set(newValue, forKey: Self.displaySharingKey)
-            if !newValue, currentTarget?.displayIdentifier != nil {
-                pause(message: "Display sharing is off · Enable it in Settings or choose a window")
-            }
+            defaults.set(newValue, forKey: GuideDisplayConsent.preferenceKey)
+            if !newValue { revokeDisplaySharing() }
         }
     }
-    static let displaySharingKey = "displaySharingApproved"
+    /// In-memory session grant; cleared by relaunch and revocation.
+    var displayConsent = GuideDisplayConsent()
+    /// Identifies one submitted question so Text only declines just that request.
+    var requestGeneration: UInt64 = 0
+    var displayGranted: Bool {
+        guard let display = currentTarget?.displayIdentifier else { return true }
+        return displayConsent.grant == GuideDisplayConsent.Grant(display: display, provider: provider)
+    }
+    func revokeDisplaySharing() {
+        displayConsent.revoke()
+        if currentTarget?.displayIdentifier != nil {
+            pause(message: "Display sharing is off · Ask again to approve, or choose a window", reason: .sharingRevoked)
+        } else { publish() }
+    }
     /// Appended once to a text-only answer when the question needed the screen but sharing is off.
     var sharingHint: String?
     var onStateChanged: (() -> Void)?
@@ -112,9 +124,11 @@ final class VisualGuideController: ObservableObject {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AskError.emptyPrompt }
         guard text.utf8.count <= 65_536 else { throw AskError.promptTooLarge }
         lastUserText = text; error = nil; proposal = nil; pendingContextRequest = nil; sharingHint = nil
+        requestGeneration &+= 1
         onClearAnnotation?()
-        // With no focused window (e.g. the desktop) the display under the pointer at ask time is the shared target.
-        let target = target ?? (sharingPreference != .off && displaySharingApproved
+        // With no focused window (e.g. the desktop) the display under the pointer at ask time is bound now,
+        // so later pointer movement cannot retarget it; it is shared only after session consent.
+        let target = target ?? (sharingPreference != .off && displayFallbackAllowed
             ? environment.displayTarget(environment.pointer()) : nil)
         let continuingClarification = awaitingClarification
         // Only a walkthrough the user can see is preserved; a task left paused by an error is simply replaced.
@@ -150,18 +164,18 @@ final class VisualGuideController: ObservableObject {
         composerOpen = false
         if !submitted, task?.step != nil { status = "Guide paused · Resume to refresh"; publish() }
     }
-    func pause(message: String = "Sharing paused") {
+    func pause(message: String = "Sharing paused", reason: GuideInterruption = .explicitPause) {
         if demo != nil { demo?.pause(); status = "Demo paused · no AI"; publish(); return }
         let active = isBusy
         transaction &+= 1; work?.cancel(); work = nil; isBusy = false
-        task?.pause(); stopObservation(); onClearTarget?()
+        task?.pause(reason); stopObservation(); onClearTarget?()
         if active { closeAgent() }
         lastImage = nil; lastContext = nil; status = message; publish()
     }
     func resume() {
         if demo != nil { demo?.resume(); status = "Demo · no AI · manual checklist"; publish(); return }
-        guard currentTarget?.displayIdentifier == nil || displaySharingApproved else {
-            error = "Display sharing is off. Enable it in Settings or choose a window."; publish(); return
+        guard displayGranted else {
+            error = "Display sharing is not approved. Ask again to approve it, or choose a window."; publish(); return
         }
         guard !isBusy, let currentTarget, environment.focused(currentTarget) else {
             error = "Activate the approved target window, then Resume; or choose Change target."; publish(); return

@@ -83,6 +83,8 @@ final class AskController: ObservableObject {
         shortcutModifiers = defaults.object(forKey: "askShortcutModifiers") == nil ? 0xA00 : UInt32(defaults.integer(forKey: "askShortcutModifiers"))
         defaults.removeObject(forKey: "askSessions")
         defaults.removeObject(forKey: "askWorkingDirectory")
+        // The old persisted display approval becomes a preference; live consent is per running process.
+        GuideDisplayConsent.migrate(defaults)
         syncGuideSettings()
         guide.onResponse = { [weak self] value in self?.showResponse(value) }
         guide.defaults = defaults

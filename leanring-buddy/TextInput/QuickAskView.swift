@@ -126,7 +126,7 @@ struct AskSettingsView: View {
                 Picker("Sharing", selection: $controller.screenInclusion) {
                     ForEach(ScreenInclusionPreference.allCases, id: \.self) { Text($0.displayName).tag($0) }
                 }
-                note("When a question needs the screen, Clicky shares the window you asked from automatically; consent was given once at setup and is never asked mid-task. Images stay in memory.")
+                note("When a question needs the screen, Clicky shares the window you asked from automatically. With no focused window it asks before sharing a display, once per session. Images stay in memory.")
                 HStack(spacing: 6) {
                     Text(screenRecordingAllowed ? "Screen Recording: allowed" : "Screen Recording: not allowed")
                         .font(.system(size: 12))
@@ -138,9 +138,9 @@ struct AskSettingsView: View {
                         Button("Quit & Reopen") { Self.relaunch() }.islandButton(.secondary)
                     }
                 }
-                Toggle("Look at the display when no window is focused", isOn: Binding(
-                    get: { guide.displaySharingApproved },
-                    set: { guide.displaySharingApproved = $0 }))
+                Toggle("Offer to share the display when no window is focused", isOn: Binding(
+                    get: { guide.displayFallbackAllowed },
+                    set: { guide.displayFallbackAllowed = $0 }))
                     .font(.system(size: 12))
                 Toggle("Attach selected text when Quick Ask opens", isOn: $controller.attachSelection).font(.system(size: 12))
                 note("Reads only the selection in the focused, non-secure field through Accessibility. ⌫ in an empty prompt removes it.")
