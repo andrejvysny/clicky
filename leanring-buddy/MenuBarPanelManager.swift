@@ -30,6 +30,8 @@ final class MenuBarPanelManager: NSObject {
     private var panel: NSPanel?
     private var clickOutsideMonitor: Any?
     private var dismissPanelObserver: NSObjectProtocol?
+    private var presentationIdentifier = UUID()
+    private var scheduledLayout: UUID?
 
     private let companionManager: CompanionManager
     private let askController: AskController
@@ -115,8 +117,10 @@ final class MenuBarPanelManager: NSObject {
     /// permissions and the start button right away.
     func showPanelOnLaunch() {
         // Small delay so the status item has time to appear in the menu bar
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            self.showPanel()
+        let expectedPresentation = presentationIdentifier
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self, presentationIdentifier == expectedPresentation else { return }
+            showPanel()
         }
     }
 
@@ -131,18 +135,23 @@ final class MenuBarPanelManager: NSObject {
     // MARK: - Panel Lifecycle
 
     private func showPanel() {
+        presentationIdentifier = UUID()
+        scheduledLayout = nil
         if panel == nil {
             createPanel()
         }
 
-        positionPanelBelowStatusItem()
+        positionPanelBelowStatusItem(height: panel?.frame.height ?? panelHeight)
 
         panel?.makeKeyAndOrderFront(nil)
         panel?.orderFrontRegardless()
         installClickOutsideMonitor()
+        schedulePanelLayout()
     }
 
     private func hidePanel() {
+        presentationIdentifier = UUID()
+        scheduledLayout = nil
         panel?.orderOut(nil)
         removeClickOutsideMonitor()
     }
@@ -182,26 +191,36 @@ final class MenuBarPanelManager: NSObject {
         panel = menuBarPanel
     }
 
-    private func positionPanelBelowStatusItem() {
-        guard let panel else { return }
-        guard let buttonWindow = statusItem?.button?.window else { return }
+    private func schedulePanelLayout() {
+        guard scheduledLayout == nil else { return }
+        let request = UUID()
+        let expectedPresentation = presentationIdentifier
+        scheduledLayout = request
+        // The first hosting-view layout must finish before asking AppKit for its fitting size.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, scheduledLayout == request else { return }
+            scheduledLayout = nil
+            guard presentationIdentifier == expectedPresentation, panel?.isVisible == true else { return }
+            let measured = panel?.contentView?.fittingSize.height ?? panelHeight
+            positionPanelBelowStatusItem(height: measured.isFinite && measured > 0 ? measured : panelHeight)
+        }
+    }
 
+    private func positionPanelBelowStatusItem(height: CGFloat) {
+        guard let panel, let buttonWindow = statusItem?.button?.window,
+              let screen = buttonWindow.screen ?? NSScreen.main else { return }
         let statusItemFrame = buttonWindow.frame
+        let visible = screen.visibleFrame
+        guard ShellPanelLayout.isValid(statusItemFrame), ShellPanelLayout.isValid(visible) else { return }
         let gapBelowMenuBar: CGFloat = 4
-
-        // Calculate the panel's content height from the hosting view's fitting size
-        // so the panel snugly wraps the SwiftUI content instead of using a fixed height.
-        let fittingSize = panel.contentView?.fittingSize ?? CGSize(width: panelWidth, height: panelHeight)
-        let actualPanelHeight = fittingSize.height
-
-        // Horizontally center the panel beneath the status item icon
-        let panelOriginX = statusItemFrame.midX - (panelWidth / 2)
-        let panelOriginY = statusItemFrame.minY - actualPanelHeight - gapBelowMenuBar
-
-        panel.setFrame(
-            NSRect(x: panelOriginX, y: panelOriginY, width: panelWidth, height: actualPanelHeight),
-            display: true
-        )
+        let width = min(panelWidth, visible.width)
+        let actualHeight = ShellPanelLayout.height(measured: height, minimum: 30, maximum: visible.height)
+        let x = max(visible.minX, min(statusItemFrame.midX - width / 2, visible.maxX - width))
+        let top = min(visible.maxY, statusItemFrame.minY - gapBelowMenuBar)
+        let frame = ShellPanelLayout.anchoredFrame(CGRect(x: x, y: top - actualHeight, width: width, height: actualHeight),
+                                                   top: top, visibleFrame: visible)
+        guard ShellPanelLayout.isValid(frame) else { return }
+        if panel.frame != frame { panel.setFrame(frame, display: true) }
     }
 
     // MARK: - Click Outside Dismissal
@@ -212,11 +231,12 @@ final class MenuBarPanelManager: NSObject {
     /// buttons in the panel) don't immediately dismiss the panel when they appear.
     private func installClickOutsideMonitor() {
         removeClickOutsideMonitor()
+        let expectedPresentation = presentationIdentifier
 
         clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] event in
-            guard let self, let panel = self.panel else { return }
+            guard let self, presentationIdentifier == expectedPresentation, let panel = self.panel else { return }
 
             // Check if the click is inside the status item button — if so, the
             // statusItemClicked handler will toggle the panel, so don't also hide.
@@ -227,8 +247,8 @@ final class MenuBarPanelManager: NSObject {
 
             // Delay dismissal slightly to avoid closing the panel when
             // a system permission dialog appears (e.g. microphone access).
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                guard panel.isVisible else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self, weak panel] in
+                guard let self, presentationIdentifier == expectedPresentation, panel?.isVisible == true else { return }
 
                 guard NSApp.modalWindow == nil else { return }
                 self.hidePanel()

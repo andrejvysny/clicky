@@ -148,12 +148,13 @@ enum ScopedAccessibility {
     static func focusedElement(_ target: WindowCaptureTarget) -> AXUIElement? {
         read {
             guard focused(target), let root = window(target),
-                let value = value(
+                let raw = value(
                     AXUIElementCreateApplication(target.processIdentifier), kAXFocusedUIElementAttribute),
-                CFGetTypeID(value) == AXUIElementGetTypeID()
+                CFGetTypeID(raw) == AXUIElementGetTypeID()
             else { return nil }
-            let element = value as! AXUIElement
-            guard descendants(root).elements.contains(where: { CFEqual($0, element) }), !secure(element)
+            let element = raw as! AXUIElement
+            guard let owner = value(element, kAXWindowAttribute), CFGetTypeID(owner) == AXUIElementGetTypeID(),
+                  CFEqual(owner, root), !secure(element)
             else { return nil }
             return element
         }
@@ -178,14 +179,65 @@ enum ScopedAccessibility {
     static func field(_ target: WindowCaptureTarget, rect: CGRect) -> AXUIElement? {
         read {
             guard let root = window(target) else { return nil }
+            let point = CGPoint(x: rect.midX, y: rect.midY)
+            var hit: AXUIElement?
+            let application = AXUIElementCreateApplication(target.processIdentifier)
+            AXUIElementSetMessagingTimeout(application, 0.03)
+            if AXUIElementCopyElementAtPosition(application, Float(point.x), Float(point.y), &hit) == .success,
+               let hit, let field = enclosingField(hit, in: root, point: point) { return field }
             let tree = descendants(root)
             guard tree.complete else { return nil }
             let candidates = tree.elements.filter {
-                [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].contains(role($0)) && !secure($0)
+                [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole, kAXIncrementorRole].contains(role($0)) && !secure($0)
                     && frame($0)?.contains(CGPoint(x: rect.midX, y: rect.midY)) == true
             }
             return candidates.count == 1 ? candidates.first : nil
         }
+    }
+
+    /// Read only the original field's geometry; loss of its exact window binding fails closed.
+    static func fieldFrame(_ element: AXUIElement, target: WindowCaptureTarget) -> CGRect? {
+        read {
+            guard let root = window(target), !secure(element),
+                  [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole, kAXIncrementorRole].contains(role(element)),
+                  let owner = value(element, kAXWindowAttribute), CFGetTypeID(owner) == AXUIElementGetTypeID(),
+                  CFEqual(owner, root), let rect = frame(element), rect.width > 0, rect.height > 0,
+                  [rect.minX, rect.minY, rect.maxX, rect.maxY].allSatisfy(\.isFinite) else { return nil }
+            return rect
+        }
+    }
+
+    private static func enclosingField(_ hit: AXUIElement, in window: AXUIElement, point: CGPoint) -> AXUIElement? {
+        var element = hit
+        // A bounded owner/ancestor walk handles deep web pages without traversing unrelated controls.
+        for _ in 0..<16 {
+            guard !secure(element), let owner = value(element, kAXWindowAttribute),
+                  CFGetTypeID(owner) == AXUIElementGetTypeID(), CFEqual(owner, window) else { return nil }
+            if [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole, kAXIncrementorRole].contains(role(element)),
+               frame(element)?.contains(point) == true { return element }
+            guard let parent = value(element, kAXParentAttribute), CFGetTypeID(parent) == AXUIElementGetTypeID(),
+                  !CFEqual(parent, element), !CFEqual(parent, window) else { return nil }
+            element = parent as! AXUIElement
+        }
+        return nil
+    }
+
+    /// Geometry only, from the exact approved window. Values, titles and unrelated windows are not read.
+    static func annotationObstacles(_ target: WindowCaptureTarget, within region: CGRect) -> [CGRect] {
+        read {
+            guard let root = window(target) else { return [] }
+            let roles = [kAXButtonRole, kAXCheckBoxRole, kAXRadioButtonRole, kAXStaticTextRole,
+                         kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole, kAXPopUpButtonRole,
+                         kAXIncrementorRole, kAXSliderRole, kAXMenuItemRole, "AXLink", "AXHeading"]
+            var rectangles: [CGRect] = []
+            for element in descendants(root).elements where roles.contains(role(element)) {
+                guard let frame = frame(element), !frame.isEmpty, !frame.isInfinite, !frame.isNull else { continue }
+                let clipped = frame.intersection(region)
+                guard !clipped.isNull, !clipped.isEmpty, !rectangles.contains(clipped) else { continue }
+                rectangles.append(clipped)
+            }
+            return rectangles
+        } ?? []
     }
     private static func role(_ element: AXUIElement) -> String {
         value(element, kAXRoleAttribute) as? String ?? ""

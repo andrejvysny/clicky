@@ -49,6 +49,8 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
     public let outcome: GuideOutcome?
     public let matches: Bool?
     public let evidence: String?
+    /// Image-pixel bounds of all visible evidence supporting a verification or completion verdict.
+    public let evidenceTarget: GuideRect?
     public let proposedGoal: String?
     public let crop: GuideRect?
     /// How the target is marked on screen; nil draws a circle.
@@ -66,12 +68,12 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
 
     public init(kind: Kind, text: String, captureID: UUID? = nil, target: GuideRect? = nil,
                 action: GuideAction? = nil, outcome: GuideOutcome? = nil, matches: Bool? = nil,
-                evidence: String? = nil, proposedGoal: String? = nil, crop: GuideRect? = nil,
+                evidence: String? = nil, evidenceTarget: GuideRect? = nil, proposedGoal: String? = nil, crop: GuideRect? = nil,
                 mark: Mark? = nil, label: String? = nil, detail: String? = nil, value: String? = nil,
                 ghost: GuideRect? = nil, estimatedSteps: Int? = nil) {
         self.kind = kind; self.text = text; self.captureID = captureID; self.target = target
         self.action = action; self.outcome = outcome; self.matches = matches
-        self.evidence = evidence; self.proposedGoal = proposedGoal; self.crop = crop
+        self.evidence = evidence; self.evidenceTarget = evidenceTarget; self.proposedGoal = proposedGoal; self.crop = crop
         self.mark = mark; self.label = label; self.detail = detail; self.value = value
         self.ghost = ghost; self.estimatedSteps = estimatedSteps
     }
@@ -87,18 +89,80 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
         return text.split(whereSeparator: \.isWhitespace).count > 6 ? words + "…" : words
     }
 
-    public static func parse(_ data: Data) throws -> Self {
-        guard data.count <= 262_144,
-              let object = try? JSONDecoder().decode(JSONValue.self, from: data),
-              GuideSchemaValidation.validate(object, schema: GuideContract.schema) else {
-            throw AskError.protocolFailure("The agent returned an invalid presentation.")
+    static func parseResponse(_ data: Data, purpose: GuideRequestPurpose) throws -> Self {
+        guard data.count <= 262_144 else { throw GuideValidationIssue(code: .outputTooLarge, path: "$").error() }
+        guard let root = try? JSONDecoder().decode(JSONValue.self, from: data) else {
+            throw GuideValidationIssue(code: .invalidJSON, path: "$").error()
         }
+        guard case .object(let wrapper) = root else { throw GuideValidationIssue(code: .wrongType, path: "$").error() }
+        guard let presentation = wrapper["presentation"] else {
+            throw GuideValidationIssue(code: .missingField, path: "$.presentation").error()
+        }
+        guard wrapper.count == 1 else { throw GuideValidationIssue(code: .unexpectedField, path: "$").error() }
+        guard case .object(let fields) = presentation else {
+            throw GuideValidationIssue(code: .wrongType, path: "$.presentation").error()
+        }
+        guard let rawKind = fields["kind"]?.string, let kind = Kind(rawValue: rawKind) else {
+            throw GuideValidationIssue(code: fields["kind"] == nil ? .missingField : .unknownEnum, path: "$.kind").error()
+        }
+        guard purpose.permits(kind) else {
+            throw AskError.protocolFailure("The agent returned an invalid presentation (wrong_purpose at $.kind; kind=\(kind.rawValue), purpose=\(purpose.rawValue)). Retry explicitly with fresh context.")
+        }
+        if let issue = GuideSchemaValidation.issue(presentation, schema: GuideContract.variantSchema(for: kind)) {
+            throw issue.error(kind: kind)
+        }
+        guard case .object(let base) = GuideContract.schema["properties"] else { throw AskError.incompleteTurn }
+        // Only unused fields become null; mandatory fields already passed the exact variant schema.
+        let expanded = base.mapValues { _ in JSONValue.null }.merging(fields) { _, supplied in supplied }
+        return try parse(JSONEncoder().encode(JSONValue.object(expanded)), purpose: purpose)
+    }
+
+    public static func parse(_ data: Data, purpose: GuideRequestPurpose? = nil) throws -> Self {
+        guard data.count <= 262_144 else { throw GuideValidationIssue(code: .outputTooLarge, path: "$").error() }
+        guard let object = try? JSONDecoder().decode(JSONValue.self, from: data) else {
+            throw GuideValidationIssue(code: .invalidJSON, path: "$").error()
+        }
+        if let purpose, let rawKind = object["kind"].string, let kind = Kind(rawValue: rawKind), !purpose.permits(kind) {
+            throw AskError.protocolFailure("The agent returned an invalid presentation (wrong_purpose at $.kind; kind=\(kind.rawValue), purpose=\(purpose.rawValue)). Retry explicitly with fresh context.")
+        }
+        let schema = purpose.map(GuideContract.schema(for:)) ?? GuideContract.schema
+        if let issue = GuideSchemaValidation.issue(object, schema: schema) { throw issue.error() }
+        if let identifier = object["captureID"].string, UUID(uuidString: identifier) == nil {
+            throw GuideValidationIssue(code: .invalidUUID, path: "$.captureID").error()
+        }
+        try validateNumbers(object)
         let result: Self
         do { result = try JSONDecoder().decode(Self.self, from: data) }
-        catch { throw AskError.protocolFailure("The agent returned an invalid presentation.") }
+        catch {
+            // Schema validation has already ruled out unknown keys; decoding failures here are bounded numbers.
+            let path: String
+            switch error {
+            case DecodingError.dataCorrupted(let context), DecodingError.typeMismatch(_, let context),
+                 DecodingError.valueNotFound(_, let context):
+                path = "$" + context.codingPath.map { "." + $0.stringValue }.joined()
+            default: path = "$"
+            }
+            throw GuideValidationIssue(code: .invalidNumber, path: path).error()
+        }
+        if result.evidenceTarget != nil, result.kind != .verification_result && result.kind != .task_completed {
+            throw GuideValidationIssue(code: .forbiddenField, path: "$.evidenceTarget").error(kind: result.kind)
+        }
         let normalized = result.normalized()
         try normalized.validate()
         return normalized
+    }
+
+    private static func validateNumbers(_ object: JSONValue) throws {
+        let fields: [(JSONValue, Double, Double, String)] = [
+            (object["action"]["keyCode"], 0, 65_536, "$.action.keyCode"),
+            (object["action"]["modifiers"], 0, 18_446_744_073_709_551_616, "$.action.modifiers"),
+            (object["estimatedSteps"], Double(Int.min), -Double(Int.min), "$.estimatedSteps"),
+        ]
+        for (value, minimum, maximum, path) in fields {
+            if case .number(let number) = value, number < minimum || number >= maximum {
+                throw GuideValidationIssue(code: .invalidNumber, path: path).error()
+            }
+        }
     }
 
     /// Models fill every schema key and often echo evidence or a capture onto prose. Fields a kind never
@@ -123,7 +187,8 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
                         ghost: ghost?.isValid == true ? ghost : nil,
                         estimatedSteps: estimatedSteps.flatMap { (1...50).contains($0) ? $0 : nil })
         case .verification_result, .task_completed:
-            return Self(kind: kind, text: text, captureID: captureID, matches: matches, evidence: evidence)
+            return Self(kind: kind, text: text, captureID: captureID, matches: matches, evidence: evidence,
+                        evidenceTarget: evidenceTarget)
         }
     }
 
@@ -141,49 +206,4 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
         return result
     }
 
-    public func validate() throws {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.utf8.count <= 16_384,
-              target?.isValid != false, crop?.isValid != false else { throw invalid }
-        let hasStepFields = target != nil || action != nil || outcome != nil
-        let hasMarkFields = mark != nil || label != nil || value != nil
-        guard (label?.utf8.count ?? 0) <= 60, (value?.utf8.count ?? 0) <= 200, (detail?.utf8.count ?? 0) <= 600,
-              ghost?.isValid != false, mark != .value || value?.isEmpty == false else { throw invalid }
-        if kind != .guide_step { guard detail == nil, ghost == nil, estimatedSteps == nil else { throw invalid } }
-        if kind != .guide_step && kind != .annotation { guard !hasMarkFields else { throw invalid } }
-        if let estimatedSteps { guard (1...50).contains(estimatedSteps) else { throw invalid } }
-        let hasVerdictFields = matches != nil || evidence != nil
-        switch kind {
-        case .context_request:
-            guard !hasStepFields, !hasVerdictFields, proposedGoal == nil else { throw invalid }
-        case .guide_step:
-            guard !hasVerdictFields, proposedGoal == nil, crop == nil, text.utf8.count <= 600 else { throw invalid }
-        case .annotation:
-            // captureID is optional: the host maps the target against its latest capture and rejects stale ones.
-            guard target != nil, action == nil, outcome == nil, !hasVerdictFields,
-                  proposedGoal == nil, crop == nil, text.utf8.count <= 600 else { throw invalid }
-        case .verification_result, .task_completed:
-            guard !hasStepFields, proposedGoal == nil, crop == nil else { throw invalid }
-        case .explanation, .clarification, .task_proposal:
-            // A captureID echoed on prose is harmless: these kinds never target or verify anything.
-            guard !hasStepFields, !hasVerdictFields, crop == nil,
-                  kind == .task_proposal || proposedGoal == nil else { throw invalid }
-        }
-        if target != nil { guard kind == .guide_step || kind == .annotation else { throw invalid } }
-        if crop != nil { guard kind == .context_request, captureID != nil else { throw invalid } }
-        if kind == .guide_step {
-            guard captureID != nil, target != nil, let action, let outcome,
-                  !outcome.description.isEmpty else { throw invalid }
-            if action.kind == .key || action.kind == .field_commit {
-                guard action.keyCode != nil, action.modifiers != nil else { throw invalid }
-                guard action.keyCode! < 128, action.modifiers! & ~UInt64(1_966_080) == 0 else { throw invalid }
-            } else if action.keyCode != nil || action.modifiers != nil { throw invalid }
-        }
-        if kind == .verification_result || kind == .task_completed {
-            guard captureID != nil, matches != nil, let evidence, !evidence.isEmpty else { throw invalid }
-        }
-        if kind == .task_proposal { guard let proposedGoal, !proposedGoal.isEmpty else { throw invalid } }
-        if target != nil, kind != .annotation { guard captureID != nil else { throw invalid } }
-    }
-
-    private var invalid: AskError { .protocolFailure("The agent returned an invalid \(kind.rawValue). Retry with fresh context.") }
 }

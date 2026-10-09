@@ -7,6 +7,7 @@ nonisolated public struct GuideCodexProtocol: Sendable {
     private var requests: [Int: String] = [:]
     private var disabledServers: [String: JSONValue] = [:]
     private var disabledSkills: [JSONValue] = []
+    private var candidateThreadID: String?
     public var disabledSkillPaths: [String] { disabledSkills.compactMap { $0["path"].string } }
     private let directory: String
     public init(directory: String) { self.directory = directory }
@@ -17,12 +18,12 @@ nonisolated public struct GuideCodexProtocol: Sendable {
     }
 
     /// Codex accepts effort per turn; the audited profile default stays `low`.
-    public mutating func startTurn(input: [JSONValue], effort: AskEffort = .low) throws -> JSONValue {
+    public mutating func startTurn(input: [JSONValue], effort: AskEffort = .low, purpose: GuideRequestPurpose = .planning) throws -> JSONValue {
         guard let threadID else { throw AskError.incompleteTurn }
         turnID = nil
         return rpc("turn/start", .object(["threadId": .string(threadID), "input": .array(input),
                                           "model": .string(GuideAgentProfile.codexModel), "effort": .string(effort.rawValue),
-                                          "outputSchema": GuideContract.schema]))
+                                          "outputSchema": GuideContract.responseSchema(for: purpose)]))
     }
 
     public mutating func receive(_ message: JSONValue) throws -> [JSONValue] {
@@ -39,34 +40,50 @@ nonisolated public struct GuideCodexProtocol: Sendable {
             }
             return [rpc("config/read", .object(["cwd": .string(directory), "includeLayers": .bool(false)]))]
         case "config/read":
-            guard case .object = result["config"] else { throw AskError.protocolFailure("Codex did not report effective configuration.") }
-            try audit(result["config"])
-            if case .object(let servers) = result["config"]["mcp_servers"] {
-                disabledServers = servers.mapValues { _ in .object(["enabled": .bool(false)]) }
-            }
-            return [rpc("skills/list", .object(["cwds": .array([.string(directory)]), "forceReload": .bool(true)]))]
+            return try receiveConfiguration(result)
         case "skills/list":
-            guard case .array = result["data"] else { throw AskError.protocolFailure("Codex did not return skill diagnostics.") }
-            for entry in result["data"].array {
-                for skill in entry["skills"].array {
-                    guard let path = skill["path"].string else { throw AskError.protocolFailure("Codex returned an unreadable skill source.") }
-                    disabledSkills.append(.object(["path": .string(path), "enabled": .bool(false)]))
-                }
-                if !entry["errors"].array.isEmpty { throw AskError.protocolFailure("Codex could not audit its skill sources.") }
-            }
-            return [rpc("thread/start", threadParams())]
+            return try receiveSkills(result)
         case "thread/start":
             guard result["instructionSources"] == .array([]), let id = result["thread"]["id"].string,
                   result["thread"]["ephemeral"].bool else {
                 throw AskError.protocolFailure("Codex did not establish a clean in-memory thread.")
             }
-            threadID = id
+            candidateThreadID = id
+            return [rpc("experimentalFeature/list", .object(["threadId": .string(id), "limit": .number(200)]))]
+        case "experimentalFeature/list":
+            try auditRuntimeFeatures(result)
+            guard let id = candidateThreadID else { throw AskError.incompleteTurn }
+            candidateThreadID = nil; threadID = id
         case "turn/start":
             guard let id = result["turn"]["id"].string else { throw AskError.incompleteTurn }
             turnID = id
         default: break
         }
         return []
+    }
+
+    private mutating func receiveConfiguration(_ result: JSONValue) throws -> [JSONValue] {
+        guard case .object = result["config"] else { throw AskError.protocolFailure("Codex did not report effective configuration.") }
+        try audit(result["config"])
+        if case .object(let servers) = result["config"]["mcp_servers"] {
+            disabledServers = servers.mapValues { _ in .object(["enabled": .bool(false)]) }
+        }
+        return [rpc("skills/list", .object(["cwds": .array([.string(directory)]), "forceReload": .bool(true)]))]
+    }
+
+    private mutating func receiveSkills(_ result: JSONValue) throws -> [JSONValue] {
+        guard case .array = result["data"] else { throw AskError.protocolFailure("Codex did not return skill diagnostics.") }
+        for entry in result["data"].array {
+            guard case .array = entry["skills"], case .array = entry["errors"] else {
+                throw AskError.protocolFailure("Codex did not return complete skill source diagnostics.")
+            }
+            for skill in entry["skills"].array {
+                guard let path = skill["path"].string else { throw AskError.protocolFailure("Codex returned an unreadable skill source.") }
+                disabledSkills.append(.object(["path": .string(path), "enabled": .bool(false)]))
+            }
+            if !entry["errors"].array.isEmpty { throw AskError.protocolFailure("Codex could not audit its skill sources.") }
+        }
+        return [rpc("thread/start", threadParams())]
     }
 
     public func accepts(_ message: JSONValue) -> Bool {
@@ -91,16 +108,32 @@ nonisolated public struct GuideCodexProtocol: Sendable {
     }
 
     private func audit(_ config: JSONValue) throws {
-        guard config["model"].string == GuideAgentProfile.codexModel,
-              config["model_reasoning_effort"].string == GuideAgentProfile.reasoningEffort,
-              config["project_doc_max_bytes"].integer == 0, config["web_search"].string == "disabled",
-              config["memories"]["use_memories"] == .bool(false), config["memories"]["generate_memories"] == .bool(false) else {
-            throw AskError.protocolFailure("Managed Codex configuration prevents Clicky's isolation profile.")
+        for (key, literal) in GuideAgentProfile.codexOverrides.sorted(by: { $0.key < $1.key }) {
+            let expected = try JSONDecoder().decode(JSONValue.self, from: Data(literal.utf8))
+            let actual = key.split(separator: ".").reduce(config) { $0[String($1)] }
+            guard actual == expected else {
+                // The path is an owned constant, never an arbitrary provider setting or value.
+                throw AskError.protocolFailure("Codex isolation audit failed (configuration_mismatch at $.\(key)). Select a supported CLI and clean profile, then Retry explicitly.")
+            }
         }
-        let features = GuideAgentProfile.codexOverrides.filter { $0.key.hasPrefix("features.") && $0.value == "false" }
-        guard features.keys.allSatisfy({ config["features"][String($0.dropFirst(9))] == .bool(false) }),
-              config["features"]["skip_host_skill_discovery"] == .bool(true) else {
-            throw AskError.protocolFailure("Codex exposes capabilities outside Clicky's visual guide.")
+    }
+
+    private func auditRuntimeFeatures(_ result: JSONValue) throws {
+        guard case .object(let fields) = result, case .array(let features) = fields["data"], fields["nextCursor"] == .null else {
+            throw AskError.protocolFailure("Codex did not return complete runtime feature diagnostics.")
+        }
+        let expected = GuideAgentProfile.codexOverrides.filter { $0.key.hasPrefix("features.") }
+        for (key, literal) in expected.sorted(by: { $0.key < $1.key }) {
+            let name = String(key.dropFirst(9))
+            let matching = features.filter { $0["name"].string == name }
+            guard matching.count == 1, let feature = matching.first,
+                  feature["stage"].string != nil, case .bool(let enabled) = feature["enabled"] else {
+                throw AskError.protocolFailure("Codex runtime isolation audit failed (missing_feature at $.\(key)). Select a supported CLI, then Retry explicitly.")
+            }
+            // Audit only owned restrictions; unrelated UI feature defaults are not capability grants.
+            if enabled != (literal == "true") {
+                throw AskError.protocolFailure("Codex runtime isolation audit failed (feature_mismatch at $.\(key)). This CLI does not honor Clicky's capability restrictions. Use Local preview or another supported backend.")
+            }
         }
     }
 

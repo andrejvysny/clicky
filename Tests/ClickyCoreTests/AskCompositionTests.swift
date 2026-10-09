@@ -104,7 +104,7 @@ final class PresentationNormalizationTests: XCTestCase {
     func testExplanationWithEchoedEvidenceParses() throws {
         var fields: [String: JSONValue] = ["kind": .string("explanation"), "text": .string("I can see a Terminal window."),
                                            "captureID": .string(UUID().uuidString), "evidence": .string("Capture shows a terminal")]
-        for key in ["target", "crop", "action", "outcome", "matches", "proposedGoal",
+        for key in ["target", "crop", "action", "outcome", "matches", "evidenceTarget", "proposedGoal",
                     "mark", "label", "detail", "value", "ghost", "estimatedSteps"] { fields[key] = .null }
         let result = try GuidePresentation.parse(JSONEncoder().encode(JSONValue.object(fields)))
         XCTAssertEqual(result.kind, .explanation)

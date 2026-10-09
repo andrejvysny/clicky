@@ -62,7 +62,9 @@ extension VisualGuideController {
         if turn.image != nil { lastSent = Date() }
         let result = try await value.turn(turn)
         try check(current)
-        guard turn.purpose.permits(result.kind) else { throw AskError.protocolFailure("The agent returned an inappropriate presentation for this request.") }
+        guard turn.purpose.permits(result.kind) else {
+            throw AskError.protocolFailure("The agent returned \(result.kind.rawValue) for \(turn.purpose.rawValue). Retry explicitly.")
+        }
         if let id = await value.identifier() {
             session = AgentSession(provider: provider, identifier: id, workingDirectory: "Clicky-owned ephemeral task")
         }
@@ -118,6 +120,7 @@ extension VisualGuideController {
     private func captureTurn(message: String, crop: GuideRect? = nil, current: UInt64) async throws -> GuideAgentTurn {
         try check(current)
         guard let target = currentTarget, let task, task.grant?.paused == false else { throw AttachmentError.noTarget }
+        guard target.displayIdentifier == nil || displaySharingApproved else { throw AttachmentError.noTarget }
         guard await ScopedAccessibility.waitForFocus(target) else { throw AttachmentError.targetChanged }
         try check(current)
         if task.phase != .verifying { try self.task?.requestContext() }
@@ -163,11 +166,12 @@ extension VisualGuideController {
             guard let image = lastImage, let context = lastContext, let target = currentTarget,
                   result.captureID == context.captureID, let pixelTarget = result.target,
                   let rect = context.screenRect(pixelTarget), windowsStillCurrent(context), ScopedAccessibility.focused(target) else { throw AttachmentError.targetChanged }
-            let currentImage = try await WindowSnapshotCapture.capture(target, region: context.region.rect,
-                                                                       relatedTargets: ScopedAccessibility.related(target))
+            let currentImage = try await matchingCapture(target, context: context)
             try check(current)
-            guard windowsStillCurrent(context), let previous = fingerprint(image, rect: pixelTarget.rect),
-                  let fresh = fingerprint(currentImage, rect: pixelTarget.rect), previous == fresh,
+            guard windowsStillCurrent(context),
+                  let pixels = GuidePixelMapping.comparisonRect(pixelTarget, pixelWidth: image.pixelWidth, pixelHeight: image.pixelHeight),
+                  let previous = fingerprint(image, rect: pixels),
+                  let fresh = fingerprint(currentImage, rect: pixels), previous == fresh,
                   image.pixelWidth == currentImage.pixelWidth, image.pixelHeight == currentImage.pixelHeight else {
                 throw AskError.protocolFailure("The target changed while the agent was locating it. Retry with fresh context.")
             }
@@ -176,7 +180,8 @@ extension VisualGuideController {
             axOutcomeWasSatisfied = result.outcome.flatMap { ScopedAccessibility.matches($0, target: target) }
             onTarget?(GuideMark(mark: result.mark ?? .circle, target: rect, label: nil,
                                 value: result.mark == .value ? result.value : nil,
-                                ghost: result.ghost.flatMap(context.screenRect), within: context.region.rect))
+                                ghost: result.ghost.flatMap(context.screenRect), within: context.region.rect,
+                                avoidRects: ScopedAccessibility.annotationObstacles(target, within: context.region.rect)))
             if !composerOpen {
                 observer.start(step: result, target: target, rect: rect)
                 startTargetGuard(image: image, context: context, pixelTarget: pixelTarget)
@@ -189,7 +194,8 @@ extension VisualGuideController {
             }
             onResponse?(result.text)
             onAnnotate?(GuideMark(mark: result.mark ?? .circle, target: rect, label: result.markLabel,
-                                  value: result.mark == .value ? result.value : nil, ghost: nil, within: annotationBounds(result)))
+                                  value: result.mark == .value ? result.value : nil, ghost: nil, within: annotationBounds(result),
+                                  avoidRects: annotationObstacles()))
             status = "Ready"
             if sideQuestion { task?.pause(); status = "Pointed · walkthrough preserved" }
             else { task = nil; currentTarget = nil; lastImage = nil; lastContext = nil }
@@ -205,11 +211,12 @@ extension VisualGuideController {
         case .task_proposal:
             proposal = result; task?.pause(); status = "Start a new task or keep this walkthrough?"
         case .task_completed:
-            guard try await evidenceStillCurrent(current: current) else { throw AttachmentError.targetChanged }
+            guard try await evidenceStillCurrent(current: current, evidenceTarget: result.evidenceTarget) else { throw AttachmentError.targetChanged }
             guard task?.finish(matches: result.matches == true, captureID: result.captureID) == true else {
                 throw AskError.protocolFailure("Task completion lacks fresh verified evidence.")
             }
             onClearTarget?(); status = "Task complete · verified"; closeAgent(); lastImage = nil; lastContext = nil
+            onResponse?(status + "\n\n" + result.text)
             walkthroughPresented = false
         default: throw AskError.protocolFailure("The agent returned a presentation inappropriate for this task phase.")
         }
@@ -226,7 +233,7 @@ extension VisualGuideController {
                 let result = try await request(turn, current: current)
                 guard result.kind == .verification_result, result.captureID == context.captureID,
                       let verdict = result.matches else { throw AskError.protocolFailure("Verification lacks current outcome evidence.") }
-                let fresh = try await evidenceStillCurrent(current: current)
+                let fresh = try await evidenceStillCurrent(current: current, evidenceTarget: result.evidenceTarget)
                 matches = verdict && fresh
             }
             if task?.checked(matches: matches, context: context) == true {
@@ -246,6 +253,11 @@ extension VisualGuideController {
     }
 
     private func annotationBounds(_ result: GuidePresentation) -> CGRect? { lastContext?.region.rect }
+
+    private func annotationObstacles() -> [CGRect] {
+        guard let target = currentTarget, let region = lastContext?.region.rect else { return [] }
+        return ScopedAccessibility.annotationObstacles(target, within: region)
+    }
 
     func fingerprint(_ image: PNGImageAttachment, rect: CGRect) -> Data? {
         guard let source = CGImageSourceCreateWithData(image.data as CFData, nil), let decoded = CGImageSourceCreateImageAtIndex(source, 0, nil),

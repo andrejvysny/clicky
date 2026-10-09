@@ -24,13 +24,14 @@ struct QuickAskEditor: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
+        let initialSize = NSSize(width: compact ? 330 : 380, height: compact ? 22 : 88)
+        let scrollView = NSScrollView(frame: NSRect(origin: .zero, size: initialSize))
         scrollView.hasVerticalScroller = true
         // Legacy (always-visible) scrollers draw a track inside the compact pill; show only while scrolling.
         scrollView.autohidesScrollers = true
         scrollView.scrollerStyle = .overlay
         scrollView.drawsBackground = false
-        let editor = PromptTextView()
+        let editor = PromptTextView(frame: NSRect(origin: .zero, size: initialSize))
         editor.delegate = context.coordinator
         editor.onSubmit = onSubmit
         editor.onCancel = onCancel
@@ -61,7 +62,10 @@ struct QuickAskEditor: NSViewRepresentable {
         editor.setAccessibilityPlaceholderValue(placeholder)
         editor.setAccessibilityIdentifier("quickAskEditor")
         scrollView.documentView = editor
-        DispatchQueue.main.async { editor.window?.makeFirstResponder(editor) }
+        DispatchQueue.main.async { [weak editor] in
+            guard let editor, editor.window?.isVisible == true else { return }
+            editor.window?.makeFirstResponder(editor)
+        }
         return scrollView
     }
 
@@ -86,14 +90,12 @@ struct QuickAskEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let editor = notification.object as? NSTextView else { return }
             parent.text = editor.string
-            if let layout = editor.layoutManager, let container = editor.textContainer {
+            if editor.bounds.width > 2 * editor.textContainerInset.width,
+               let layout = editor.layoutManager, let container = editor.textContainer {
                 layout.ensureLayout(for: container)
                 let used = layout.usedRect(for: container).height
-                if parent.compact {
-                    parent.height = min(120, max(20, used + 2 * editor.textContainerInset.height))
-                } else {
-                    parent.height = min(180, max(88, used + 20))
-                }
+                parent.height = ShellPanelLayout.height(measured: used + (parent.compact ? 2 * editor.textContainerInset.height : 20),
+                                                       minimum: parent.compact ? 20 : 88, maximum: parent.compact ? 120 : 180)
             }
             editor.needsDisplay = true
         }

@@ -8,7 +8,7 @@ extension AnnotationOverlay {
     func makePlan(_ spec: AnnotationSpec, home: NSScreen) -> Plan {
         let homeFrame = AnnotationScreens.topLeftFrame(of: home)
         let shaped = shape(for: spec, homeFrame: homeFrame)
-        var hard = [spec.target]
+        var hard = [spec.target] + spec.avoidRects
         var plan = Plan(pieces: shaped.pieces, extent: shaped.extent, lineWidth: Self.lineWidth(for: spec.target))
 
         if let ghost = spec.ghost {
@@ -20,19 +20,16 @@ extension AnnotationOverlay {
 
         if let value = spec.value, !value.isEmpty, let box = shaped.pillBox {
             let view = AnnotationLabelViews.pill(text: value, color: Self.blue)
-            let frame = placeFrame(for: view, anchor: .box(box), hard: hard, spec: spec, home: home)
-            plan.pill = Placed(view: view, frame: frame)
-            plan.extent = plan.extent.union(frame)
-            hard.append(frame)
+            if let placement = place(view, anchor: .box(box), hard: hard, spec: spec, home: home) {
+                plan.pill = Placed(view: view, frame: placement.frame)
+                plan.extent = plan.extent.union(placement.frame)
+                hard.append(placement.frame)
+            }
         }
 
         if let label = spec.label, !label.isEmpty {
             let view = AnnotationLabelViews.card(text: label)
-            let bounds = labelBounds(for: view.frame.size, spec: spec, home: home)
-            let placement = CalloutPlacement.place(anchor: shaped.anchor, size: view.frame.size, bounds: bounds.area,
-                                                   inset: bounds.inset, obstacles: CalloutObstacles(hard: hard))
-            // No clean slot is better shown as no label than as a label covering the target.
-            guard !placement.frame.intersects(spec.target) else { return plan }
+            guard let placement = place(view, anchor: shaped.anchor, hard: hard, spec: spec, home: home) else { return plan }
             plan.card = Placed(view: view, frame: placement.frame)
             plan.extent = plan.extent.union(placement.frame)
             if let leader = placement.leader {
@@ -45,19 +42,18 @@ extension AnnotationOverlay {
         return plan
     }
 
-    private func placeFrame(for view: NSView, anchor: CalloutAnchor, hard: [CGRect], spec: AnnotationSpec, home: NSScreen) -> CGRect {
-        let bounds = labelBounds(for: view.frame.size, spec: spec, home: home)
-        return CalloutPlacement.place(anchor: anchor, size: view.frame.size, bounds: bounds.area,
-                                      inset: bounds.inset, obstacles: CalloutObstacles(hard: hard)).frame
+    private func place(_ view: NSView, anchor: CalloutAnchor, hard: [CGRect], spec: AnnotationSpec,
+                       home: NSScreen) -> CalloutPlacement? {
+        let bounds = labelBounds(spec: spec, home: home)
+        return CalloutPlacement.placeIfClear(anchor: anchor, size: view.frame.size, bounds: bounds.area,
+                                             inset: bounds.inset, obstacles: CalloutObstacles(hard: hard))
     }
 
-    /// `within` when the plate fits inside it with the inset; otherwise the display's visible frame.
-    private func labelBounds(for size: CGSize, spec: AnnotationSpec, home: NSScreen) -> (area: CGRect, inset: CGFloat) {
+    /// A small approved window must omit the plate rather than place it over another window.
+    private func labelBounds(spec: AnnotationSpec, home: NSScreen) -> (area: CGRect, inset: CGFloat) {
         if let within = spec.within {
             let area = within.intersection(AnnotationScreens.topLeftFrame(of: home))
-            if !area.isNull, area.width >= size.width + Self.labelGap * 2, area.height >= size.height + Self.labelGap * 2 {
-                return (area, Self.labelGap)
-            }
+            return (area.isNull ? .zero : area, Self.labelGap)
         }
         return (AnnotationScreens.topLeftVisibleFrame(of: home), 12)
     }

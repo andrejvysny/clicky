@@ -30,7 +30,9 @@ See [visual guide protocol](docs/VISUAL_GUIDE_PROTOCOL.md) and [native validatio
 | `TextInput/ScopedShortcuts.swift` | Option+Shift shortcuts registered only while visible: ⌥⇧←/⌥⇧→/⌥⇧R/⌥⇧⌫ (back/skip/retry/end) during a guide step, ⌥⇧C/⌥⇧V while Quick Ask shows a reply |
 | `TextInput/Core/AskComposition.swift` | Effort levels, selection quote bounds, paste-chip threshold, fenced message composition |
 | `TextInput/QuickAskView.swift` (~170 lines) | Clicky window from the menu: full last reply or grouped Settings (backend, shortcuts, screen, speech) |
+| `TextInput/AppSettingsView.swift` | Native Settings scene using the same live AskController and preferences as the companion menu |
 | `TextInput/QuickAskHotkey.swift` (~110 lines) | Carbon shortcut registration (per-identifier handlers), rebinding and shortcut labels; no keylogging/event tap |
+| `TextInput/Core/ShortcutRegistration.swift`, `Core/ShellPanelLayout.swift` | Transactional shortcut replacement and finite, top-anchored panel geometry; native hosting layout is deferred/coalesced |
 | `TextInput/GuidanceStepController.swift` (DEBUG only) | Debug guidance circle/card, scoped click/key observation, verification logging |
 | `TextInput/Core/ScreenPointing.swift` | Capture sizing, pointing instruction, tag parsing/streaming stripping, pixel-to-screen mapping |
 | `TextInput/PointingPresenter.swift`, `AnnotationOverlay*.swift`, `GuidanceOverlay.swift` | Click-through per-display annotation marks (circle, underline, highlight, arrow, value callout, dim ghost; one bright mark; label never overlaps the target and stays in its window; tones) and companion flight; `GuidanceOverlay` keeps the DEBUG step card |
@@ -53,6 +55,7 @@ See [visual guide protocol](docs/VISUAL_GUIDE_PROTOCOL.md) and [native validatio
 | `CompanionManager.swift`, `OverlayWindow.swift`, `DesignSystem.swift` | Original blue buddy state, visuals, animation and design tokens |
 | `MenuBarPanelManager.swift`, `leanring_buddyApp.swift` | Menu-bar shell and text-first lifecycle |
 | `Tools/ClickyGuideCLI/` | Clean structured transport diagnostic; kinds only, no persisted requests |
+| `scripts/audit-codex-isolation.mjs` | Temporary unauthenticated configuration/runtime-capability audit; no model inference or personal credential access |
 | `Tools/ClickyTextCLI/` | Legacy text diagnostic, not the app guide runner |
 | `Tests/ClickyCoreTests/` | Portable behavioral/process tests and offline Python fixture |
 | `leanring-buddyUITests/QuickAskUITests.swift` | Five Mac-only preview/guide demo UI tests |
@@ -61,7 +64,7 @@ Paths above are relative to `leanring-buddy/` unless their directory is at repos
 
 ## Supporting scope
 
-Local ASR, smart cleanup, system-wide dictation insertion, visual MCP, and live terminal attachment are **not enabled**. Visual guidance/auto-advance are development-only until the native matrix passes. Contracts and deterministic supporting state machines exist, with setup in `docs/SUPPORTING_SETUP.md`. Scoped screenshots and system speech are available for manual development-build testing but remain unvalidated on a Mac. DEBUG builds only: `clicky-debug://guide?x=&y=&w=&h=&text=&expect=click|rightclick|key[&key=&mods=cmd,shift,opt,ctrl]` (global top-left points) draws a click-through circle and step card, and `clicky-debug://cancel` clears it. A global mouse monitor and, only during an active key step with Accessibility granted, a global key monitor feed `GuidanceVerification`. Non-matching keys are counted only, never stored, displayed, or logged. Matches are reported as action-verified, not outcome-verified. Results go to the unified log (category `guidance`, non-sensitive fields only). Do not set release capability flags true without validating the actual native feature. No microphone or automatic screen capture should be triggered by typed Ask.
+Local ASR, smart cleanup, system-wide dictation insertion, visual MCP, and live terminal attachment are **not enabled**. Visual guidance/auto-advance are development-only until the native matrix passes. Contracts and deterministic supporting state machines exist, with setup in `docs/SUPPORTING_SETUP.md`. Scoped screenshots, annotations, and automatic Claude browser/desktop walkthroughs have native development-build evidence in `docs/MAC_VALIDATION.md`; the full release matrix and system speech remain unvalidated. DEBUG builds only: `clicky-debug://guide?x=&y=&w=&h=&text=&expect=click|rightclick|key[&key=&mods=cmd,shift,opt,ctrl]` (global top-left points) draws a click-through circle and step card, and `clicky-debug://cancel` clears it. A global mouse monitor and, only during an active key step with Accessibility granted, a global key monitor feed `GuidanceVerification`. Non-matching keys are counted only, never stored, displayed, or logged. Matches are reported as action-verified, not outcome-verified. Results go to the unified log (category `guidance`, non-sensitive fields only). Do not set release capability flags true without validating the actual native feature. No microphone or automatic screen capture should be triggered by typed Ask.
 
 Legacy `BuddyDictationManager`, AssemblyAI/OpenAI/Apple speech providers, ClaudeAPI, ElevenLabs client, onboarding views, and `worker/` remain for reference. They are not current app prerequisites. Migrate these incrementally; keep known nonblocking Swift concurrency and deprecated `onChange` warnings unchanged.
 
@@ -84,6 +87,8 @@ The `--clicky-ui-test` launch argument selects a dedicated preferences domain, p
 - Use clear descriptive names, async/await, and comments explaining non-obvious decisions.
 - All interactive buttons must show a pointer cursor on hover.
 - Track request IDs/generations so stale callbacks cannot mutate a later interaction.
+- Field-entry steps wait for the explicit commit key or departure from the expected field. Bubbled AX value/selection notifications must not trigger per-keystroke verification. Compare freshness using the original capture region/output dimensions before cropping; do not independently resample the target crop.
+- Audit every owned Codex configuration override and runtime feature restriction before the first user turn; missing or contradictory diagnostics fail closed even for an allowlisted version.
 - Preserve pre-existing user changes. Do not change unrelated features or known warnings.
 - Never log raw prompts, replies, screenshots, clipboard contents, credentials, or sensitive AX values.
 - Do not perform desktop actions or synthesize Enter. Future dictation must validate its original destination and offer Copy on uncertainty.

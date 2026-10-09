@@ -5,6 +5,7 @@ import ApplicationServices
 final class GuideObserver {
     var onEvidence: (() -> Void)?
     var onAction: (() -> Void)?
+    var onInteractionBegan: (() -> Void)?
     var onInvalidated: (() -> Void)?
     var onUnavailable: (() -> Void)?
     private var mouseMonitor: Any?
@@ -14,22 +15,49 @@ final class GuideObserver {
     private var observedElements: [AXUIElement] = []
     private var pending: Task<Void, Never>?
     private var matcher: GuideInteractionMatcher?
+    private var mouseRelease: GuideMouseReleaseTracker?
     private var target: WindowCaptureTarget?
     private var targetBounds: CGRect?
     private var generation: UInt64 = 0
     private var expectedField: AXUIElement?
+    private var expectedFieldFrame: CGRect?
     private var hadFieldFocus = false
+
+    var isEditingExpectedField: Bool {
+        guard let expectedField, let target, let focused = ScopedAccessibility.focusedElement(target) else { return false }
+        return CFEqual(expectedField, focused)
+    }
+
+    var expectedFieldGeometryIsCurrent: Bool {
+        guard let expectedField else { return true }
+        guard let expectedFieldFrame, let target,
+              let current = ScopedAccessibility.fieldFrame(expectedField, target: target) else { return false }
+        return current == expectedFieldFrame
+    }
+
+    var isPressingExpectedTarget: Bool {
+        guard let button = mouseRelease?.pressedButton else { return false }
+        return NSEvent.pressedMouseButtons & (1 << button) != 0
+    }
+
+    func cancelPendingMousePress() { mouseRelease?.cancel() }
 
     func start(step: GuidePresentation, target: WindowCaptureTarget, rect: CGRect) {
         stop(); self.target = target; targetBounds = ScopedAccessibility.bounds(target)
         guard let action = step.action else { return }
         matcher = GuideInteractionMatcher(action: action, target: rect)
-        mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp, .scrollWheel]) { [weak self] event in
+        mouseRelease = GuideMouseReleaseTracker(target: rect)
+        mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .leftMouseUp, .rightMouseUp,
+                                                                  .leftMouseDragged, .rightMouseDragged, .scrollWheel]) { [weak self] event in
             let position = event.locationInWindow
-            let button = event.type == .rightMouseUp ? 1 : 0
+            let button = event.type == .rightMouseUp || event.type == .rightMouseDown || event.type == .rightMouseDragged ? 1 : 0
             let scroll = event.type == .scrollWheel
+            let dragged = event.type == .leftMouseDragged || event.type == .rightMouseDragged
+            let pressed = event.type == .leftMouseDown || event.type == .rightMouseDown
             let count = scroll ? 0 : event.clickCount; let time = event.timestamp
-            MainActor.assumeIsolated { self?.mouse(position: position, button: button, count: count, time: time, scroll: scroll) }
+            MainActor.assumeIsolated {
+                self?.mouse(position: position, button: button, count: count, time: time, scroll: scroll, pressed: pressed, dragged: dragged)
+            }
         }
         if AXIsProcessTrusted(), action.kind == .key || action.kind == .field_commit {
             keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -42,6 +70,7 @@ final class GuideObserver {
             MainActor.assumeIsolated { self?.activationChanged() }
         }
         expectedField = action.kind == .field_commit ? ScopedAccessibility.field(target, rect: rect) : nil
+        expectedFieldFrame = expectedField.flatMap { ScopedAccessibility.fieldFrame($0, target: target) }
         if let expectedField, let focused = ScopedAccessibility.focusedElement(target) { hadFieldFocus = CFEqual(expectedField, focused) }
         installAX(target)
     }
@@ -53,21 +82,31 @@ final class GuideObserver {
         if let axObserver { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(axObserver), .commonModes) }
         mouseMonitor = nil; keyMonitor = nil; activationObserver = nil; axObserver = nil
         observedElements = []; matcher = nil; target = nil
-        expectedField = nil; hadFieldFocus = false
+        mouseRelease = nil
+        expectedField = nil; expectedFieldFrame = nil; hadFieldFocus = false
     }
-    private func mouse(position: CGPoint, button: Int, count: Int, time: Double, scroll: Bool) {
-        guard let target, ScopedAccessibility.focused(target) else { return }
-        if scroll { onInvalidated?(); return }
-        guard ScopedAccessibility.bounds(target) == targetBounds else { onInvalidated?(); return }
+    private func mouse(position: CGPoint, button: Int, count: Int, time: Double, scroll: Bool, pressed: Bool, dragged: Bool) {
+        guard let target else { return }
+        if dragged { mouseRelease?.cancel(); return }
+        guard ScopedAccessibility.focused(target) else { mouseRelease?.cancel(); return }
+        if scroll { mouseRelease?.cancel(); onInvalidated?(); return }
+        guard ScopedAccessibility.bounds(target) == targetBounds else { mouseRelease?.cancel(); onInvalidated?(); return }
         let primary = (NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.screens.first)?.frame.height ?? 0
         let point = CGPoint(x: position.x, y: primary - position.y)
-        guard targetBounds?.contains(point) == true else { return }
-        if matcher?.action.kind == .double_click, count == 1 { return }
-        if matcher?.mouse(button: button, count: count, point: point, timestamp: time) == true { onAction?() }
+        guard targetBounds?.contains(point) == true else { mouseRelease?.cancel(); return }
+        if pressed {
+            if mouseRelease?.began(button: button, count: count, point: point, timestamp: time) == true { onInteractionBegan?() }
+            return
+        }
+        guard let releaseCount = mouseRelease?.released(button: button, count: count, point: point, timestamp: time),
+              matcher?.mouse(button: button, count: releaseCount, point: point, timestamp: time) == true else { return }
+        onAction?()
         schedule(delay: UInt64((NSEvent.doubleClickInterval + 0.15) * 1_000_000_000))
     }
     private func key(_ event: NSEvent) {
         guard let target, ScopedAccessibility.focused(target) else { return }
+        if matcher?.action.kind == .field_commit, expectedField != nil,
+           !hadFieldFocus, !isEditingExpectedField { return }
         let modifiers = UInt64(event.modifierFlags.intersection([.command, .option, .shift, .control]).rawValue)
         guard matcher?.key(code: event.keyCode, modifiers: modifiers, timestamp: event.timestamp, repeated: event.isARepeat) == true else { return }
         onAction?()
@@ -77,6 +116,7 @@ final class GuideObserver {
         // Clicking the desktop activates Finder; a display target is not tied to any app.
         guard let target, target.displayIdentifier == nil,
               NSWorkspace.shared.frontmostApplication?.processIdentifier != target.processIdentifier else { return }
+        mouseRelease?.cancel()
         onUnavailable?()
     }
     private func schedule(delay: UInt64) {
@@ -90,10 +130,10 @@ final class GuideObserver {
     private func installAX(_ target: WindowCaptureTarget) {
         guard let window = ScopedAccessibility.window(target) else { return }
         var observer: AXObserver?
-        let callback: AXObserverCallback = { _, _, notification, pointer in
+        let callback: AXObserverCallback = { _, element, notification, pointer in
             guard let pointer else { return }
             let owner = Unmanaged<GuideObserver>.fromOpaque(pointer).takeUnretainedValue()
-            MainActor.assumeIsolated { owner.axChanged(notification as String) }
+            MainActor.assumeIsolated { owner.axChanged(notification as String, element: element) }
         }
         guard AXObserverCreate(target.processIdentifier, callback, &observer) == .success, let observer else { return }
         axObserver = observer; observedElements = [window, AXUIElementCreateApplication(target.processIdentifier)]
@@ -109,16 +149,20 @@ final class GuideObserver {
         }
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
     }
-    private func axChanged(_ name: String) {
-        if [kAXWindowMovedNotification, kAXWindowResizedNotification].contains(name) { onInvalidated?(); return }
-        if name == kAXUIElementDestroyedNotification || name == kAXFocusedWindowChangedNotification { onUnavailable?(); return }
-        // Value changes invalidate geometry but do not initiate screenshots per keystroke.
-        if name == kAXValueChangedNotification { onInvalidated?(); return }
-        if name == kAXFocusedUIElementChangedNotification, let expectedField, let target {
+    private func axChanged(_ name: String, element: AXUIElement) {
+        if [kAXWindowMovedNotification, kAXWindowResizedNotification].contains(name) { mouseRelease?.cancel(); onInvalidated?(); return }
+        if name == kAXUIElementDestroyedNotification || name == kAXFocusedWindowChangedNotification { mouseRelease?.cancel(); onUnavailable?(); return }
+        // Web controls can bubble these notifications from an ancestor, not the edited field.
+        // Neither typing nor selecting text is a field commit, regardless of the sender.
+        if matcher?.action.kind == .field_commit,
+           [kAXValueChangedNotification, kAXSelectedChildrenChangedNotification].contains(name) { return }
+        if name == kAXFocusedUIElementChangedNotification {
+            guard let expectedField, let target else { return }
             let focused = ScopedAccessibility.focusedElement(target).map { CFEqual($0, expectedField) } ?? false
             if focused { hadFieldFocus = true; return }
             guard hadFieldFocus else { return }
             hadFieldFocus = false
+            onAction?()
         }
         schedule(delay: 350_000_000)
     }

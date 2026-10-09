@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import ImageIO
+import OSLog
 
 /// A located mark in global top-left points, ready for the overlay.
 struct GuideMark {
@@ -12,6 +13,7 @@ struct GuideMark {
     let ghost: CGRect?
     /// The shared window or display; labels stay inside it.
     let within: CGRect?
+    var avoidRects: [CGRect] = []
 }
 
 @MainActor
@@ -35,7 +37,13 @@ final class VisualGuideController: ObservableObject {
     /// Consent given once at setup to share the display under the pointer when no window is focused; revocable in Settings.
     var displaySharingApproved: Bool {
         get { defaults.bool(forKey: Self.displaySharingKey) }
-        set { defaults.set(newValue, forKey: Self.displaySharingKey) }
+        set {
+            objectWillChange.send()
+            defaults.set(newValue, forKey: Self.displaySharingKey)
+            if !newValue, currentTarget?.displayIdentifier != nil {
+                pause(message: "Display sharing is off · Enable it in Settings or choose a window")
+            }
+        }
     }
     static let displaySharingKey = "displaySharingApproved"
     /// Appended once to a text-only answer when the question needed the screen but sharing is off.
@@ -70,11 +78,17 @@ final class VisualGuideController: ObservableObject {
     var replyEffort: AskEffort { provider == .claude ? agentEffort : activeEffort }
     var observer = GuideObserver()
     var targetGuard: Task<Void, Never>?
+    var targetGuardSuspendedUntil = Date.distantPast
 
     init() {
         observer.onAction = { [weak self] in
             guard let self, let context = lastContext, task?.phase == .waiting, task?.isCurrent(context) == true else { return }
+            targetGuard?.cancel(); targetGuard = nil
             task?.recordAttempt(); status = "Action detected · checking outcome"; publish()
+        }
+        observer.onInteractionBegan = { [weak self] in
+            // Button press/hover feedback is expected until the corresponding mouse-up is observed.
+            self?.targetGuardSuspendedUntil = Date().addingTimeInterval(NSEvent.doubleClickInterval + 0.25)
         }
         observer.onEvidence = { [weak self] in self?.checkNow() }
         observer.onInvalidated = { [weak self] in self?.invalidateTarget() }
@@ -138,6 +152,9 @@ final class VisualGuideController: ObservableObject {
     }
     func resume() {
         if demo != nil { demo?.resume(); status = "Demo · no AI · manual checklist"; publish(); return }
+        guard currentTarget?.displayIdentifier == nil || displaySharingApproved else {
+            error = "Display sharing is off. Enable it in Settings or choose a window."; publish(); return
+        }
         guard !isBusy, let currentTarget, ScopedAccessibility.focused(currentTarget) else {
             error = "Activate the approved target window, then Resume; or choose Change target."; publish(); return
         }
@@ -176,6 +193,7 @@ final class VisualGuideController: ObservableObject {
         transaction &+= 1; work?.cancel(); work = nil
         task?.finishManually(); closeAgent(); stopObservation(); onClearTarget?(); walkthroughPresented = false
         lastImage = nil; lastContext = nil; isBusy = false; status = "Finished manually · not verified"; publish()
+        onResponse?(status)
     }
     func endTask() {
         demo = nil
@@ -218,7 +236,11 @@ final class VisualGuideController: ObservableObject {
         let target = currentTarget; endTask()
         do { try ask(goal, target: target) } catch { self.error = error.localizedDescription; publish() }
     }
-    func invalidateTarget() {
+    func invalidateTarget(reason: String = "observed_change") {
+        observer.cancelPendingMousePress()
+        #if DEBUG
+        Logger(subsystem: "clicky", category: "guide").info("target invalidated reason=\(reason, privacy: .public)")
+        #endif
         targetGuard?.cancel(); targetGuard = nil
         task?.changed(); onClearTarget?(); lastImage = nil; lastContext = nil
         status = "View changed · Check now or Retry"; publish()

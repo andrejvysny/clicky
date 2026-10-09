@@ -130,9 +130,13 @@ enum AnnotationLabelViews {
         let field = NSTextField(labelWithString: text)
         field.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
         field.textColor = .white
+        field.maximumNumberOfLines = 1
+        field.usesSingleLineMode = true
         field.lineBreakMode = .byTruncatingMiddle
-        let width = min(ceil(field.intrinsicContentSize.width), maxLabelWidth - 20)
-        let height = ceil(field.intrinsicContentSize.height)
+        // Intrinsic width omits NSTextFieldCell's horizontal insets (even "12" then truncates).
+        let fit = field.sizeThatFits(NSSize(width: maxLabelWidth - 20, height: 100))
+        let width = fit.width.isFinite ? min(max(ceil(fit.width), 1), maxLabelWidth - 20) : maxLabelWidth - 20
+        let height = fit.height.isFinite ? min(max(ceil(fit.height), 15), 32) : 15
         let pill = NSView(frame: NSRect(x: 0, y: 0, width: width + 20, height: height + 8))
         pill.wantsLayer = true
         pill.layer?.backgroundColor = color.cgColor

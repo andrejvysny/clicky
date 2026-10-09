@@ -1,11 +1,13 @@
 import AppKit
 import Carbon
 import SwiftUI
+import os
 
 @MainActor
 final class QuickAskHotkey {
-    private var hotkey: EventHotKeyRef?
+    private var registration = ShortcutRegistration<EventHotKeyRef>()
     private var handler: EventHandlerRef?
+    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "clicky", category: "shortcut")
     /// Distinguishes several registrations; each handler only consumes its own identifier.
     private let identifier: UInt32
     var onPressed: (() -> Void)?
@@ -13,7 +15,24 @@ final class QuickAskHotkey {
     init(identifier: UInt32 = 1) { self.identifier = identifier }
 
     func register(keyCode: UInt32, modifiers: UInt32) -> Bool {
-        unregister()
+        guard installHandler() else { return false }
+        let registered = registration.register(ShortcutBinding(keyCode: keyCode, modifiers: modifiers), acquire: { binding in
+            var replacement: EventHotKeyRef?
+            let status = RegisterEventHotKey(binding.keyCode, binding.modifiers,
+                                            EventHotKeyID(signature: 0x434C514B, id: identifier),
+                                            GetApplicationEventTarget(), 0, &replacement)
+            guard status == noErr, let replacement else {
+                logger.error("Carbon shortcut registration failed: status \(status, privacy: .public), identifier \(self.identifier, privacy: .public)")
+                return nil
+            }
+            return replacement
+        }, release: { UnregisterEventHotKey($0) })
+        if !registered, registration.binding == nil { removeHandler() }
+        return registered
+    }
+
+    private func installHandler() -> Bool {
+        if handler != nil { return true }
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let userData = Unmanaged.passUnretained(self).toOpaque()
         let installed = InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
@@ -26,21 +45,26 @@ final class QuickAskHotkey {
             Task { @MainActor in monitor.onPressed?() }
             return noErr
         }, 1, &eventType, userData, &handler)
-        guard installed == noErr else { return false }
-        let registered = RegisterEventHotKey(keyCode, modifiers, EventHotKeyID(signature: 0x434C514B, id: identifier), GetApplicationEventTarget(), 0, &hotkey)
-        if registered != noErr { unregister() }
-        return registered == noErr
+        guard installed == noErr else {
+            logger.error("Carbon shortcut handler installation failed: status \(installed, privacy: .public), identifier \(self.identifier, privacy: .public)")
+            removeHandler()
+            return false
+        }
+        return true
     }
 
     func unregister() {
-        if let hotkey { UnregisterEventHotKey(hotkey) }
+        registration.unregister { UnregisterEventHotKey($0) }
+        removeHandler()
+    }
+
+    private func removeHandler() {
         if let handler { RemoveEventHandler(handler) }
-        hotkey = nil
         handler = nil
     }
 
     deinit {
-        if let hotkey { UnregisterEventHotKey(hotkey) }
+        registration.unregister { UnregisterEventHotKey($0) }
         if let handler { RemoveEventHandler(handler) }
     }
 }

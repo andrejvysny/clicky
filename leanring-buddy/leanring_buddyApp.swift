@@ -17,11 +17,8 @@ struct leanring_buddyApp: App {
     @NSApplicationDelegateAdaptor(CompanionAppDelegate.self) var appDelegate
 
     var body: some Scene {
-        // The app lives entirely in the menu bar panel managed by the AppDelegate.
-        // This empty Settings scene satisfies SwiftUI's requirement for at least
-        // one scene but is never shown (LSUIElement=true removes the app menu).
         Settings {
-            EmptyView()
+            AppSettingsView(controller: appDelegate.askController)
         }
     }
 }
@@ -32,7 +29,7 @@ struct leanring_buddyApp: App {
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
     private let companionManager = CompanionManager()
-    private let askController = AskController()
+    let askController = AskController()
     private var quickAskPanelManager: QuickAskPanelManager?
     private let quickAskHotkey = QuickAskHotkey()
     private let pointingPresenter = PointingPresenter()
@@ -115,7 +112,8 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
     private static func spec(_ mark: GuideMark) -> AnnotationOverlay.AnnotationSpec {
         AnnotationOverlay.AnnotationSpec(mark: mark.mark, target: mark.target, label: mark.label,
-                                         value: mark.value, ghost: mark.ghost, within: mark.within)
+                                         value: mark.value, ghost: mark.ghost, within: mark.within,
+                                         avoidRects: mark.avoidRects)
     }
 
     private func installScopedShortcuts() {

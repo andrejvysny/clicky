@@ -41,6 +41,22 @@ nonisolated public struct GuideCaptureContext: Codable, Equatable, Sendable {
 }
 
 nonisolated public enum GuidePixelMapping {
+    /// Outcome evidence must be wholly visible; never clip away part of a claimed result.
+    public static func evidenceComparisonRect(_ target: GuideRect, pixelWidth: Int, pixelHeight: Int) -> CGRect? {
+        guard target.isValid, pixelWidth > 0, pixelHeight > 0 else { return nil }
+        let bounds = CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight)
+        guard bounds.contains(target.rect) else { return nil }
+        return target.rect.integral.intersection(bounds)
+    }
+
+    /// Use the same clipped, integral pixels for both comparisons, including marks at a screen edge.
+    public static func comparisonRect(_ target: GuideRect, pixelWidth: Int, pixelHeight: Int) -> CGRect? {
+        let bounds = CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight)
+        guard screenRect(target, pixelWidth: pixelWidth, pixelHeight: pixelHeight, region: bounds) != nil else { return nil }
+        let rect = target.rect.intersection(bounds).integral.intersection(bounds)
+        return rect.isNull || rect.isEmpty ? nil : rect
+    }
+
     /// Models overshoot edge controls by a few pixels, so targets may exceed the image by 2% and are clamped;
     /// a target outside that slack, or with nothing left inside the image, is rejected.
     public static func screenRect(_ target: GuideRect, pixelWidth: Int, pixelHeight: Int, region: CGRect) -> CGRect? {

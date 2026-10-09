@@ -28,7 +28,15 @@ nonisolated public struct GuideHostTaskContext: Encodable, Sendable {
 nonisolated public struct GuideHostRequest: Encodable, Sendable {
     public let protocolVersion = GuideContract.promptVersion
     public let purpose: GuideRequestPurpose
+    public let allowedKinds: [String]
+    public let responseContract: String
     public let text: String
     public let task: GuideHostTaskContext?
     public let capture: GuideCaptureContext?
+
+    public init(purpose: GuideRequestPurpose, text: String, task: GuideHostTaskContext?, capture: GuideCaptureContext?) {
+        self.purpose = purpose; self.text = text; self.task = task; self.capture = capture
+        allowedKinds = GuideContract.allowedKinds(for: purpose).map(\.rawValue)
+        responseContract = GuideContract.responseContract(for: purpose)
+    }
 }

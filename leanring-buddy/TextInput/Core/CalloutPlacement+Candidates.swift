@@ -60,6 +60,35 @@ nonisolated extension CalloutPlacement {
         return slots.sorted { $0.1 < $1.1 }.map(\.0)
     }
 
+    /// Boundary-aligned slots retain usable pockets narrower than the sweep's 24 pt spacing.
+    static func boundarySpace(for anchor: CalloutAnchor, size: CGSize, bounds: CGRect, inset: CGFloat,
+                              obstacles: [CGRect]) -> [CGRect] {
+        let origin = centre(of: anchorRect(of: anchor))
+        let left = bounds.minX + inset, right = bounds.maxX - inset - size.width
+        let top = bounds.minY + inset, bottom = bounds.maxY - inset - size.height
+        let preferredX = origin.x - size.width / 2, preferredY = origin.y - size.height / 2
+        let xs = boundaryCoordinates([left, right, preferredX] + obstacles.flatMap { [$0.minX - size.width, $0.maxX] },
+                                     lower: left, upper: right, preferred: preferredX)
+        let ys = boundaryCoordinates([top, bottom, preferredY] + obstacles.flatMap { [$0.minY - size.height, $0.maxY] },
+                                     lower: top, upper: bottom, preferred: preferredY)
+        let slots = ys.flatMap { y in xs.map { x in CGRect(x: x, y: y, width: size.width, height: size.height) } }
+        return slots.sorted {
+            let first = pow($0.midX - origin.x, 2) + pow($0.midY - origin.y, 2)
+            let second = pow($1.midX - origin.x, 2) + pow($1.midY - origin.y, 2)
+            return first == second ? ($0.minY, $0.minX) < ($1.minY, $1.minX) : first < second
+        }
+    }
+
+    private static func boundaryCoordinates(_ coordinates: [CGFloat], lower: CGFloat, upper: CGFloat,
+                                            preferred: CGFloat) -> [CGFloat] {
+        // AX can expose hundreds of controls; bound the Cartesian product without dropping obstacles.
+        let unique = Set(coordinates.map { min(max($0, lower), upper) })
+        return Array(unique.sorted {
+            let first = abs($0 - preferred), second = abs($1 - preferred)
+            return first == second ? $0 < $1 : first < second
+        }.prefix(boundaryCoordinateLimit)).sorted()
+    }
+
     /// Positions around a box at a fixed gap: the four sides first (a plate squared to an edge reads as
     /// belonging to it), then corners. Each ring step clears the ring inside it by a whole plate.
     /// y-down: "below" is the larger-y side, and comes first.

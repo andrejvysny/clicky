@@ -9,6 +9,8 @@ nonisolated public struct GuideAgentProfile: Sendable {
     public static let claudeModel = "claude-haiku-5-5"
     public static let codexModel = "gpt-6-luna"
     public static let reasoningEffort = "low"
+    static let claudeVersions = ["2.1.294", "2.1.295"]
+    static let codexVersions = ["0.160.1"]
     public let provider: AgentProvider
     public let workingDirectory: URL
     public let profileDirectory: URL
@@ -41,7 +43,7 @@ nonisolated public struct GuideAgentProfile: Sendable {
 
     public var arguments: [String] {
         if provider == .claude {
-            let schema = String(data: try! JSONEncoder().encode(GuideContract.schema), encoding: .utf8)!
+            let schema = String(data: try! JSONEncoder().encode(GuideContract.responseSchema), encoding: .utf8)!
             return ["--print", "--verbose", "--input-format", "stream-json", "--output-format", "stream-json",
                     "--model", Self.claudeModel, "--effort", effort.rawValue,
                     "--safe-mode", "--setting-sources", "", "--settings", settingsFile.path,
@@ -88,12 +90,30 @@ nonisolated public struct GuideAgentProfile: Sendable {
         }
         let data = try pipe.fileHandleForReading.read(upToCount: 4096) ?? Data()
         let version = String(decoding: data, as: UTF8.self)
-        let words = version.split(whereSeparator: { $0.isWhitespace })
-        let compatible = provider == .claude ? ["2.1.294", "2.1.295"].contains(String(words.first ?? "")) : words.prefix(2) == ["codex-cli", "0.160.1"]
-        guard probe.terminationStatus == 0, compatible else {
-            throw AskError.protocolFailure("This agent version has not passed Clicky's isolation checks. Use Claude 2.1.294–2.1.295 or Codex 0.160.1, or Local preview.")
+        guard probe.terminationStatus == 0, Self.supports(version, provider: provider) else {
+            if provider == .codex, Self.reportedVersion(version, provider: provider) == "0.162.0" {
+                throw AskError.protocolFailure("Clicky cannot establish no-tools isolation for Codex 0.162.0 with GPT-6 Luna. Model-required code and patch tools cannot be excluded by the audited settings. Use Claude or Local preview.")
+            }
+            let supported = provider == .claude ? "Claude " + Self.claudeVersions.joined(separator: ", ")
+                : "Codex " + Self.codexVersions.joined(separator: ", ")
+            let detected = Self.reportedVersion(version, provider: provider).map { "Installed agent \($0)" } ?? "This agent version"
+            throw AskError.protocolFailure("\(detected) has not passed Clicky's isolation checks. Use \(supported), or Local preview. New CLI versions require an isolation audit; Retry never changes this gate.")
         }
         if provider == .claude { try Self.auditClaudePolicy() }
+    }
+
+    static func supports(_ output: String, provider: AgentProvider) -> Bool {
+        let words = output.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        if provider == .claude { return words.first.map(claudeVersions.contains) ?? false }
+        return provider == .codex && words.count == 2 && words[0] == "codex-cli" && codexVersions.contains(words[1])
+    }
+
+    private static func reportedVersion(_ output: String, provider: AgentProvider) -> String? {
+        let words = output.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let candidate = provider == .claude ? words.first : (words.count == 2 && words[0] == "codex-cli" ? words[1] : nil)
+        guard let candidate, candidate.count <= 32, candidate.split(separator: ".").count == 3,
+              candidate.unicodeScalars.allSatisfy({ CharacterSet(charactersIn: "0123456789.").contains($0) }) else { return nil }
+        return candidate
     }
 
     public func removeTaskFiles() { try? FileManager.default.removeItem(at: workingDirectory) }

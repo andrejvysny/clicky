@@ -22,6 +22,7 @@ final class IslandController: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var panel: NSPanel?
     private var refreshScheduled = false
+    private var layoutScheduled = false
     private var lastStepCount = 0
 
     init(ask: AskController) {
@@ -48,8 +49,7 @@ final class IslandController: ObservableObject {
         onReplyAvailabilityChanged?(ask.isComposing && !ask.response.isEmpty)
         // A walkthrough reports its own errors in the island; other failures show under the input.
         onCompanionState?(ask.isBusy, !ask.isBusy && !walkthroughVisible && ask.errorMessage != nil)
-        // SwiftUI applies the new mode on the next pass; measure after it.
-        DispatchQueue.main.async { [weak self] in self?.layoutPanel() }
+        layoutPanel()
     }
 
     private var walkthroughVisible: Bool {
@@ -79,20 +79,36 @@ final class IslandController: ObservableObject {
     }
 
     func layoutPanel() {
+        // Geometry preferences can fire during NSHostingView layout; measuring synchronously reenters it.
+        guard !layoutScheduled else { return }
+        layoutScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            layoutScheduled = false
+            applyPanelLayout()
+        }
+    }
+
+    private func applyPanelLayout() {
         guard mode != .hidden else { panel?.orderOut(nil); return }
         let panel = self.panel ?? makePanel()
         // Pick the display when the island appears; keep it while visible so it never jumps screens.
         let screen = panel.isVisible ? (panel.screen ?? IslandMetrics.pointerScreen()) : IslandMetrics.pointerScreen()
         guard let screen else { return }
+        guard ShellPanelLayout.isValid(screen.frame) else { return }
         let newMetrics = IslandMetrics(screen: screen)
         if newMetrics != metrics { metrics = newMetrics }
-        let height = max(metrics.headerHeight, panel.contentView?.fittingSize.height ?? metrics.headerHeight)
-        panel.setFrame(IslandLayout.frame(screen: screen.frame, width: width, height: height), display: true)
+        let height = ShellPanelLayout.height(measured: panel.contentView?.fittingSize.height ?? metrics.headerHeight,
+                                             minimum: metrics.headerHeight, maximum: screen.frame.height)
+        let frame = IslandLayout.frame(screen: screen.frame, width: width, height: height)
+        guard ShellPanelLayout.isValid(frame) else { return }
+        if panel.frame != frame { panel.setFrame(frame, display: true) }
         panel.orderFrontRegardless()
     }
 
     private func makePanel() -> NSPanel {
-        let panel = IslandPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        let initialFrame = CGRect(x: 0, y: 0, width: width, height: metrics.headerHeight)
+        let panel = IslandPanel(contentRect: initialFrame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .statusBar
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -103,6 +119,7 @@ final class IslandController: ObservableObject {
         panel.isExcludedFromWindowsMenu = true
         panel.setAccessibilityIdentifier("clickyIsland")
         let host = NSHostingView(rootView: IslandView(controller: self))
+        host.frame = initialFrame
         host.sizingOptions = [.intrinsicContentSize]
         panel.contentView = host
         self.panel = panel

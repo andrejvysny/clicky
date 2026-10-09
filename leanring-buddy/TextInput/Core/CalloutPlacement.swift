@@ -52,6 +52,7 @@ nonisolated struct CalloutPlacement: Equatable, Sendable {
     static let rings = 3
     static let sweepStep: CGFloat = 24
     static let screenInset: CGFloat = 24
+    static let boundaryCoordinateLimit = 64
 
     /// First slot in the ranked list that touches nothing (no plate, no ink, not its own target);
     /// if none is clean, the least bad ring slot (fewest hard hits, then least ink area, then earliest).
@@ -92,6 +93,58 @@ nonisolated struct CalloutPlacement: Equatable, Sendable {
                                     index: 0, leader: nil)
         }
         return placement(frame: best.frame, index: best.index, anchor: anchor)
+    }
+
+    /// Opaque annotations cannot use the legacy least-bad fallback: no plate is safer than covered UI.
+    static func placeIfClear(anchor: CalloutAnchor, size: CGSize, bounds: CGRect, inset: CGFloat,
+                             obstacles: CalloutObstacles) -> CalloutPlacement? {
+        guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0,
+              inset.isFinite, inset >= 0, finiteRect(bounds), finiteAnchor(anchor),
+              bounds.width >= size.width + inset * 2, bounds.height >= size.height + inset * 2 else { return nil }
+        let obstacles = CalloutObstacles(hard: bounded(obstacles.hard, in: bounds), ink: bounded(obstacles.ink, in: bounds))
+        let candidate = place(anchor: anchor, size: size, bounds: bounds, inset: inset, obstacles: obstacles)
+        if isClear(candidate.frame, anchor: anchor, obstacles: obstacles) {
+            return withSafeLeader(candidate, anchor: anchor, obstacles: obstacles)
+        }
+        // Grid sweeps can miss narrow usable gaps; obstacle edges describe those gaps exactly.
+        let hard = obstacles.hard.map { $0.insetBy(dx: -clearance, dy: -clearance) }
+        let ink = obstacles.ink.map { $0.insetBy(dx: -inkClearance, dy: -inkClearance) }
+        let edges = ownLimits(of: anchor) + hard + ink
+        for frame in boundarySpace(for: anchor, size: size, bounds: bounds, inset: inset, obstacles: edges) {
+            guard isClear(frame, anchor: anchor, obstacles: obstacles) else { continue }
+            return withSafeLeader(placement(frame: frame, index: candidate.index, anchor: anchor),
+                                  anchor: anchor, obstacles: obstacles)
+        }
+        return nil
+    }
+
+    private static func withSafeLeader(_ candidate: CalloutPlacement, anchor: CalloutAnchor,
+                                       obstacles: CalloutObstacles) -> CalloutPlacement {
+        guard candidate.leader != nil else { return candidate }
+        let hard = RectIndex(obstacles.hard.map { $0.insetBy(dx: -clearance, dy: -clearance) })
+        let ink = RectIndex(obstacles.ink.map { $0.insetBy(dx: -inkClearance, dy: -inkClearance) })
+        return leaderIsBlocked(from: candidate.frame, anchor: anchor, hard: hard, ink: ink)
+            ? CalloutPlacement(frame: candidate.frame, index: candidate.index, leader: nil) : candidate
+    }
+
+    private static func bounded(_ rects: [CGRect], in bounds: CGRect) -> [CGRect] {
+        rects.filter(finiteRect).compactMap {
+            let clipped = $0.intersection(bounds.insetBy(dx: -clearance, dy: -clearance))
+            return finiteRect(clipped) ? clipped : nil
+        }
+    }
+
+    private static func finiteRect(_ rect: CGRect) -> Bool {
+        !rect.isNull && !rect.isInfinite && rect.width > 0 && rect.height > 0
+            && [rect.minX, rect.minY, rect.maxX, rect.maxY].allSatisfy(\.isFinite)
+    }
+
+    private static func finiteAnchor(_ anchor: CalloutAnchor) -> Bool {
+        switch anchor {
+        case .box(let rect): return finiteRect(rect)
+        case .shaft(let start, let end): return [start.x, start.y, end.x, end.y].allSatisfy(\.isFinite)
+        case .point(let point): return point.x.isFinite && point.y.isFinite
+        }
     }
 
     /// Whether a plate already at `frame` needs to move at all.

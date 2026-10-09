@@ -32,6 +32,7 @@ public actor GuideAgentSession {
     private var timeout: Task<Void, Never>?
     private var pending: CheckedContinuation<GuidePresentation, Error>?
     private var pendingTurn: GuideAgentTurn?
+    private var pendingPurpose: GuideRequestPurpose?
     private var codex: GuideCodexProtocol
     private var response = ""
     private var ready = false
@@ -57,7 +58,7 @@ public actor GuideAgentSession {
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { continuation in
-                pending = continuation; pendingTurn = request; response = ""
+                pending = continuation; pendingTurn = request; pendingPurpose = request.purpose; response = ""
                 do {
                     if process == nil { try launch() }
                     else { try sendPendingTurn() }
@@ -76,7 +77,7 @@ public actor GuideAgentSession {
         let hadProcess = process != nil
         closed = true; timeout?.cancel(); pump?.cancel(); process?.stop(); process = nil
         let continuation = pending; pending = nil; pendingTurn = nil; response = ""
-        continuation?.resume(throwing: CancellationError())
+        pendingPurpose = nil; continuation?.resume(throwing: CancellationError())
         if !hadProcess { profile.removeTaskFiles() }
     }
 
@@ -101,7 +102,7 @@ public actor GuideAgentSession {
         guard let pendingTurn, let process else { return }
         if profile.provider == .codex {
             guard codex.threadID != nil else { return }
-            try process.send(codex.startTurn(input: pendingTurn.codexInput, effort: pendingTurn.effort))
+            try process.send(codex.startTurn(input: pendingTurn.codexInput, effort: pendingTurn.effort, purpose: pendingTurn.purpose))
         } else {
             policyRequestID = UUID().uuidString
             try process.send(GuideClaudePolicy.control("get_settings", identifier: policyRequestID!))
@@ -161,7 +162,7 @@ public actor GuideAgentSession {
         let data: Data
         if message["structured_output"] != .null { data = try JSONEncoder().encode(message["structured_output"]) }
         else { data = Data((message["result"].string ?? "").utf8) }
-        let presentation = try GuidePresentation.parse(data)
+        let presentation = try parsePresentation(data)
         self.claudeTurnID = nil; complete(presentation)
     }
 
@@ -186,14 +187,19 @@ public actor GuideAgentSession {
             guard params["turn"]["status"].string == "completed" else {
                 throw AskError.protocolFailure("GPT-6 Luna could not complete the turn. Check model access and official sign-in, then Retry explicitly.")
             }
-            complete(try GuidePresentation.parse(Data(response.utf8)))
+            complete(try parsePresentation(Data(response.utf8)))
         default: break
         }
     }
 
+    private func parsePresentation(_ data: Data) throws -> GuidePresentation {
+        guard let purpose = pendingPurpose else { throw AskError.incompleteTurn }
+        return try GuidePresentation.parseResponse(data, purpose: purpose)
+    }
+
     private func complete(_ value: GuidePresentation) {
         timeout?.cancel(); timeout = nil
-        let continuation = pending; pending = nil; response = ""
+        let continuation = pending; pending = nil; pendingPurpose = nil; response = ""
         continuation?.resume(returning: value)
     }
 
@@ -203,7 +209,7 @@ public actor GuideAgentSession {
         let hadProcess = process != nil
         process?.stop(); process = nil
         if !hadProcess { profile.removeTaskFiles() }
-        let continuation = pending; pending = nil; pendingTurn = nil; response = ""
+        let continuation = pending; pending = nil; pendingTurn = nil; pendingPurpose = nil; response = ""
         continuation?.resume(throwing: error)
         if continuation == nil { onUnexpectedExit?(error.localizedDescription) }
     }

@@ -116,7 +116,7 @@ enum WindowSnapshotCapture {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             try Task.checkCancellation()
             let plan = try capturePlan(content, target: target, requestedRegion: requestedRegion, relatedTargets: relatedTargets)
-            let (filter, configuration) = try captureConfiguration(plan, detail: requestedRegion != nil, outputSize: outputSize)
+            let (filter, configuration) = try captureConfiguration(plan, outputSize: outputSize)
             let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
             try Task.checkCancellation()
             // Recheck the PID/window binding after the await; never fall back to a display capture.
@@ -167,8 +167,7 @@ enum WindowSnapshotCapture {
         return CapturePlan(window: window, related: related, display: display, region: frame, fullFrame: fullFrame)
     }
 
-    private static func captureConfiguration(_ plan: CapturePlan, detail: Bool,
-                                             outputSize: CGSize?) throws -> (SCContentFilter, SCStreamConfiguration) {
+    private static func captureConfiguration(_ plan: CapturePlan, outputSize: CGSize?) throws -> (SCContentFilter, SCStreamConfiguration) {
         let pixelSize = outputSize ?? CaptureSizing.pixelSize(forPointSize: plan.region.size, backingScale: backingScale(for: plan.display.displayID))
         guard pixelSize.width.isFinite, pixelSize.height.isFinite, pixelSize.width > 0, pixelSize.height > 0,
               pixelSize.width <= 4096, pixelSize.height <= 4096 else { throw AttachmentError.captureFailed }
@@ -179,7 +178,7 @@ enum WindowSnapshotCapture {
         let filter: SCContentFilter
         if plan.related.isEmpty {
             filter = SCContentFilter(desktopIndependentWindow: plan.window)
-            if detail { configuration.sourceRect = relativeRegion(plan.region, in: plan.window.frame) }
+            configuration.sourceRect = relativeRegion(plan.region, in: plan.window.frame)
         } else {
             guard plan.display.frame.contains(plan.fullFrame) else { throw AttachmentError.targetChanged }
             filter = SCContentFilter(display: plan.display, including: [plan.window] + plan.related)

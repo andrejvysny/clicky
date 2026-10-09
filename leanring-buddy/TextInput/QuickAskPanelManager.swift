@@ -26,6 +26,7 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
     private var userChangedFocus = false
     private var isClosing = false
     private var presentationIdentifier = UUID()
+    private var scheduledResize: UUID?
     private var currentPresentation = QuickAskPresentation.ghost
     private let isUITest = ProcessInfo.processInfo.arguments.contains("--clicky-ui-test")
 
@@ -41,9 +42,12 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
         if presentation == .ghost, currentPresentation != .ghost, panel?.isVisible == true { close(restoreFocus: false) }
         if let panel, panel.isVisible {
             if presentation != currentPresentation {
+                presentationIdentifier = UUID()
+                scheduledResize = nil
                 currentPresentation = presentation
                 if case .details(let settings) = presentation { controller.showSettings = settings }
                 panel.contentView = makeHostingView(for: presentation)
+                if !isUITest { installFocusObservers() }
                 resize()
             } else if case .details(true) = presentation {
                 controller.showSettings = true
@@ -62,7 +66,8 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
         currentPresentation = presentation
         if case .details(let settings) = presentation { controller.showSettings = settings } else { controller.showSettings = false }
         controller.editorGeneration = UUID()
-        let newPanel = QuickAskPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        let newPanel = QuickAskPanel(contentRect: CGRect(x: 0, y: 0, width: panelWidth, height: 280),
+                                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         newPanel.contentView = makeHostingView(for: presentation)
         newPanel.onCancel = { [weak self] in self?.escape() }
         newPanel.isFloatingPanel = true
@@ -95,31 +100,52 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
 
     private func makeHostingView(for presentation: QuickAskPresentation) -> NSHostingView<AnyView> {
         let onCancel: () -> Void = { [weak self] in self?.escape() }
-        let onLayoutChanged: () -> Void = { [weak self] in self?.resize() }
+        let expectedPresentation = presentationIdentifier
+        let onLayoutChanged: () -> Void = { [weak self] in
+            guard let self, presentationIdentifier == expectedPresentation else { return }
+            resize()
+        }
+        let host: NSHostingView<AnyView>
         switch presentation {
         case .ghost:
-            return NSHostingView(rootView: AnyView(CursorAskView(controller: controller, onCancel: onCancel, onLayoutChanged: onLayoutChanged)))
+            host = NSHostingView(rootView: AnyView(CursorAskView(controller: controller, onCancel: onCancel, onLayoutChanged: onLayoutChanged)))
         case .details:
             let screen = NSScreen.screens.first(where: { $0.frame.contains(presentationPointer) }) ?? NSScreen.main
-            return NSHostingView(rootView: AnyView(QuickAskView(controller: controller, onCancel: onCancel, onLayoutChanged: onLayoutChanged,
+            host = NSHostingView(rootView: AnyView(QuickAskView(controller: controller, onCancel: onCancel, onLayoutChanged: onLayoutChanged,
                                                                maximumHeight: max(240, (screen?.visibleFrame.height ?? 800) - 24))))
         }
+        host.frame = CGRect(x: 0, y: 0, width: panelWidth, height: 280)
+        return host
     }
 
     func resize() {
+        guard scheduledResize == nil else { return }
+        let expectedPresentation = presentationIdentifier
+        let request = UUID()
+        scheduledResize = request
         DispatchQueue.main.async { [weak self] in
-            guard let self, let panel, let screen = NSScreen.screens.first(where: { $0.frame.contains(self.presentationPointer) }) ?? NSScreen.main else { return }
-            let isGhost = currentPresentation == .ghost
-            let fittingSize = panel.contentView?.fittingSize ?? CGSize(width: panelWidth, height: 280)
-            let visible = screen.visibleFrame
-            var frame = placement(pointer: presentationPointer, size: CGSize(width: panelWidth, height: max(isGhost ? 30 : 240, fittingSize.height)), visibleFrame: visible)
-            if isGhost {
-                let top = anchoredTop ?? frame.maxY
-                anchoredTop = top
-                frame.origin.y = max(visible.minY, top - frame.height)
-            }
-            panel.setFrame(frame, display: true)
+            guard let self, scheduledResize == request else { return }
+            scheduledResize = nil
+            guard presentationIdentifier == expectedPresentation, panel?.isVisible == true else { return }
+            applyPanelLayout()
         }
+    }
+
+    private func applyPanelLayout() {
+        guard let panel, let screen = NSScreen.screens.first(where: { $0.frame.contains(presentationPointer) }) ?? NSScreen.main else { return }
+        let visible = screen.visibleFrame
+        guard ShellPanelLayout.isValid(visible) else { return }
+        let isGhost = currentPresentation == .ghost
+        let height = ShellPanelLayout.height(measured: panel.contentView?.fittingSize.height ?? 280,
+                                             minimum: isGhost ? 30 : 240, maximum: visible.height)
+        var frame = placement(pointer: presentationPointer, size: CGSize(width: panelWidth, height: height), visibleFrame: visible)
+        if isGhost {
+            let top = anchoredTop ?? frame.maxY
+            anchoredTop = top
+            frame = ShellPanelLayout.anchoredFrame(frame, top: top, visibleFrame: visible)
+        }
+        guard ShellPanelLayout.isValid(frame) else { return }
+        if panel.frame != frame { panel.setFrame(frame, display: true) }
     }
 
     /// Escape stops a running reply first; the next Escape closes Quick Ask.
@@ -133,6 +159,8 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
     func close(restoreFocus: Bool) {
         guard let panel, panel.isVisible, !isClosing else { return }
         isClosing = true
+        presentationIdentifier = UUID()
+        scheduledResize = nil
         let ownedFocus = panel.isKeyWindow
         panel.orderOut(nil)
         removeFocusObservers()
@@ -158,10 +186,11 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
 
     private func installFocusObservers() {
         removeFocusObservers()
+        let expectedPresentation = presentationIdentifier
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] notification in
             guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, presentationIdentifier == expectedPresentation, panel?.isVisible == true else { return }
                 if !pinned, application.processIdentifier != ProcessInfo.processInfo.processIdentifier,
                    application.processIdentifier != originatingApplication?.processIdentifier {
                     userChangedFocus = true
@@ -171,7 +200,8 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
         }
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, !pinned, NSApp.modalWindow == nil, let panel, !panel.frame.contains(NSEvent.mouseLocation) else { return }
+                guard let self, presentationIdentifier == expectedPresentation, !pinned, NSApp.modalWindow == nil,
+                      let panel, panel.isVisible, !panel.frame.contains(NSEvent.mouseLocation) else { return }
                 userChangedFocus = true
                 close(restoreFocus: false)
             }

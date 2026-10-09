@@ -56,6 +56,7 @@ struct TextCompanionPanelView: View {
 
     private var sessionState: (label: String, color: Color, outlined: Bool) {
         if controller.isBusy { return ("Working", DS.Colors.blue400, false) }
+        if controller.guide.task?.phase == .completed { return ("Finished", DS.Colors.textSecondary, false) }
         if [.waiting, .uncertain].contains(controller.guide.task?.phase) { return ("Waiting for you", ClickyChrome.ask, true) }
         if controller.session != nil { return ("Connected", DS.Colors.success, false) }
         return ("Ready", DS.Colors.textTertiary, false)

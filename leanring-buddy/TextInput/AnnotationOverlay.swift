@@ -16,6 +16,8 @@ final class AnnotationOverlay {
         var ghost: CGRect? = nil
         /// Region (usually the target window) the arrow tail and label should stay inside when they fit.
         var within: CGRect? = nil
+        /// Known neighboring UI in global top-left points; opaque callouts must not cover it.
+        var avoidRects: [CGRect] = []
     }
 
     enum Role { case stroke, fillStroke, barbs, ghost, leader }

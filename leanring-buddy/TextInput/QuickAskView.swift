@@ -20,7 +20,7 @@ struct QuickAskView: View {
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 1))
         .preferredColorScheme(.dark)
         .onPreferenceChange(ComposerHeightKey.self) { height in
-            guard abs(contentHeight - height) > 0.5 else { return }
+            guard height.isFinite, height > 0, abs(contentHeight - height) > 0.5 else { return }
             contentHeight = height
             onLayoutChanged()
         }
@@ -72,9 +72,14 @@ private struct ComposerHeightKey: PreferenceKey {
 /// Grouped settings: backend, shortcuts, sharing, speech, conversation.
 struct AskSettingsView: View {
     @ObservedObject var controller: AskController
+    @ObservedObject private var guide: VisualGuideController
     @State private var recordingShortcut = false
-    @State private var displaySharing = false
     @State private var screenRecordingAllowed = CGPreflightScreenCaptureAccess()
+
+    init(controller: AskController) {
+        self.controller = controller
+        guide = controller.guide
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -134,8 +139,8 @@ struct AskSettingsView: View {
                     }
                 }
                 Toggle("Look at the display when no window is focused", isOn: Binding(
-                    get: { displaySharing },
-                    set: { displaySharing = $0; controller.guide.displaySharingApproved = $0 }))
+                    get: { guide.displaySharingApproved },
+                    set: { guide.displaySharingApproved = $0 }))
                     .font(.system(size: 12))
                 Toggle("Attach selected text when Quick Ask opens", isOn: $controller.attachSelection).font(.system(size: 12))
                 note("Reads only the selection in the focused, non-secure field through Accessibility. ⌫ in an empty prompt removes it.")
@@ -149,7 +154,6 @@ struct AskSettingsView: View {
         }
         .disabled(controller.isBusy)
         .onAppear {
-            displaySharing = controller.guide.displaySharingApproved
             screenRecordingAllowed = CGPreflightScreenCaptureAccess()
         }
     }
