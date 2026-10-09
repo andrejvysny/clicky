@@ -264,6 +264,19 @@ final class GuideHarness {
         try await reply { GuideHarness.verdict($0, matches: state == .confirmed, state: state) }
     }
 
+    /// Two undecidable checks spend the step's one recovery look (answered with the same step), then two more
+    /// leave the step uncertain.
+    func reachUncertainty(time: Double) async throws {
+        try await act(time: time, verdict: .unknown)
+        await clock.advance(GuideHarnessTiming.settle)
+        try await reply { GuideHarness.verdict($0, matches: false, state: .unknown) }
+        guard controller.task?.phase != .uncertain else { return }
+        try await reply { GuideHarness.step($0) }
+        try await act(time: time + 5, verdict: .unknown)
+        await clock.advance(GuideHarnessTiming.settle)
+        try await reply { GuideHarness.verdict($0, matches: false, state: .unknown) }
+    }
+
     static func contextRequest() -> GuidePresentation { GuidePresentation(kind: .context_request, text: "Need the window") }
 
     static func step(_ turn: GuideAgentTurn, pixel: CGRect = CGRect(x: 10, y: 10, width: 12, height: 8),

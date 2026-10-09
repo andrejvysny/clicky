@@ -28,7 +28,13 @@ extension VisualGuideController {
         for check in 0..<2 {
             if check > 0 { try await settle(after: last.state, current: current) }
             status = "Checking"; publish()
-            let turn = try await captureTurn(message: "Verify this intended outcome only: " + outcome.description, current: current)
+            // The instruction gives the verdict its context: the visible result of that action, not a literal match
+            // of the outcome wording. unknown is only for an outcome area that cannot be seen.
+            let turn = try await captureTurn(message: "The user was asked: " + step.text
+                                             + "\nVerify this intended outcome only: " + outcome.description
+                                             + "\nJudge whether the current capture shows the result of that action. Use unknown only when "
+                                             + "the relevant area is not visible; if it is visible but different, use contradicted.",
+                                             current: current)
             guard let context = turn.context else { throw AttachmentError.targetChanged }
             metrics.count(.visionChecks)
             let result = try await request(turn, current: current)
@@ -44,12 +50,13 @@ extension VisualGuideController {
                 return
             }
         }
-        // A contradicted result after a genuine attempt may be a detour or the user working ahead:
-        // look once at the current state and continue from there, never assuming success.
-        if last.state == .contradicted, task?.beginRecovery() == true {
+        // A contradicted or undecidable result after a genuine attempt may be a detour, the user working ahead or
+        // an outcome worded differently from what the app shows: look once at the current state and continue from
+        // there, never assuming success. A pending app has already had its bounded wait.
+        if last.state == .contradicted || last.state == .unknown, task?.beginRecovery() == true {
             metrics.count(.recoveries)
             status = "Finding the next step"; publish()
-            let turn = try await captureTurn(message: recoveryMessage() + "\nThe intended outcome was not observed: " + last.evidence
+            let turn = try await captureTurn(message: recoveryMessage() + "\nThe intended outcome was not confirmed: " + last.evidence
                 + "\nInspect the current state. If the user took another route or is ahead, present the step that continues "
                 + "toward the goal from here; if the goal checks already hold, return task_completed. Never claim unseen actions.",
                 current: current)

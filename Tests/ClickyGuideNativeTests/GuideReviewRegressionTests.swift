@@ -56,9 +56,7 @@ final class GuideReviewRegressionTests: XCTestCase {
     func testAccessibilityNoiseAfterAnEpisodeNeedsANewAttempt() async throws {
         let harness = GuideHarness()
         try await harness.startStep()
-        try await harness.act(time: 10, verdict: .unknown)
-        await harness.clock.advance(GuideHarnessTiming.settle)
-        try await harness.reply { GuideHarness.verdict($0, matches: false, state: .unknown) }
+        try await harness.reachUncertainty(time: 10)
         let turns = await harness.turnCount
         for _ in 0..<5 {
             harness.controller.observer.receiveAccessibility(kAXValueChangedNotification as String)
@@ -66,7 +64,7 @@ final class GuideReviewRegressionTests: XCTestCase {
         }
         let after = await harness.turnCount
         XCTAssertEqual(after, turns, "value-change noise spends no episodes")
-        XCTAssertEqual(harness.controller.task?.budget.episodesUsed, 1)
+        XCTAssertEqual(harness.controller.task?.budget.episodesUsed, 2)
     }
 
     func testFlappingFocusWithAChangedTargetIsBounded() async throws {

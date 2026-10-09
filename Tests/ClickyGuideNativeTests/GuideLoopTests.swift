@@ -110,12 +110,10 @@ final class GuideLoopTests: XCTestCase {
     func testUncertaintyKeepsWatchingAndANewAttemptReArmsABoundedCheck() async throws {
         let harness = GuideHarness()
         try await harness.startStep()
-        try await harness.act(time: 10, verdict: .unknown)
-        await harness.clock.advance(GuideHarnessTiming.settle)
-        try await harness.reply { GuideHarness.verdict($0, matches: false, state: .unknown) }
+        try await harness.reachUncertainty(time: 10)
         XCTAssertEqual(harness.controller.task?.phase, .uncertain)
         XCTAssertTrue(harness.controller.observer.isObserving, "uncertainty keeps a safe watch on the target")
-        XCTAssertEqual(harness.shownTargets.count, 2, "the target stays marked")
+        XCTAssertEqual(harness.shownTargets.count, 3, "the target stays marked")
         try await harness.act(time: 20, verdict: .confirmed)
         try await harness.reply { GuideHarness.step($0, text: "Click Apply") }
         XCTAssertEqual(harness.controller.task?.milestones.map(\.completion), [.verified])
@@ -129,6 +127,8 @@ final class GuideLoopTests: XCTestCase {
             try await harness.act(time: Double(10 + episode * 10), verdict: .unknown)
             await harness.clock.advance(GuideHarnessTiming.settle)
             try await harness.reply { GuideHarness.verdict($0, matches: false, state: .unknown) }
+            // The first undecidable episode spends the step's single recovery look.
+            if episode == 0 { try await harness.reply { GuideHarness.step($0) } }
         }
         let spent = await harness.turnCount
         harness.click(at: CGPoint(x: 15, y: 14), time: 100)
@@ -159,7 +159,7 @@ final class GuideLoopTests: XCTestCase {
         try await harness.reply { GuideHarness.verdict($0, matches: false, state: .contradicted) }
         let recovery = try await harness.nextTurn()
         XCTAssertEqual(recovery.purpose, .continuation)
-        XCTAssertTrue(recovery.message.contains("was not observed"))
+        XCTAssertTrue(recovery.message.contains("was not confirmed"))
         try await harness.reply { GuideHarness.step($0, pixel: CGRect(x: 40, y: 30, width: 10, height: 8), text: "Click Advanced") }
         XCTAssertEqual(harness.controller.task?.phase, .waiting)
         XCTAssertEqual(harness.controller.task?.milestones.count, 0, "no fabricated progress")

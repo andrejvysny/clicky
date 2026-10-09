@@ -61,9 +61,7 @@ final class GuideTimingTests: XCTestCase {
     func testReplacedControlClearsTheUncertainMark() async throws {
         let harness = GuideHarness()
         try await harness.startStep()
-        try await harness.act(time: 10, verdict: .unknown)
-        await harness.clock.advance(GuideHarnessTiming.settle)
-        try await harness.reply { GuideHarness.verdict($0, matches: false, state: .unknown) }
+        try await harness.reachUncertainty(time: 10)
         XCTAssertEqual(harness.controller.task?.phase, .uncertain)
         let cleared = harness.clearedTargets, turns = await harness.turnCount
         harness.screen.paint(CGRect(x: 10, y: 10, width: 12, height: 8), value: 0)
@@ -78,9 +76,7 @@ final class GuideTimingTests: XCTestCase {
     func testUnchangedControlKeepsTheUncertainMark() async throws {
         let harness = GuideHarness()
         try await harness.startStep()
-        try await harness.act(time: 10, verdict: .unknown)
-        await harness.clock.advance(GuideHarnessTiming.settle)
-        try await harness.reply { GuideHarness.verdict($0, matches: false, state: .unknown) }
+        try await harness.reachUncertainty(time: 10)
         let cleared = harness.clearedTargets
         await harness.clock.advance(1); await harness.clock.advance(1); await harness.clock.advance(1)
         XCTAssertEqual(harness.controller.task?.phase, .uncertain)
@@ -157,5 +153,30 @@ final class GuideTimingTests: XCTestCase {
         try await harness.reply { _ in GuidePresentation(kind: .clarification, text: "Anything else?") }
         XCTAssertEqual(harness.controller.status, "Question for you · answer in Quick Ask")
         XCTAssertTrue(harness.controller.awaitingClarification)
+    }
+
+    func testUndecidableOutcomeLooksOnceAtTheCurrentStateBeforeUncertainty() async throws {
+        let harness = GuideHarness()
+        try await harness.startStep()
+        try await harness.act(time: 10, verdict: .unknown)
+        await harness.clock.advance(GuideHarnessTiming.settle)
+        try await harness.reply { GuideHarness.verdict($0, matches: false, state: .unknown) }
+        let recovery = try await harness.nextTurn()
+        XCTAssertNotEqual(recovery.purpose, .verification)
+        XCTAssertNotNil(recovery.image)
+        XCTAssertEqual(harness.controller.metrics[.recoveries], 1)
+        await harness.agent.reply(GuideHarness.step(recovery, text: "Double-click Q3"))
+        await settle()
+        XCTAssertEqual(harness.controller.task?.phase, .waiting)
+        XCTAssertEqual(harness.controller.task?.milestones.count, 0, "recovery never claims the earlier step")
+    }
+
+    func testVerificationTurnCarriesTheInstruction() async throws {
+        let harness = GuideHarness()
+        try await harness.startStep()
+        harness.click(at: CGPoint(x: 15, y: 14), time: 10)
+        await harness.clock.advance(0.5)
+        let verification = try await harness.nextTurn()
+        XCTAssertTrue(verification.message.contains("The user was asked: Click Settings"))
     }
 }
