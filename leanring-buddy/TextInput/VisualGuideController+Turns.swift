@@ -117,7 +117,7 @@ extension VisualGuideController {
                     throw GuideHostRejection(message: "The target kept changing while it was being located · Retry when it settles.")
                 }
                 // A host-forced look is a new locate request, bounded by the relocation budget, not provider context.
-                metrics.count(.relocations); task?.beginRequest()
+                metrics.count(.relocations); task?.beginRequest(); trace("relocate reason=locate_pixels")
                 status = "Finding the control"; publish()
                 turn = try await captureTurn(message: "The view changed while you were locating the step (loading, animation or "
                                              + "hover). Locate the same step again in this capture and use its captureID.",
@@ -140,7 +140,7 @@ extension VisualGuideController {
         if task?.grant == nil { task?.authorize(currentTarget) }
         // A crop is only meaningful against the window capture it names.
         let crop = result.crop != nil && result.captureID == lastContext?.captureID ? result.crop : nil
-        return try await captureTurn(message: "Requested approved context. " + recoveryMessage(), crop: crop, current: current)
+        return try await captureTurn(message: task.map(GuideHostMessages.requestedContext) ?? "", crop: crop, current: current)
     }
 
     /// Resolves display consent for the current request without capturing anything.
@@ -223,6 +223,9 @@ extension VisualGuideController {
             // A step that arrives during a temporary interruption waits; it is revalidated before it is shown.
             if task?.phase == .paused { status = "Next step ready · continues when you return"; return }
             try task?.show(result); status = waitingStatus(result)
+            if let previous = recoveringMilestone {
+                trace("recovery sameMilestone=\((result.milestone ?? result.text) == previous)"); recoveringMilestone = nil
+            }
             stepScreenRect = rect; stepWindowBounds = environment.bounds(target)
             if let completedAt = lastAdvanceAt { metrics.sample(.nextStep, seconds: environment.uptime() - completedAt); lastAdvanceAt = nil }
             if let startedAt = taskStartedAt { metrics.sample(.firstInstruction, seconds: environment.uptime() - startedAt); taskStartedAt = nil }

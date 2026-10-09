@@ -108,6 +108,8 @@ final class VisualGuideController: ObservableObject {
     var activationWatch: GuideEventSources?
     var stepWindowBounds: CGRect?
     var lastAdvanceAt: TimeInterval?
+    /// Milestone a recovery look started from, to log whether the provider re-presented it (bool only).
+    var recoveringMilestone: String?
     /// Request time of the current task until its first instruction is shown.
     var taskStartedAt: TimeInterval?
     /// Metrics are per task; logged once when the task completes, finishes manually or ends.
@@ -177,8 +179,8 @@ final class VisualGuideController: ObservableObject {
         task?.beginRequest()
         pendingEffort = effort
         let purpose = sideQuestion ? "Related user question; preserve active task. A different goal must be task_proposal."
-            : (continuingClarification ? "User reply to clarification; continue the existing goal or propose a different task." : "User goal; choose presentation.")
-        launch(message: purpose + "\n" + text, captureFirst: explicitlyVisual)
+            : (continuingClarification ? "User reply to clarification; continue the existing goal or propose a different task." : nil)
+        launch(message: purpose.map { $0 + "\n" + text } ?? GuideHostMessages.userGoal(text), captureFirst: explicitlyVisual)
     }
 
     var walkthroughActive: Bool {
@@ -241,9 +243,14 @@ final class VisualGuideController: ObservableObject {
     }
     /// A matched interaction is an attempt, acknowledged locally before any provider latency; it is never success.
     func attemptObserved() {
-        guard task?.historyIndex == nil, let phase = task?.phase, phase == .waiting || phase == .uncertain else { return }
-        if phase == .waiting { guard let context = lastContext, task?.isCurrent(context) == true else { return } }
-        guard task?.recordAttempt() == true else { return }
+        guard task?.historyIndex == nil, let phase = task?.phase, phase == .waiting || phase == .uncertain else {
+            trace("attempt ignored phase=" + String(describing: task?.phase)); return
+        }
+        if phase == .waiting {
+            guard let context = lastContext, task?.isCurrent(context) == true else { trace("attempt ignored stale_context"); return }
+        }
+        guard task?.recordAttempt() == true else { trace("attempt ignored state"); return }
+        trace("attempt accepted phase=" + String(describing: phase))
         targetGuard?.cancel(); targetGuard = nil
         metrics.count(.attempts)
         status = "Got it · checking"; publish()
@@ -351,9 +358,7 @@ final class VisualGuideController: ObservableObject {
             if task?.phase == .waiting || task?.phase == .uncertain { invalidateTarget(reason: reason) }
             return
         }
-        #if DEBUG
-        Logger(subsystem: "clicky", category: "guide").info("relocating target reason=\(reason, privacy: .public)")
-        #endif
+        trace("relocate reason=" + reason)
         metrics.count(.relocations)
         stopObservation(); onClearTarget?(); lastImage = nil; lastContext = nil
         task?.changed(); task?.beginRequest(); sideQuestion = false
@@ -363,13 +368,19 @@ final class VisualGuideController: ObservableObject {
     }
     func invalidateTarget(reason: String = "observed_change") {
         observer.cancelPendingMousePress(); observer.stop()
-        #if DEBUG
-        Logger(subsystem: "clicky", category: "guide").info("target invalidated reason=\(reason, privacy: .public)")
-        #endif
+        trace("invalidate reason=" + reason)
         targetGuard?.cancel(); targetGuard = nil
         let wasUncertain = task?.phase == .uncertain
         task?.changed(); onClearTarget?(); lastImage = nil; lastContext = nil
         status = wasUncertain ? "View changed · Find again or Re-check" : "View changed · Check now or Retry"; publish()
+    }
+    /// DEBUG-only content-free event codes (kinds, reasons, booleans, timings), persisted so a native run can be
+    /// reconstructed. Callers pass fixed codes only, never prompts, replies, targets, AX values or images.
+    func trace(_ event: String) {
+        #if DEBUG
+        Logger(subsystem: "clicky", category: "guide").notice(
+            "step=\(self.task?.stepRevision ?? 0, privacy: .public) attempt=\(self.task?.attemptEpoch ?? 0, privacy: .public) \(event, privacy: .public)")
+        #endif
     }
     /// Content-free counters and latencies for the task that just ended (DEBUG unified log only).
     func logTaskMetrics() {
@@ -391,16 +402,7 @@ final class VisualGuideController: ObservableObject {
         guard provider == .preview, !isBusy, task == nil || task?.phase == .completed else { return }
         endTask(); demo = GuidePreviewFixture(); status = "Demo · no AI · manual checklist"; publish()
     }
-    func recoveryMessage() -> String {
-        guard let task else { return "" }
-        var message = "Task: " + task.goal
-        if !task.milestones.isEmpty {
-            message += "\nCompleted milestones: " + task.milestones.map { $0.instruction + " (" + $0.completion.rawValue + ")" }.joined(separator: "; ")
-        }
-        // Naming a step only when one exists keeps pointing questions from being read as walkthroughs.
-        if let step = task.step { message += "\nCurrent step: " + step.text }
-        return message
-    }
+    func recoveryMessage() -> String { task.map(GuideHostMessages.context) ?? "" }
     private func availableTargets() -> [(target: WindowCaptureTarget, label: String)] {
         let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         return raw.compactMap { entry in

@@ -25,9 +25,7 @@ extension VisualGuideController {
         guard let before = fingerprint(image, rect: rect), let after = fingerprint(fresh, rect: rect) else { return false }
         let matches = image.pixelWidth == fresh.pixelWidth && image.pixelHeight == fresh.pixelHeight
             && before == after
-        #if DEBUG
-        if !matches { Logger(subsystem: "clicky", category: "guide").info("evidence freshness mismatch") }
-        #endif
+        if !matches { trace("evidence_rejected reason=pixels") }
         return matches
     }
     func stopObservation() {

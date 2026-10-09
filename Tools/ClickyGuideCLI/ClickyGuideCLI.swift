@@ -11,8 +11,9 @@ struct ClickyGuideCLI {
     static func main() async {
         do {
             let options = Array(CommandLine.arguments.dropFirst())
+            if options.first == "replay" { try await GuideReplay.run(Array(options.dropFirst())); return }
             guard options.count == 3, let provider = AgentProvider(rawValue: options[0]), provider != .preview else {
-                throw AskError.protocolFailure("Usage: clicky-guide claude|codex EXECUTABLE CLICKY_PROFILE_ROOT. UTF-8 newline-separated test requests on stdin. Prints presentation kinds only; never saves content.")
+                throw AskError.protocolFailure("Usage: clicky-guide claude|codex EXECUTABLE CLICKY_PROFILE_ROOT. UTF-8 newline-separated test requests on stdin. Prints presentation kinds only; never saves content. Fixture replay: clicky-guide replay ... (see scripts/replay-guide-fixture.sh).")
             }
             let lines = String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
                 .split(separator: "\n").map(String.init)

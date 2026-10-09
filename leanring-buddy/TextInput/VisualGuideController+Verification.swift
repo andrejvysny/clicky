@@ -16,8 +16,11 @@ extension VisualGuideController {
     func verificationLoop(current: UInt64) async throws {
         guard let step = task?.step, let outcome = step.outcome, let target = currentTarget else { throw AttachmentError.noTarget }
         let started = environment.uptime()
+        let axNow = environment.outcomeMatches(outcome, target)
+        trace("verify ax=" + (axNow.map { $0 ? "true" : "false" } ?? "undecidable") + " axBefore="
+              + (axOutcomeWasSatisfied.map { $0 ? "true" : "false" } ?? "undecidable"))
         // A predicate already true before the step cannot prove this step; vision decides instead.
-        if axOutcomeWasSatisfied != true, environment.outcomeMatches(outcome, target) != nil,
+        if axOutcomeWasSatisfied != true, axNow != nil,
            try await waitForLocalOutcome(outcome, target: target, current: current) {
             guard task?.confirmLocally() == true else { throw AttachmentError.targetChanged }
             metrics.count(.localConfirmations); recordVerified(since: started)
@@ -28,12 +31,7 @@ extension VisualGuideController {
         for check in 0..<2 {
             if check > 0 { try await settle(after: last.state, current: current) }
             status = "Checking"; publish()
-            // The instruction gives the verdict its context: the visible result of that action, not a literal match
-            // of the outcome wording. unknown is only for an outcome area that cannot be seen.
-            let turn = try await captureTurn(message: "The user was asked: " + step.text
-                                             + "\nVerify this intended outcome only: " + outcome.description
-                                             + "\nJudge whether the current capture shows the result of that action. Use unknown only when "
-                                             + "the relevant area is not visible; if it is visible but different, use contradicted.",
+            let turn = try await captureTurn(message: GuideHostMessages.verification(instruction: step.text, outcome: outcome.description),
                                              current: current)
             guard let context = turn.context else { throw AttachmentError.targetChanged }
             metrics.count(.visionChecks)
@@ -43,6 +41,7 @@ extension VisualGuideController {
             let state = result.outcomeState ?? .unknown
             var confirmed = verdict && state == .confirmed
             if confirmed { confirmed = try await evidenceStillCurrent(current: current, evidenceTarget: result.evidenceTarget) }
+            trace("verdict check=\(check) state=\(state.rawValue) accepted=\(confirmed)")
             last = (state, result.evidence ?? "")
             if task?.checked(matches: confirmed, context: context) == true {
                 recordVerified(since: started)
@@ -54,7 +53,8 @@ extension VisualGuideController {
         // an outcome worded differently from what the app shows: look once at the current state and continue from
         // there, never assuming success. A pending app has already had its bounded wait.
         if last.state == .contradicted || last.state == .unknown, task?.beginRecovery() == true {
-            metrics.count(.recoveries)
+            metrics.count(.recoveries); recoveringMilestone = step.milestone ?? step.text
+            trace("recovery after=" + last.state.rawValue)
             status = "Finding the next step"; publish()
             let turn = try await captureTurn(message: recoveryMessage() + "\nThe intended outcome was not confirmed: " + last.evidence
                 + "\nInspect the current state. If the user took another route or is ahead, present the step that continues "
@@ -72,8 +72,7 @@ extension VisualGuideController {
         metrics.count(.goalChecks)
         status = "Checking the whole goal"; publish()
         let checks = task?.plan.goalChecks.isEmpty == false ? task?.plan.goalChecks ?? [] : [task?.goal ?? ""]
-        let turn = try await captureTurn(message: "Final verification. Every stored goal check must hold now in this capture:\n- "
-                                         + checks.joined(separator: "\n- ") + "\nmatches=true only if all hold.", current: current)
+        let turn = try await captureTurn(message: GuideHostMessages.goalCheck(checks), current: current)
         guard let context = turn.context else { throw AttachmentError.targetChanged }
         let result = try await request(turn, current: current)
         guard result.kind == .verification_result, result.captureID == context.captureID,
@@ -125,8 +124,7 @@ extension VisualGuideController {
         lastAdvanceAt = environment.uptime()
         task?.beginRequest()
         status = "Finding the next step"; publish()
-        let next = try await captureTurn(message: recoveryMessage() + "\n" + note
-                                         + " Locate the next useful step or return task_completed if every goal check holds.", current: current)
+        let next = try await captureTurn(message: task.map { GuideHostMessages.next($0, note: note) } ?? note, current: current)
         try await presentationLoop(next, current: current)
     }
 

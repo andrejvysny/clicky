@@ -1,0 +1,31 @@
+{
+  "fixture": "workflow.html",
+  "goal": "Create a new report, open the Q3 folder, open Options, turn on Include charts, open Summary and publish it.",
+  "states": {
+    "start": { "script": [] },
+    "folders": { "script": ["new"] },
+    "start_hover_new": { "script": [], "hover": "#new" },
+    "q3": { "script": ["new", "q3"] },
+    "spinner": { "script": ["new", "q3", "options"] },
+    "options": { "script": ["new", "q3", "options", "optionsLoaded"] },
+    "charts": { "script": ["new", "q3", "options", "optionsLoaded", "charts"] },
+    "summary": { "script": ["new", "q3", "options", "optionsLoaded", "charts", "summary"] },
+    "summary_hover_publish": { "script": ["new", "q3", "options", "optionsLoaded", "charts", "summary"], "hover": "#publish" },
+    "published": { "script": ["new", "q3", "options", "optionsLoaded", "charts", "summary", "publish"] }
+  },
+  "steps": [
+    { "from": "start", "target": "#new",
+      "cases": [ { "after": "folders", "truth": "confirmed" }, { "after": "start_hover_new", "truth": "negative" } ] },
+    { "from": "folders", "target": "#q3",
+      "cases": [ { "after": "q3", "truth": "confirmed" }, { "after": "folders", "truth": "negative" } ] },
+    { "from": "q3", "target": "#options",
+      "cases": [ { "after": "options", "truth": "confirmed" }, { "after": "spinner", "truth": "pending" }, { "after": "q3", "truth": "negative" } ] },
+    { "from": "options", "target": "#charts",
+      "cases": [ { "after": "charts", "truth": "confirmed" }, { "after": "options", "truth": "negative" } ] },
+    { "from": "charts", "target": "#summary",
+      "cases": [ { "after": "summary", "truth": "confirmed" }, { "after": "charts", "truth": "negative" } ] },
+    { "from": "summary", "target": "#publish",
+      "cases": [ { "after": "published", "truth": "confirmed" }, { "after": "summary_hover_publish", "truth": "negative" } ] }
+  ],
+  "goal_cases": [ { "state": "published", "truth": "confirmed" }, { "state": "summary", "truth": "negative" } ]
+}
