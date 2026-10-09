@@ -1,0 +1,11 @@
+{
+  "name": "clicky-bridge",
+  "publisher": "clicky-local",
+  "version": "0.1.0",
+  "displayName": "Clicky Bridge",
+  "description": "Opt-in local bridge that lets Clicky read editor state and insert text. Never executes anything.",
+  "engines": { "vscode": "^1.93.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "capabilities": { "untrustedWorkspaces": { "supported": true } }
+}
