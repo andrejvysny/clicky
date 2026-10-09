@@ -1,16 +1,20 @@
 import AppKit
 import ApplicationServices
+#if canImport(ClickyCore)
+import ClickyCore
+#endif
 
 @MainActor
 final class GuideObserver {
+    let environment: GuideEnvironment
     var onEvidence: (() -> Void)?
     var onAction: (() -> Void)?
     var onInteractionBegan: (() -> Void)?
     var onInvalidated: (() -> Void)?
     var onUnavailable: (() -> Void)?
-    private var mouseMonitor: Any?
-    private var keyMonitor: Any?
-    private var activationObserver: NSObjectProtocol?
+    private var sources: GuideEventSources?
+    /// True while observing; tests use it to confirm a stopped observer cannot match late events.
+    var isObserving: Bool { target != nil }
     private var axObserver: AXObserver?
     private var observedElements: [AXUIElement] = []
     private var pending: Task<Void, Never>?
@@ -23,15 +27,18 @@ final class GuideObserver {
     private var expectedFieldFrame: CGRect?
     private var hadFieldFocus = false
 
+    /// Optional so the default is resolved on the main actor rather than in a nonisolated default argument.
+    init(environment: GuideEnvironment? = nil) { self.environment = environment ?? .live }
+
     var isEditingExpectedField: Bool {
-        guard let expectedField, let target, let focused = ScopedAccessibility.focusedElement(target) else { return false }
+        guard let expectedField, let target, let focused = environment.focusedElement(target) else { return false }
         return CFEqual(expectedField, focused)
     }
 
     var expectedFieldGeometryIsCurrent: Bool {
         guard let expectedField else { return true }
         guard let expectedFieldFrame, let target,
-              let current = ScopedAccessibility.fieldFrame(expectedField, target: target) else { return false }
+              let current = environment.fieldFrame(expectedField, target) else { return false }
         return current == expectedFieldFrame
     }
 
@@ -43,101 +50,80 @@ final class GuideObserver {
     func cancelPendingMousePress() { mouseRelease?.cancel() }
 
     func start(step: GuidePresentation, target: WindowCaptureTarget, rect: CGRect) {
-        stop(); self.target = target; targetBounds = ScopedAccessibility.bounds(target)
+        stop()
         guard let action = step.action else { return }
+        self.target = target; targetBounds = environment.bounds(target)
         matcher = GuideInteractionMatcher(action: action, target: rect)
         mouseRelease = GuideMouseReleaseTracker(target: rect)
-        mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .leftMouseUp, .rightMouseUp,
-                                                                  .leftMouseDragged, .rightMouseDragged, .scrollWheel]) { [weak self] event in
-            let position = event.locationInWindow
-            let button = event.type == .rightMouseUp || event.type == .rightMouseDown || event.type == .rightMouseDragged ? 1 : 0
-            let scroll = event.type == .scrollWheel
-            let dragged = event.type == .leftMouseDragged || event.type == .rightMouseDragged
-            let pressed = event.type == .leftMouseDown || event.type == .rightMouseDown
-            let count = scroll ? 0 : event.clickCount; let time = event.timestamp
-            MainActor.assumeIsolated {
-                self?.mouse(position: position, button: button, count: count, time: time, scroll: scroll, pressed: pressed, dragged: dragged)
-            }
-        }
-        if AXIsProcessTrusted(), action.kind == .key || action.kind == .field_commit {
-            keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                // Extract no characters; unrelated key metadata is discarded synchronously.
-                MainActor.assumeIsolated { self?.key(event) }
-            }
-        }
-        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
-                                                                              object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.activationChanged() }
-        }
-        expectedField = action.kind == .field_commit ? ScopedAccessibility.field(target, rect: rect) : nil
-        expectedFieldFrame = expectedField.flatMap { ScopedAccessibility.fieldFrame($0, target: target) }
-        if let expectedField, let focused = ScopedAccessibility.focusedElement(target) { hadFieldFocus = CFEqual(expectedField, focused) }
-        installAX(target)
+        let keys = environment.accessibilityTrusted() && (action.kind == .key || action.kind == .field_commit)
+        sources = environment.installEventSources(self, keys)
+        expectedField = action.kind == .field_commit ? environment.field(target, rect) : nil
+        expectedFieldFrame = expectedField.flatMap { environment.fieldFrame($0, target) }
+        if let expectedField, let focused = environment.focusedElement(target) { hadFieldFocus = CFEqual(expectedField, focused) }
+        if environment.accessibilityTrusted() { installAX(target) }
     }
     func stop() {
         generation &+= 1; pending?.cancel(); pending = nil
-        if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
-        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
-        if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
+        sources?.remove(); sources = nil
         if let axObserver { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(axObserver), .commonModes) }
-        mouseMonitor = nil; keyMonitor = nil; activationObserver = nil; axObserver = nil
+        axObserver = nil
         observedElements = []; matcher = nil; target = nil
         mouseRelease = nil
         expectedField = nil; expectedFieldFrame = nil; hadFieldFocus = false
     }
-    private func mouse(position: CGPoint, button: Int, count: Int, time: Double, scroll: Bool, pressed: Bool, dragged: Bool) {
+    /// Mouse metadata from the installed event source (or a test), in global top-left points.
+    func receiveMouse(_ event: GuideMouseEvent) {
         guard let target else { return }
-        if dragged { mouseRelease?.cancel(); return }
-        guard ScopedAccessibility.focused(target) else { mouseRelease?.cancel(); return }
-        if scroll { mouseRelease?.cancel(); onInvalidated?(); return }
-        guard ScopedAccessibility.bounds(target) == targetBounds else { mouseRelease?.cancel(); onInvalidated?(); return }
-        let primary = (NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.screens.first)?.frame.height ?? 0
-        let point = CGPoint(x: position.x, y: primary - position.y)
+        if event.dragged { mouseRelease?.cancel(); return }
+        guard environment.focused(target) else { mouseRelease?.cancel(); return }
+        if event.scroll { mouseRelease?.cancel(); onInvalidated?(); return }
+        guard environment.bounds(target) == targetBounds else { mouseRelease?.cancel(); onInvalidated?(); return }
+        let point = event.point
         guard targetBounds?.contains(point) == true else { mouseRelease?.cancel(); return }
-        if pressed {
-            if mouseRelease?.began(button: button, count: count, point: point, timestamp: time) == true { onInteractionBegan?() }
+        if event.pressed {
+            if mouseRelease?.began(button: event.button, count: event.count, point: point, timestamp: event.timestamp) == true { onInteractionBegan?() }
             return
         }
-        guard let releaseCount = mouseRelease?.released(button: button, count: count, point: point, timestamp: time),
-              matcher?.mouse(button: button, count: releaseCount, point: point, timestamp: time) == true else { return }
+        guard let releaseCount = mouseRelease?.released(button: event.button, count: event.count, point: point, timestamp: event.timestamp),
+              matcher?.mouse(button: event.button, count: releaseCount, point: point, timestamp: event.timestamp) == true else { return }
         onAction?()
         schedule(delay: UInt64((NSEvent.doubleClickInterval + 0.15) * 1_000_000_000))
     }
-    private func key(_ event: NSEvent) {
-        guard let target, ScopedAccessibility.focused(target) else { return }
+    func receiveKey(code: UInt16, modifiers: UInt64, timestamp: Double, repeated: Bool) {
+        guard let target, environment.focused(target) else { return }
         if matcher?.action.kind == .field_commit, expectedField != nil,
            !hadFieldFocus, !isEditingExpectedField { return }
-        let modifiers = UInt64(event.modifierFlags.intersection([.command, .option, .shift, .control]).rawValue)
-        guard matcher?.key(code: event.keyCode, modifiers: modifiers, timestamp: event.timestamp, repeated: event.isARepeat) == true else { return }
+        guard matcher?.key(code: code, modifiers: modifiers, timestamp: timestamp, repeated: repeated) == true else { return }
         onAction?()
         schedule(delay: 350_000_000)
     }
-    private func activationChanged() {
+    func receiveActivation() {
         // Clicking the desktop activates Finder; a display target is not tied to any app.
         guard let target, target.displayIdentifier == nil,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier != target.processIdentifier else { return }
+              environment.frontmostProcess() != target.processIdentifier else { return }
         mouseRelease?.cancel()
         onUnavailable?()
     }
     private func schedule(delay: UInt64) {
         pending?.cancel(); let current = generation
         pending = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: delay) } catch { return }
+            do { try await self?.environment.sleep(delay) } catch { return }
             guard let self, self.generation == current else { return }
             self.onEvidence?()
         }
     }
     private func installAX(_ target: WindowCaptureTarget) {
         guard let window = ScopedAccessibility.window(target) else { return }
+        // Bubbled AX notifications only schedule coalesced checks; tests drive `receiveAccessibility` directly.
         var observer: AXObserver?
         let callback: AXObserverCallback = { _, element, notification, pointer in
             guard let pointer else { return }
             let owner = Unmanaged<GuideObserver>.fromOpaque(pointer).takeUnretainedValue()
-            MainActor.assumeIsolated { owner.axChanged(notification as String, element: element) }
+            MainActor.assumeIsolated { owner.receiveAccessibility(notification as String) }
         }
         guard AXObserverCreate(target.processIdentifier, callback, &observer) == .success, let observer else { return }
         axObserver = observer; observedElements = [window, AXUIElementCreateApplication(target.processIdentifier)]
-        if let field = ScopedAccessibility.focusedElement(target) { observedElements.append(field) }
+        if let field = environment.focusedElement(target) { observedElements.append(field) }
         if let expectedField { observedElements.append(expectedField) }
         let notifications = [kAXWindowMovedNotification, kAXWindowResizedNotification, kAXUIElementDestroyedNotification,
                              kAXFocusedUIElementChangedNotification, kAXFocusedWindowChangedNotification, kAXValueChangedNotification,
@@ -149,7 +135,7 @@ final class GuideObserver {
         }
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
     }
-    private func axChanged(_ name: String, element: AXUIElement) {
+    func receiveAccessibility(_ name: String) {
         if [kAXWindowMovedNotification, kAXWindowResizedNotification].contains(name) { mouseRelease?.cancel(); onInvalidated?(); return }
         if name == kAXUIElementDestroyedNotification || name == kAXFocusedWindowChangedNotification { mouseRelease?.cancel(); onUnavailable?(); return }
         // Web controls can bubble these notifications from an ancestor, not the edited field.
@@ -158,7 +144,7 @@ final class GuideObserver {
            [kAXValueChangedNotification, kAXSelectedChildrenChangedNotification].contains(name) { return }
         if name == kAXFocusedUIElementChangedNotification {
             guard let expectedField, let target else { return }
-            let focused = ScopedAccessibility.focusedElement(target).map { CFEqual($0, expectedField) } ?? false
+            let focused = environment.focusedElement(target).map { CFEqual($0, expectedField) } ?? false
             if focused { hadFieldFocus = true; return }
             guard hadFieldFocus else { return }
             hadFieldFocus = false

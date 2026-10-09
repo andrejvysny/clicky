@@ -23,7 +23,14 @@ nonisolated public struct GuideAgentTurn: Sendable {
     }
 }
 
-public actor GuideAgentSession {
+/// The provider conversation the walkthrough coordinator talks to; tests substitute a scripted fake.
+nonisolated public protocol GuideAgentRunning: Sendable {
+    func turn(_ request: GuideAgentTurn) async throws -> GuidePresentation
+    func identifier() async -> String?
+    func close() async
+}
+
+public actor GuideAgentSession: GuideAgentRunning {
     private let profile: GuideAgentProfile
     private let executable: URL
     private let validateProfile: Bool

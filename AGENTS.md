@@ -44,6 +44,8 @@ See [visual guide protocol](docs/VISUAL_GUIDE_PROTOCOL.md) and [native validatio
 | `TextInput/Core/JSONProtocol.swift`, `CodexConversation.swift` | Provider wire encoding/parsing and text-only permission behavior |
 | `TextInput/VisualGuideController*.swift` | Serialized task/capture/verification flow, recovery, automatic window/session display sharing, annotations |
 | `TextInput/GuideObserver.swift`, `ScopedAccessibility.swift` | Scoped expected events, bounded nonsecure AX reads, local fallback checks |
+| `TextInput/GuideEnvironment.swift` | Injectable native effects (clock, capture, AX, event sources, provider factory) for the coordinator and observer; `.live` in the app |
+| `TextInput/Core/GuideControlAvailability.swift` | Which island controls are enabled; End/Pause never wait for a busy turn |
 | `TextInput/Core/Guide*.swift` | Shared prompt/schema/host requests, task grants/evidence/provenance, clean provider transports and preview fixture |
 | `TextInput/Core/PopupPlacement.swift` | Testable point-space placement and clamping |
 | `TextInput/Core/ImageAttachment.swift` | Bounded PNG payloads, originating-window identity and per-presentation capture leases |
@@ -58,6 +60,7 @@ See [visual guide protocol](docs/VISUAL_GUIDE_PROTOCOL.md) and [native validatio
 | `scripts/audit-codex-isolation.mjs` | Temporary unauthenticated configuration/runtime-capability audit; no model inference or personal credential access |
 | `Tools/ClickyTextCLI/` | Legacy text diagnostic, not the app guide runner |
 | `Tests/ClickyCoreTests/` | Portable behavioral/process tests and offline Python fixture |
+| `Tests/ClickyGuideNativeTests/` | macOS-only coordinator tests: the production `VisualGuideController`/`GuideObserver` compiled by SwiftPM with a fake clock, screen, AX and scripted provider |
 | `leanring-buddyUITests/QuickAskUITests.swift` | Five Mac-only preview/guide demo UI tests |
 
 Paths above are relative to `leanring-buddy/` unless their directory is at repository root.
@@ -74,7 +77,7 @@ Open `leanring-buddy.xcodeproj` in **Xcode 26+ / Swift 6.2+** (the target uses `
 
 The Xcode app compiles the synchronized `leanring-buddy/TextInput/Core` files directly. Root `Package.swift` compiles the same files as ClickyCore in Swift 5 language mode with the app target's MainActor default isolation and approachable-concurrency features, and also builds `clicky-guide` and the legacy `clicky-text`. Core declarations are explicitly `nonisolated`; keep new Core types `nonisolated` so process readers never hop to the main actor. Do not link a duplicate ClickyCore copy into the app.
 
-Portable checks: `bash scripts/test-core.sh` with Swift 6.2+ and Python 3. App-source typecheck without building/signing: `bash scripts/typecheck-app.sh` and `--debug`; see `docs/MAC_VALIDATION.md`. Never terminal `xcodebuild`. Cloud installation: `bash scripts/cloud-setup.sh` uses the official signed Swift 6.2.3 Debian toolchain and pins its signing fingerprint. Caches stay outside tracked source. Linux Foundation subprocess lifecycle tests require local socket IPC; if sandboxing blocks the wakeup socket pair, run the test command with the appropriate execution permission rather than disabling tests.
+Portable checks: `bash scripts/test-core.sh` with Swift 6.2+ and Python 3. On macOS the same command also builds target `ClickyGuideNative` from the app's coordinator/observer sources (Core imported via `#if canImport(ClickyCore)`) and runs `ClickyGuideNativeTests`; these use injected `GuideEnvironment` fakes, touch no TCC-protected API and are not native event/focus or GUI evidence. App-source typecheck without building/signing: `bash scripts/typecheck-app.sh` and `--debug`; see `docs/MAC_VALIDATION.md`. Never terminal `xcodebuild`. Cloud installation: `bash scripts/cloud-setup.sh` uses the official signed Swift 6.2.3 Debian toolchain and pins its signing fingerprint. Caches stay outside tracked source. Linux Foundation subprocess lifecycle tests require local socket IPC; if sandboxing blocks the wakeup socket pair, run the test command with the appropriate execution permission rather than disabling tests.
 
 Mac preflight: `bash scripts/mac-preflight.sh`. Detailed acceptance, real-provider compatibility, and remaining limitations: `docs/MAC_VALIDATION.md`. AppKit syntax parsing in Linux is not Mac typechecking or GUI validation. Never claim native tests ran without a Mac.
 

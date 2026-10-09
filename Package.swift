@@ -13,7 +13,7 @@ let appTargetSwiftSettings: [SwiftSetting] = [
 
 let package = Package(
     name: "ClickyCore",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("14.2")],
     products: [
         .library(name: "ClickyCore", targets: ["ClickyCore"]),
         .executable(name: "clicky-text", targets: ["ClickyTextCLI"]),
@@ -28,3 +28,17 @@ let package = Package(
     ],
     swiftLanguageModes: [.v5]
 )
+
+#if os(macOS)
+// The production walkthrough coordinator and observer, compiled from the app's own sources with injected
+// native effects, so coordinator tests exercise the shipped code without a signed build or TCC prompts.
+package.targets += [
+    .target(name: "ClickyGuideNative", dependencies: ["ClickyCore"], path: "leanring-buddy/TextInput",
+            exclude: ["Core"],
+            sources: ["VisualGuideController.swift", "VisualGuideController+Turns.swift", "VisualGuideController+Freshness.swift",
+                      "GuideObserver.swift", "GuideEnvironment.swift", "ScopedAccessibility.swift", "WindowSnapshotCapture.swift"],
+            swiftSettings: appTargetSwiftSettings),
+    .testTarget(name: "ClickyGuideNativeTests", dependencies: ["ClickyGuideNative", "ClickyCore"], path: "Tests/ClickyGuideNativeTests",
+                swiftSettings: appTargetSwiftSettings),
+]
+#endif

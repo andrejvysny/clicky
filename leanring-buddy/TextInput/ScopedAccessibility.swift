@@ -1,5 +1,8 @@
 import AppKit
 import ApplicationServices
+#if canImport(ClickyCore)
+import ClickyCore
+#endif
 
 @MainActor
 enum ScopedAccessibility {

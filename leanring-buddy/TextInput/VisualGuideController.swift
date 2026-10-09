@@ -2,6 +2,9 @@ import AppKit
 import Combine
 import ImageIO
 import OSLog
+#if canImport(ClickyCore)
+import ClickyCore
+#endif
 
 /// A located mark in global top-left points, ready for the overlay.
 struct GuideMark {
@@ -55,7 +58,7 @@ final class VisualGuideController: ObservableObject {
     var profileRoot = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Clicky/Agents", isDirectory: true)
 
-    var agent: GuideAgentSession?
+    var agent: (any GuideAgentRunning)?
     var work: Task<Void, Never>?
     var lastImage: PNGImageAttachment?
     var lastContext: GuideCaptureContext?
@@ -76,11 +79,15 @@ final class VisualGuideController: ObservableObject {
     var agentEffort: AskEffort = .low
     /// Effort that actually produced the latest reply, for the bubble footer.
     var replyEffort: AskEffort { provider == .claude ? agentEffort : activeEffort }
-    var observer = GuideObserver()
+    let environment: GuideEnvironment
+    let observer: GuideObserver
     var targetGuard: Task<Void, Never>?
     var targetGuardSuspendedUntil = Date.distantPast
 
-    init() {
+    init(environment: GuideEnvironment? = nil) {
+        let environment = environment ?? .live
+        self.environment = environment
+        observer = GuideObserver(environment: environment)
         observer.onAction = { [weak self] in
             guard let self, let context = lastContext, task?.phase == .waiting, task?.isCurrent(context) == true else { return }
             targetGuard?.cancel(); targetGuard = nil
@@ -88,7 +95,8 @@ final class VisualGuideController: ObservableObject {
         }
         observer.onInteractionBegan = { [weak self] in
             // Button press/hover feedback is expected until the corresponding mouse-up is observed.
-            self?.targetGuardSuspendedUntil = Date().addingTimeInterval(NSEvent.doubleClickInterval + 0.25)
+            guard let self else { return }
+            targetGuardSuspendedUntil = environment.now().addingTimeInterval(NSEvent.doubleClickInterval + 0.25)
         }
         observer.onEvidence = { [weak self] in self?.checkNow() }
         observer.onInvalidated = { [weak self] in self?.invalidateTarget() }
@@ -107,7 +115,7 @@ final class VisualGuideController: ObservableObject {
         onClearAnnotation?()
         // With no focused window (e.g. the desktop) the display under the pointer at ask time is the shared target.
         let target = target ?? (sharingPreference != .off && displaySharingApproved
-            ? WindowSnapshotCapture.displayTarget(containing: Self.pointerInTopLeftPoints()) : nil)
+            ? environment.displayTarget(environment.pointer()) : nil)
         let continuingClarification = awaitingClarification
         // Only a walkthrough the user can see is preserved; a task left paused by an error is simply replaced.
         sideQuestion = walkthroughActive && !continuingClarification
@@ -155,7 +163,7 @@ final class VisualGuideController: ObservableObject {
         guard currentTarget?.displayIdentifier == nil || displaySharingApproved else {
             error = "Display sharing is off. Enable it in Settings or choose a window."; publish(); return
         }
-        guard !isBusy, let currentTarget, ScopedAccessibility.focused(currentTarget) else {
+        guard !isBusy, let currentTarget, environment.focused(currentTarget) else {
             error = "Activate the approved target window, then Resume; or choose Change target."; publish(); return
         }
         task?.resume(); retry()
@@ -224,11 +232,6 @@ final class VisualGuideController: ObservableObject {
         list.addItems(withTitles: targets.map(\.label))
         picker.accessoryView = list; picker.addButton(withTitle: "Share selected window"); picker.addButton(withTitle: "Cancel")
         if picker.runModal() == .alertFirstButtonReturn { authorizeWindow(targets[list.indexOfSelectedItem].target) }
-    }
-    static func pointerInTopLeftPoints() -> CGPoint {
-        let pointer = NSEvent.mouseLocation
-        let height = (NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.screens.first)?.frame.height ?? 0
-        return CGPoint(x: pointer.x, y: height - pointer.y)
     }
     func keepTask() { proposal = nil; task?.pause(); status = "Current task preserved · Resume when ready"; publish() }
     func acceptProposal() {

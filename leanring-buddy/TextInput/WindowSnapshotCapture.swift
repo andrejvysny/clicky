@@ -3,6 +3,9 @@ import ApplicationServices
 import ImageIO
 import ScreenCaptureKit
 import UniformTypeIdentifiers
+#if canImport(ClickyCore)
+import ClickyCore
+#endif
 
 @MainActor
 enum WindowSnapshotCapture {

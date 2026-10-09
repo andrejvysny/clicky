@@ -1,6 +1,9 @@
 import AppKit
 import ImageIO
 import OSLog
+#if canImport(ClickyCore)
+import ClickyCore
+#endif
 
 extension VisualGuideController {
     func launch(message: String, captureFirst: Bool = false, verifying: Bool = false,
@@ -39,12 +42,11 @@ extension VisualGuideController {
         }
     }
 
-    private func getAgent(effort: AskEffort) throws -> GuideAgentSession {
+    private func getAgent(effort: AskEffort) throws -> any GuideAgentRunning {
         if let agent { return agent }
         guard let executable, task != nil else { throw AskError.missingExecutable(provider.displayName) }
-        let profile = try GuideAgentProfile(provider: provider, root: profileRoot, taskID: UUID(), effort: effort)
         agentGeneration &+= 1; let generation = agentGeneration
-        let value = GuideAgentSession(profile: profile, executable: executable, onUnexpectedExit: { [weak self] message in
+        let value = try environment.makeAgent(provider, executable, profileRoot, effort, { [weak self] message in
             guard let controller = self else { return }
             Task { @MainActor in
                 guard controller.agentGeneration == generation else { return }
@@ -59,7 +61,7 @@ extension VisualGuideController {
         try check(current)
         var turn = original; turn.effort = activeEffort
         let value = try getAgent(effort: activeEffort)
-        if turn.image != nil { lastSent = Date() }
+        if turn.image != nil { lastSent = environment.now() }
         let result = try await value.turn(turn)
         try check(current)
         guard turn.purpose.permits(result.kind) else {
@@ -121,7 +123,7 @@ extension VisualGuideController {
         try check(current)
         guard let target = currentTarget, let task, task.grant?.paused == false else { throw AttachmentError.noTarget }
         guard target.displayIdentifier == nil || displaySharingApproved else { throw AttachmentError.noTarget }
-        guard await ScopedAccessibility.waitForFocus(target) else { throw AttachmentError.targetChanged }
+        guard await environment.waitForFocus(target) else { throw AttachmentError.targetChanged }
         try check(current)
         if task.phase != .verifying { try self.task?.requestContext() }
         var region: CGRect?
@@ -130,20 +132,20 @@ extension VisualGuideController {
                   let rect = context.screenRect(crop) else { throw AttachmentError.targetChanged }
             region = rect
         }
-        let related = ScopedAccessibility.related(target)
+        let related = environment.related(target)
         let windows = [target] + related
         let bounds = windows.reduce(into: [UInt32: CGRect]()) { result, window in
-            result[window.windowIdentifier] = ScopedAccessibility.bounds(window)
+            result[window.windowIdentifier] = environment.bounds(window)
         }
         guard bounds.count == windows.count else { throw AttachmentError.targetChanged }
         for child in related { self.task?.authorizeRelated(child) }
         guard let lease = try self.task?.beginCapture() else { throw AttachmentError.noTarget }
         status = "Inspecting approved window"; publish()
-        let image = try await WindowSnapshotCapture.capture(target, region: region, relatedTargets: related)
+        let image = try await environment.capture(target, region, related, nil)
         try check(current)
         guard let state = self.task else { throw AttachmentError.targetChanged }
-        guard ScopedAccessibility.focused(target), windows.allSatisfy({
-            ScopedAccessibility.bounds($0) == bounds[$0.windowIdentifier]
+        guard environment.focused(target), windows.allSatisfy({
+            environment.bounds($0) == bounds[$0.windowIdentifier]
         }) else { throw AttachmentError.targetChanged }
         let context = try GuideCaptureContext(image: image, target: target, task: state, relatedTargets: related)
         guard self.task?.accept(context, lease: lease) == true else { throw AttachmentError.targetChanged }
@@ -165,7 +167,7 @@ extension VisualGuideController {
             guard sharingPreference != .off else { throw AskError.protocolFailure("Enable task-window sharing to start a walkthrough. Your explicit image can still support explanations.") }
             guard let image = lastImage, let context = lastContext, let target = currentTarget,
                   result.captureID == context.captureID, let pixelTarget = result.target,
-                  let rect = context.screenRect(pixelTarget), windowsStillCurrent(context), ScopedAccessibility.focused(target) else { throw AttachmentError.targetChanged }
+                  let rect = context.screenRect(pixelTarget), windowsStillCurrent(context), environment.focused(target) else { throw AttachmentError.targetChanged }
             let currentImage = try await matchingCapture(target, context: context)
             try check(current)
             guard windowsStillCurrent(context),
@@ -177,11 +179,11 @@ extension VisualGuideController {
             }
             try task?.show(result); status = "Waiting for you"
             walkthroughPresented = true
-            axOutcomeWasSatisfied = result.outcome.flatMap { ScopedAccessibility.matches($0, target: target) }
+            axOutcomeWasSatisfied = result.outcome.flatMap { environment.outcomeMatches($0, target) }
             onTarget?(GuideMark(mark: result.mark ?? .circle, target: rect, label: nil,
                                 value: result.mark == .value ? result.value : nil,
                                 ghost: result.ghost.flatMap(context.screenRect), within: context.region.rect,
-                                avoidRects: ScopedAccessibility.annotationObstacles(target, within: context.region.rect)))
+                                avoidRects: environment.annotationObstacles(target, context.region.rect)))
             if !composerOpen {
                 observer.start(step: result, target: target, rect: rect)
                 startTargetGuard(image: image, context: context, pixelTarget: pixelTarget)
@@ -228,7 +230,7 @@ extension VisualGuideController {
             let turn = try await captureTurn(message: "Verify this intended outcome only: " + outcome.description, current: current)
             guard let context = turn.context else { throw AttachmentError.targetChanged }
             let matches: Bool
-            if let local = ScopedAccessibility.matches(outcome, target: target), axOutcomeWasSatisfied != true { matches = local }
+            if let local = environment.outcomeMatches(outcome, target), axOutcomeWasSatisfied != true { matches = local }
             else {
                 let result = try await request(turn, current: current)
                 guard result.kind == .verification_result, result.captureID == context.captureID,
@@ -256,7 +258,7 @@ extension VisualGuideController {
 
     private func annotationObstacles() -> [CGRect] {
         guard let target = currentTarget, let region = lastContext?.region.rect else { return [] }
-        return ScopedAccessibility.annotationObstacles(target, within: region)
+        return environment.annotationObstacles(target, region)
     }
 
     func fingerprint(_ image: PNGImageAttachment, rect: CGRect) -> Data? {
