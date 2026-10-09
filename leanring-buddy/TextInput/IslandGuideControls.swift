@@ -59,6 +59,10 @@ struct IslandGuideControls: View {
                 Button("Keep current task") { controller.keepTask() }.islandButton(.secondary)
             } else if controller.task?.phase == .completed || controller.demo?.completed == true {
                 Text("Finished").font(.system(size: 11)).foregroundStyle(DS.Colors.textSecondary)
+            } else if controller.task?.phase == .paused, controller.task?.interruptions.allSatisfy(\.isTemporary) == true {
+                // Temporary holds continue by themselves after fresh validation; Resume stays as a manual option.
+                Text("Continues automatically").font(.system(size: 11)).foregroundStyle(DS.Colors.textSecondary)
+                Button("Resume") { controller.resume() }.islandButton(.secondary).disabled(!available.resume)
             } else if controller.task?.phase == .paused || controller.demo?.paused == true {
                 Button("Resume") { controller.resume() }.islandButton(.primary).disabled(!available.resume && controller.demo == nil)
             } else if uncertain {

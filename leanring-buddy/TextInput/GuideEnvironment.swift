@@ -31,6 +31,9 @@ struct GuideEnvironment {
     var frontmostProcess: () -> Int32?
     /// Asks before the first capture of a display in this Clicky session; false means Text only.
     var requestDisplayConsent: (WindowCaptureTarget, AgentProvider) -> Bool
+    /// Watches application activation while guidance is away on a temporary app switch. Only the event
+    /// itself is observed; the other application is never inspected or captured.
+    var watchActivation: (@escaping () -> Void) -> GuideEventSources?
     /// Installs the system event sources for one observation; returns a token that removes them.
     var installEventSources: (GuideObserver, _ keys: Bool) -> GuideEventSources?
     var makeAgent: (_ provider: AgentProvider, _ executable: URL, _ root: URL, _ effort: AskEffort,
@@ -69,6 +72,7 @@ struct GuideEnvironment {
             NSApp.activate(ignoringOtherApps: true)
             return alert.runModal() == .alertFirstButtonReturn
         },
+        watchActivation: { handler in GuideEventSources.activationWatch(handler) },
         installEventSources: { GuideEventSources.installSystem(for: $0, keys: $1) },
         makeAgent: { provider, executable, root, effort, onUnexpectedExit in
             let profile = try GuideAgentProfile(provider: provider, root: root, taskID: UUID(), effort: effort)
@@ -110,6 +114,15 @@ final class GuideEventSources {
         sources.workspaceTokens.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak observer] _ in
             MainActor.assumeIsolated { observer?.receiveActivation() }
+        })
+        return sources
+    }
+
+    static func activationWatch(_ handler: @escaping () -> Void) -> GuideEventSources {
+        let sources = GuideEventSources()
+        sources.workspaceTokens.append(NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { handler() }
         })
         return sources
     }

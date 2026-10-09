@@ -241,8 +241,11 @@ nonisolated public struct GuideTaskState: Sendable {
         if step != nil { advance(.manuallyAcknowledged) }
         phase = .completed; invalidate(); grant?.paused = true
     }
+    /// Holds guidance. A temporary reason keeps the grant usable (a side question may still look at the task
+    /// window); every other reason also pauses the grant so nothing is captured until a deliberate resume.
     public mutating func pause(_ reason: GuideInterruption = .explicitPause) {
-        interruptions.insert(reason); phase = .paused; invalidate(); grant?.paused = true
+        interruptions.insert(reason); phase = .paused; invalidate()
+        if !reason.isTemporary { grant?.paused = true }
     }
     /// Clears one temporary reason. True when nothing else holds the task, so the host may revalidate
     /// fresh state and resume; a deliberate reason (explicit pause, revoke, closure, failure) keeps it held.

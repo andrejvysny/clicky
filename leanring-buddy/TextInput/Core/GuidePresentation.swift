@@ -98,6 +98,13 @@ nonisolated public struct GuidePresentation: Codable, Equatable, Sendable {
     /// Bounds shared by the schema, validation and normalization.
     public static let milestoneBytes = 80, planLimit = 8, goalCheckLimit = 6, goalCheckBytes = 200
 
+    /// The same step re-bound to a fresh capture after local revalidation; nothing else changes.
+    public func rebound(captureID: UUID) -> Self {
+        Self(kind: kind, text: text, captureID: captureID, target: target, action: action, outcome: outcome, matches: matches,
+             evidence: evidence, evidenceTarget: evidenceTarget, proposedGoal: proposedGoal, crop: crop, mark: mark, label: label,
+             detail: detail, value: value, ghost: ghost, milestone: milestone, plan: plan, goalChecks: goalChecks, outcomeState: outcomeState)
+    }
+
     /// Label drawn at the mark: the model's label, else the first words of the text.
     public var markLabel: String {
         if let label, !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return label }

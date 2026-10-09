@@ -109,7 +109,8 @@ extension VisualGuideController {
 
     static let sharingOffHint = "Screen sharing is off — turn it on in Settings › Screen."
 
-    private var screenAvailable: Bool { sharingPreference != .off && currentTarget != nil }
+    /// An explicitly paused or revoked task grant shares nothing; a temporary hold keeps it usable.
+    private var screenAvailable: Bool { sharingPreference != .off && currentTarget != nil && task?.grant?.paused != true }
 
     /// Fresh context for the agent, or nil when sharing does not allow any. A bound task window needs no prompt;
     /// a display asks once per Clicky session, before any capture, and Text only answers without the screen.
@@ -172,7 +173,7 @@ extension VisualGuideController {
                               taskContext: GuideHostTaskContext(state))
     }
 
-    private func present(_ result: GuidePresentation, current: UInt64) async throws {
+    func present(_ result: GuidePresentation, current: UInt64) async throws {
         if sideQuestion, ![.explanation, .clarification, .task_proposal, .annotation].contains(result.kind) {
             throw GuideHostRejection(message: "A side question cannot advance the active walkthrough.")
         }
@@ -194,6 +195,10 @@ extension VisualGuideController {
                   image.pixelWidth == currentImage.pixelWidth, image.pixelHeight == currentImage.pixelHeight else {
                 throw AskError.protocolFailure("The target changed while the agent was locating it. Retry with fresh context.")
             }
+            let snapshot = GuideStepSnapshot(step: result, image: image, context: context, windowBounds: environment.bounds(target))
+            stepSnapshot = snapshot
+            // A step that arrives during a temporary interruption waits; it is revalidated before it is shown.
+            if task?.phase == .paused { status = "Next step ready · continues when you return"; return }
             try task?.show(result); status = waitingStatus(result)
             stepScreenRect = rect; stepWindowBounds = environment.bounds(target)
             if let completedAt = lastAdvanceAt { metrics.sample(.nextStep, seconds: environment.now().timeIntervalSince(completedAt)); lastAdvanceAt = nil }
@@ -218,13 +223,13 @@ extension VisualGuideController {
                                   value: result.mark == .value ? result.value : nil, ghost: nil, within: annotationBounds(result),
                                   avoidRects: annotationObstacles()))
             status = "Ready"
-            if sideQuestion { task?.pause(); status = "Pointed · walkthrough preserved" }
+            if sideQuestion { task?.pause(.sideAnswer); status = "Pointed · guide continues when you close the answer" }
             else { task = nil; currentTarget = nil; lastImage = nil; lastContext = nil }
         case .explanation, .clarification:
             onResponse?(sharingHint.map { result.text + "\n\n" + $0 } ?? result.text); sharingHint = nil; status = "Ready"
             awaitingClarification = result.kind == .clarification && !sideQuestion
             if sideQuestion || (result.kind == .explanation && walkthroughPresented) {
-                task?.pause(); status = "Answer ready · walkthrough preserved"
+                task?.pause(.sideAnswer); status = "Answer ready · guide continues when you close it"
             } else if result.kind == .explanation {
                 // Keep the agent: follow-up questions continue the same conversation. A new task starts on the next ask.
                 task = nil; currentTarget = nil; lastImage = nil; lastContext = nil

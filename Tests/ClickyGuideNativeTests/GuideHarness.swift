@@ -179,6 +179,7 @@ final class GuideHarness {
         environment.frontmostProcess = { screen.frontmost }
         environment.makeAgent = { _, _, _, _, _ in agent }
         environment.installEventSources = { _, _ in nil }
+        environment.watchActivation = { _ in nil }
         controller = VisualGuideController(environment: environment)
         controller.defaults = defaults
         controller.provider = .claude

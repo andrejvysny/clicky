@@ -97,6 +97,8 @@ final class VisualGuideController: ObservableObject {
     var targetGuardSuspendedUntil = Date.distantPast
     /// Where the current step was presented, so uncertainty can keep observing the same target.
     var stepScreenRect: CGRect?
+    var stepSnapshot: GuideStepSnapshot?
+    var activationWatch: GuideEventSources?
     var stepWindowBounds: CGRect?
     var attemptAt: Date?
     var lastAdvanceAt: Date?
@@ -115,9 +117,7 @@ final class VisualGuideController: ObservableObject {
         }
         observer.onEvidence = { [weak self] in self?.evidenceObserved() }
         observer.onInvalidated = { [weak self] in self?.relocateTarget(reason: "observed_change") }
-        observer.onUnavailable = { [weak self] in
-            self?.pause(message: "Target unavailable or another window is active. Resume or change target.", reason: .appSwitch)
-        }
+        observer.onUnavailable = { [weak self] in self?.interruptForAppSwitch() }
     }
 
     /// Claude fixes effort per process, so it can change only before a task session starts.
@@ -148,7 +148,10 @@ final class VisualGuideController: ObservableObject {
             currentTarget = target
         }
         if task?.grant == nil, explicitlyVisual, let currentTarget { task?.authorize(currentTarget) }
-        if task?.phase == .paused { task?.resume() }
+        if task?.phase == .paused {
+            // A side question clears only the composer hold; an explicit pause stays latched (the turn is then text-only).
+            if sideQuestion { _ = task?.clearTemporaryInterruption(.composer) } else { task?.resume() }
+        }
         task?.beginRequest()
         pendingEffort = effort
         let purpose = sideQuestion ? "Related user question; preserve active task. A different goal must be task_proposal."
@@ -161,14 +164,6 @@ final class VisualGuideController: ObservableObject {
         return phase != .completed && phase != .canceled
     }
 
-    func composerWillOpen() {
-        composerOpen = true; stopObservation(); onClearTarget?()
-        if task?.step != nil { task?.pause(); status = "Guide paused while editing"; publish() }
-    }
-    func composerDidClose(submitted: Bool) {
-        composerOpen = false
-        if !submitted, task?.step != nil { status = "Guide paused · Resume to refresh"; publish() }
-    }
     func pause(message: String = "Sharing paused", reason: GuideInterruption = .explicitPause) {
         let started = environment.uptime()
         defer { metrics.sample(.cancellation, seconds: environment.uptime() - started) }
@@ -187,6 +182,7 @@ final class VisualGuideController: ObservableObject {
         guard !isBusy, let currentTarget, environment.focused(currentTarget) else {
             error = "Activate the approved target window, then Resume; or choose Change target."; publish(); return
         }
+        activationWatch?.remove(); activationWatch = nil
         task?.resume(); retry()
     }
     func retry() {
@@ -262,6 +258,7 @@ final class VisualGuideController: ObservableObject {
         awaitingClarification = false
         transaction &+= 1; work?.cancel(); work = nil
         task?.cancel(); closeAgent(); stopObservation(); onClearTarget?()
+        activationWatch?.remove(); activationWatch = nil; stepSnapshot = nil
         task = nil; currentTarget = nil; proposal = nil; pendingContextRequest = nil
         lastImage = nil; lastContext = nil; session = nil; isBusy = false; sharingHint = nil
         status = "Ready"; error = nil; publish()
