@@ -7,7 +7,7 @@ nonisolated public struct GuideMetrics: Equatable, Sendable {
         case attempts, captures, providerTurns, localConfirmations, visionChecks, appWaits
         case relocations, recoveries, goalChecks, uncertainties, manualAcknowledgements
     }
-    public enum Latency: String, CaseIterable, Sendable { case acknowledgement, verification, nextStep, cancellation }
+    public enum Latency: String, CaseIterable, Sendable { case firstInstruction, acknowledgement, verification, nextStep, cancellation }
 
     public private(set) var counts: [Counter: Int] = [:]
     private var samples: [Latency: [Double]] = [:]

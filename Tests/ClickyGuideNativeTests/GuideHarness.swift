@@ -8,9 +8,14 @@ import ClickyCore
 final class FakeClock: @unchecked Sendable {
     private struct Sleeper { let id: UUID; let deadline: Date; let continuation: CheckedContinuation<Void, Error> }
     private let lock = NSLock()
-    private var current = Date(timeIntervalSince1970: 1_000_000)
+    private static let start = Date(timeIntervalSince1970: 1_000_000)
+    private var current = FakeClock.start
     private var sleepers: [Sleeper] = []
-    var now: Date { lock.withLock { current } }
+    /// Wall-clock adjustment (NTP, manual change); moves `now` but never the monotonic `uptime` or sleepers.
+    var wallSkew: TimeInterval { get { lock.withLock { skew } } set { lock.withLock { skew = newValue } } }
+    private var skew: TimeInterval = 0
+    var now: Date { lock.withLock { current.addingTimeInterval(skew) } }
+    var uptime: TimeInterval { lock.withLock { current.timeIntervalSince(FakeClock.start) } }
     var pendingSleepers: Int { lock.withLock { sleepers.count } }
 
     func sleep(_ nanoseconds: UInt64) async throws {
@@ -185,8 +190,7 @@ final class GuideHarness {
         let clock = clock, screen = screen, agent = agent
         var environment = GuideEnvironment.live
         environment.now = { clock.now }
-        // Synthetic event timestamps are not on the boot clock; acknowledgement samples are native-only.
-        environment.uptime = { 0 }
+        environment.uptime = { clock.uptime }
         environment.sleep = { try await clock.sleep($0) }
         environment.capture = { target, _, _, _ in try await screen.capture(target) }
         environment.focused = { _ in screen.focused }

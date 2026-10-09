@@ -203,7 +203,8 @@ extension VisualGuideController {
             if task?.phase == .paused { status = "Next step ready · continues when you return"; return }
             try task?.show(result); status = waitingStatus(result)
             stepScreenRect = rect; stepWindowBounds = environment.bounds(target)
-            if let completedAt = lastAdvanceAt { metrics.sample(.nextStep, seconds: environment.now().timeIntervalSince(completedAt)); lastAdvanceAt = nil }
+            if let completedAt = lastAdvanceAt { metrics.sample(.nextStep, seconds: environment.uptime() - completedAt); lastAdvanceAt = nil }
+            if let startedAt = taskStartedAt { metrics.sample(.firstInstruction, seconds: environment.uptime() - startedAt); taskStartedAt = nil }
             walkthroughPresented = true
             axOutcomeWasSatisfied = result.outcome.flatMap { environment.outcomeMatches($0, target) }
             onTarget?(GuideMark(mark: result.mark ?? .circle, target: rect, label: Self.stepLabel(result),

@@ -100,14 +100,18 @@ final class VisualGuideController: ObservableObject {
     let environment: GuideEnvironment
     let observer: GuideObserver
     var targetGuard: Task<Void, Never>?
-    var targetGuardSuspendedUntil = Date.distantPast
+    /// Elapsed-time state uses the monotonic `uptime`, so wall-clock changes cannot stretch or skip a budget.
+    var targetGuardSuspendedUntil: TimeInterval = -.infinity
     /// Where the current step was presented, so uncertainty can keep observing the same target.
     var stepScreenRect: CGRect?
     var stepSnapshot: GuideStepSnapshot?
     var activationWatch: GuideEventSources?
     var stepWindowBounds: CGRect?
-    var attemptAt: Date?
-    var lastAdvanceAt: Date?
+    var lastAdvanceAt: TimeInterval?
+    /// Request time of the current task until its first instruction is shown.
+    var taskStartedAt: TimeInterval?
+    /// Metrics are per task; logged once when the task completes, finishes manually or ends.
+    var metricsPending = false
     /// Content-free cost and latency counters for this Clicky process.
     var metrics = GuideMetrics()
 
@@ -119,7 +123,7 @@ final class VisualGuideController: ObservableObject {
         observer.onInteractionBegan = { [weak self] in
             // Button press/hover feedback is expected until the corresponding mouse-up is observed.
             guard let self else { return }
-            targetGuardSuspendedUntil = environment.now().addingTimeInterval(NSEvent.doubleClickInterval + 0.25)
+            targetGuardSuspendedUntil = environment.uptime() + NSEvent.doubleClickInterval + 0.25
         }
         observer.onEvidence = { [weak self] in self?.evidenceObserved() }
         observer.onInvalidated = { [weak self] in self?.relocateTarget(reason: "observed_change") }
@@ -159,6 +163,7 @@ final class VisualGuideController: ObservableObject {
             if provider == .claude, agent != nil, effort != .low, effort != agentEffort { closeAgent() }
             walkthroughPresented = false
             task = GuideTaskState(goal: text); currentTarget = target; lastImage = nil; lastContext = nil
+            logTaskMetrics(); metrics = GuideMetrics(); taskStartedAt = environment.uptime(); metricsPending = true
         } else if task?.grant == nil, let target {
             currentTarget = target
         }
@@ -223,7 +228,7 @@ final class VisualGuideController: ObservableObject {
         if phase == .waiting { guard let context = lastContext, task?.isCurrent(context) == true else { return } }
         guard task?.recordAttempt() == true else { return }
         targetGuard?.cancel(); targetGuard = nil
-        attemptAt = environment.now(); metrics.count(.attempts)
+        metrics.count(.attempts)
         status = "Got it · checking"; publish()
         if let eventTime = observer.lastAttemptTimestamp {
             metrics.sample(.acknowledgement, seconds: environment.uptime() - eventTime)
@@ -278,14 +283,12 @@ final class VisualGuideController: ObservableObject {
         metrics.count(.manualAcknowledgements)
         task?.finishManually(); closeAgent(); stopObservation(); onClearTarget?(); walkthroughPresented = false
         lastImage = nil; lastContext = nil; isBusy = false; status = "Finished manually · not verified"; publish()
+        logTaskMetrics()
         onResponse?(status)
     }
     func endTask() {
         let started = environment.uptime()
-        defer { metrics.sample(.cancellation, seconds: environment.uptime() - started) }
-        #if DEBUG
-        if task != nil { Logger(subsystem: "clicky", category: "guide").info("task metrics \(self.metrics.summary, privacy: .public)") }
-        #endif
+        defer { metrics.sample(.cancellation, seconds: environment.uptime() - started); logTaskMetrics() }
         demo = nil
         endSelection(); pendingSelection = nil
         walkthroughPresented = false
@@ -328,7 +331,7 @@ final class VisualGuideController: ObservableObject {
     func relocateTarget(reason: String) {
         observer.cancelPendingMousePress()
         guard !isBusy, !composerOpen, task?.historyIndex == nil, task?.phase == .waiting, task?.spendRelocation() == true else {
-            if task?.phase == .waiting { invalidateTarget(reason: reason) }
+            if task?.phase == .waiting || task?.phase == .uncertain { invalidateTarget(reason: reason) }
             return
         }
         #if DEBUG
@@ -347,8 +350,17 @@ final class VisualGuideController: ObservableObject {
         Logger(subsystem: "clicky", category: "guide").info("target invalidated reason=\(reason, privacy: .public)")
         #endif
         targetGuard?.cancel(); targetGuard = nil
+        let wasUncertain = task?.phase == .uncertain
         task?.changed(); onClearTarget?(); lastImage = nil; lastContext = nil
-        status = "View changed · Check now or Retry"; publish()
+        status = wasUncertain ? "View changed · Find again or Re-check" : "View changed · Check now or Retry"; publish()
+    }
+    /// Content-free counters and latencies for the task that just ended (DEBUG unified log only).
+    func logTaskMetrics() {
+        guard metricsPending else { return }
+        metricsPending = false; taskStartedAt = nil
+        #if DEBUG
+        Logger(subsystem: "clicky", category: "guide").info("task metrics \(self.metrics.summary, privacy: .public)")
+        #endif
     }
     func publish() {
         onStateChanged?()

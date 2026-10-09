@@ -15,7 +15,7 @@ extension VisualGuideController {
 
     func verificationLoop(current: UInt64) async throws {
         guard let step = task?.step, let outcome = step.outcome, let target = currentTarget else { throw AttachmentError.noTarget }
-        let started = environment.now()
+        let started = environment.uptime()
         // A predicate already true before the step cannot prove this step; vision decides instead.
         if axOutcomeWasSatisfied != true, environment.outcomeMatches(outcome, target) != nil,
            try await waitForLocalOutcome(outcome, target: target, current: current) {
@@ -75,6 +75,7 @@ extension VisualGuideController {
         if confirmed { confirmed = try await evidenceStillCurrent(current: current, evidenceTarget: result.evidenceTarget) }
         if confirmed, task?.finish(matches: true, captureID: context.captureID) == true {
             stopObservation(); onClearTarget?(); status = "Task complete · verified"; closeAgent(); lastImage = nil; lastContext = nil
+            logTaskMetrics()
             onResponse?(status + "\n\n" + proposal.text)
             walkthroughPresented = false
             return
@@ -90,7 +91,7 @@ extension VisualGuideController {
     /// Polls fresh scoped AX until the outcome holds or the bounded deadline passes. Returns false when AX
     /// cannot decide, so vision verification follows; nothing is captured or sent while waiting.
     private func waitForLocalOutcome(_ outcome: GuideOutcome, target: WindowCaptureTarget, current: UInt64) async throws -> Bool {
-        let deadline = environment.now().addingTimeInterval(Self.appWaitSeconds)
+        let deadline = environment.uptime() + Self.appWaitSeconds
         var waited = false
         while true {
             try check(current)
@@ -98,7 +99,7 @@ extension VisualGuideController {
             case true?: return true
             case nil: return false
             case false?:
-                guard environment.now() < deadline else { return false }
+                guard environment.uptime() < deadline else { return false }
                 if !waited { waited = true; metrics.count(.appWaits); status = "Waiting for the app"; publish() }
                 try await environment.sleep(UInt64(Self.appPollSeconds * 1_000_000_000))
             }
@@ -114,7 +115,7 @@ extension VisualGuideController {
     }
 
     func presentNext(note: String, current: UInt64) async throws {
-        lastAdvanceAt = environment.now()
+        lastAdvanceAt = environment.uptime()
         task?.beginRequest()
         status = "Finding the next step"; publish()
         let next = try await captureTurn(message: recoveryMessage() + "\n" + note
@@ -122,8 +123,8 @@ extension VisualGuideController {
         try await presentationLoop(next, current: current)
     }
 
-    private func recordVerified(since started: Date) {
-        metrics.sample(.verification, seconds: environment.now().timeIntervalSince(started))
+    private func recordVerified(since started: TimeInterval) {
+        metrics.sample(.verification, seconds: environment.uptime() - started)
     }
 
     /// Uncertainty keeps a safe watch: the same target stays marked and observed, so a new genuine attempt
@@ -135,7 +136,14 @@ extension VisualGuideController {
               environment.bounds(target) == stepWindowBounds else { publish(); return }
         onTarget?(GuideMark(mark: step.mark ?? .circle, target: rect, label: Self.stepLabel(step), value: step.mark == .value ? step.value : nil,
                             ghost: nil, within: stepWindowBounds, warning: step.warning != nil))
-        if !composerOpen { observer.start(step: step, target: target, rect: rect, scope: stepSnapshot?.context.region.rect) }
+        if !composerOpen {
+            observer.start(step: step, target: target, rect: rect, scope: stepSnapshot?.context.region.rect)
+            // The kept mark stays guarded against the latest current capture, so a replaced control clears it.
+            if let image = lastImage, let context = lastContext, task?.isCurrent(context) == true, let pixelTarget = step.target,
+               let snapshot = stepSnapshot, image.pixelWidth == snapshot.image.pixelWidth, image.pixelHeight == snapshot.image.pixelHeight {
+                startTargetGuard(image: image, context: context, pixelTarget: pixelTarget)
+            }
+        }
         publish()
     }
 

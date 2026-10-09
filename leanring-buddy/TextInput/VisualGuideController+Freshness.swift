@@ -39,7 +39,7 @@ extension VisualGuideController {
     /// before it counts as real replacement. Geometry changes re-ground immediately. Pixels never prove success.
     func startTargetGuard(image: PNGImageAttachment, context: GuideCaptureContext, pixelTarget: GuideRect) {
         targetGuard?.cancel()
-        targetGuardSuspendedUntil = .distantPast
+        targetGuardSuspendedUntil = -.infinity
         guard let pixels = GuidePixelMapping.comparisonRect(pixelTarget, pixelWidth: image.pixelWidth, pixelHeight: image.pixelHeight),
               let target = currentTarget, let screenRect = context.screenRect(pixelTarget),
               let expected = fingerprint(image, rect: pixels) else { invalidateTarget(reason: "comparison_region"); return }
@@ -48,7 +48,7 @@ extension VisualGuideController {
             var mismatches = 0
             while !Task.isCancelled {
                 do { try await self?.environment.sleep(Self.guardIntervalNanoseconds) } catch { return }
-                guard let self, task?.phase == .waiting, task?.isCurrent(context) == true, !composerOpen, displayGranted else { return }
+                guard let self, guarding, task?.isCurrent(context) == true, !composerOpen, displayGranted else { return }
                 guard environment.focused(target) else { interruptForAppSwitch(); return }
                 guard environment.bounds(target) != nil else {
                     pause(message: "Target closed or minimized · Choose a window to resume", reason: .targetClosed); return
@@ -62,7 +62,7 @@ extension VisualGuideController {
                     // Capture with the original transform, then compare the same local pixel rectangle.
                     let fresh = try await matchingCapture(target, context: context)
                     try Task.checkCancellation()
-                    guard task?.phase == .waiting, task?.isCurrent(context) == true else { return }
+                    guard guarding, task?.isCurrent(context) == true else { return }
                     guard observer.expectedFieldGeometryIsCurrent else { relocateTarget(reason: "field_geometry"); return }
                     if suspendedForInteraction || pointerNear(screenRect) { mismatches = 0; continue }
                     let same = fresh.pixelWidth == image.pixelWidth && fresh.pixelHeight == image.pixelHeight
@@ -75,6 +75,9 @@ extension VisualGuideController {
         }
     }
 
+    /// The guard watches a waiting step and an uncertain one that still shows its mark.
+    private var guarding: Bool { task?.phase == .waiting || task?.phase == .uncertain }
+
     static let guardIntervalNanoseconds: UInt64 = 1_000_000_000
     /// Consecutive pointer-away mismatches before the target counts as changed (about two seconds).
     static let guardMismatchLimit = 2
@@ -82,7 +85,7 @@ extension VisualGuideController {
     static let hoverMargin: CGFloat = 12
 
     private var suspendedForInteraction: Bool {
-        environment.now() < targetGuardSuspendedUntil || observer.isPressingExpectedTarget || observer.isEditingExpectedField
+        environment.uptime() < targetGuardSuspendedUntil || observer.isPressingExpectedTarget || observer.isEditingExpectedField
     }
     private func pointerNear(_ rect: CGRect) -> Bool {
         rect.insetBy(dx: -Self.hoverMargin, dy: -Self.hoverMargin).contains(environment.pointer())

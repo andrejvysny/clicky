@@ -94,21 +94,21 @@ enum ScopedAccessibility {
         return related(target).contains { bounds($0).map { near($0, focusedFrame) } ?? false }
     }
     static func waitForSurfaceFocus(_ target: WindowCaptureTarget, timeout: TimeInterval = 1.0) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while true {
-            if surfaceFocused(target) { return true }
-            if Date() >= deadline { return false }
-            try? await Task.sleep(nanoseconds: 80_000_000)
-        }
+        await poll(timeout: timeout) { surfaceFocused(target) }
     }
     /// Focus returns asynchronously after Quick Ask closes; wait briefly instead of failing the request.
     static func waitForFocus(_ target: WindowCaptureTarget, timeout: TimeInterval = 1.0) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while true {
-            if focused(target) { return true }
-            if Date() >= deadline { return false }
-            try? await Task.sleep(nanoseconds: 80_000_000)
+        await poll(timeout: timeout) { focused(target) }
+    }
+    /// Monotonic deadline (immune to wall-clock changes); cancellation ends the wait at once as not focused.
+    static func poll(timeout: TimeInterval, _ condition: () -> Bool) async -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while !Task.isCancelled {
+            if condition() { return true }
+            if ProcessInfo.processInfo.systemUptime >= deadline { return false }
+            do { try await Task.sleep(nanoseconds: 80_000_000) } catch { return false }
         }
+        return false
     }
     static func related(_ target: WindowCaptureTarget) -> [WindowCaptureTarget] {
         read {
