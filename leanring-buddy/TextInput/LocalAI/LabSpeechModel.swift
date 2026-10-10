@@ -49,9 +49,15 @@ final class LabSpeechModel: ObservableObject {
         let hostMilliseconds: Double
     }
 
-    init(runtime: LocalAIRuntime, results: LabResults) { self.runtime = runtime; self.results = results }
+    /// One instance so all Lab mutations share its lock.
+    let dataset: LocalPersonalDataset
+    @Published private(set) var datasetIndexDamaged = false
 
-    var dataset: LocalPersonalDataset { LocalPersonalDataset(root: runtime.env.benchmarksRoot.appendingPathComponent("Personal", isDirectory: true)) }
+    init(runtime: LocalAIRuntime, results: LabResults) {
+        self.runtime = runtime; self.results = results
+        dataset = LocalPersonalDataset(root: runtime.env.benchmarksRoot.appendingPathComponent("Personal", isDirectory: true))
+    }
+
     var audioSeconds: Double { Double(samples.count) / Double(LocalWorkerProtocol.audioSampleRate) }
     var prompt: LocalCleanupPrompt { LocalCleanupPrompt.all[min(promptIndex, LocalCleanupPrompt.all.count - 1)] }
 
@@ -62,7 +68,28 @@ final class LabSpeechModel: ObservableObject {
     func refresh() {
         devices = VoiceAudioRecorder.inputDevices()
         if let deviceUID, !devices.contains(where: { $0.uid == deviceUID }) { self.deviceUID = nil }
-        savedSamples = dataset.samples()
+        reloadSamples()
+    }
+
+    private func reloadSamples() {
+        do {
+            savedSamples = try dataset.samples()
+            datasetIndexDamaged = false
+        } catch {
+            savedSamples = []
+            datasetIndexDamaged = (error as? LocalDatasetError) == .indexCorrupt
+            // Keep any save/delete outcome already shown.
+            let failure = "Could not read samples: \(error.localizedDescription)"
+            saveMessage = saveMessage.map { $0 + " " + failure } ?? failure
+        }
+    }
+
+    func backUpDamagedIndex() {
+        do {
+            let backup = try dataset.backUpCorruptIndex(now: Date())
+            saveMessage = "Backed up the damaged index as \(backup.lastPathComponent). Audio files were kept."
+        } catch { saveMessage = "Could not back up: \(error.localizedDescription)" }
+        reloadSamples()
     }
 
     // MARK: Recording
@@ -243,12 +270,12 @@ final class LabSpeechModel: ObservableObject {
                 } catch { return "Could not save: \(error.localizedDescription)" }
             }.value
             saveMessage = message
-            savedSamples = dataset.samples()
+            reloadSamples()
         }
     }
 
     func deleteSample(_ sample: LocalBenchmarkSample) {
         do { try dataset.delete(sample.id) } catch { saveMessage = "Could not delete: \(error.localizedDescription)" }
-        savedSamples = dataset.samples()
+        reloadSamples()
     }
 }

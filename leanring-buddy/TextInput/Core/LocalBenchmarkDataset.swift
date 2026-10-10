@@ -8,6 +8,20 @@ nonisolated public enum LocalDatasetError: Error, Equatable, Sendable {
     case audioFileChanged(String)
     case invalidManifest(String)
     case io(String)
+    case indexCorrupt
+}
+
+extension LocalDatasetError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .unsafeName(let name): return "Unsafe file name: \(name)."
+        case .unsupportedAudio(let message), .invalidManifest(let message), .io(let message): return message
+        case .unknownSample(let id): return "Unknown sample \(id)."
+        case .notApprovable(let id): return "Sample \(id) needs both references before approval."
+        case .audioFileChanged(let id): return "The audio file of sample \(id) cannot change."
+        case .indexCorrupt: return "The dataset index is damaged. Back it up and start a new index to continue."
+        }
+    }
 }
 
 /// PCM16 RIFF/WAVE reader and writer. Only 16-bit integer PCM is accepted; callers downmix stereo themselves.
@@ -84,56 +98,91 @@ nonisolated public final class LocalPersonalDataset: @unchecked Sendable {
 
     private var indexURL: URL { root.appendingPathComponent("index.json") }
 
-    public func samples() -> [LocalBenchmarkSample] {
+    /// In-process NSLock plus an flock on `<root>/.lock` so the Lab and the CLI never interleave read-modify-write cycles.
+    private func withLock<T>(createRoot: Bool, _ body: () throws -> T) throws -> T {
         lock.lock(); defer { lock.unlock() }
-        return loadIndex()
+        if createRoot { try prepareRoot() }
+        let descriptor = open(root.appendingPathComponent(".lock").path, O_CREAT | O_RDWR, 0o600)
+        guard descriptor >= 0 else { throw LocalDatasetError.io("Could not lock the dataset.") }
+        defer { close(descriptor) }
+        guard flock(descriptor, LOCK_EX) == 0 else { throw LocalDatasetError.io("Could not lock the dataset.") }
+        defer { flock(descriptor, LOCK_UN) }
+        return try body()
+    }
+
+    public func samples() throws -> [LocalBenchmarkSample] {
+        // Reading must not create the directory.
+        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
+        return try withLock(createRoot: false) { try loadIndex() }
     }
 
     public func add(_ audio: [Int16], rawReference: String?, cleanReference: String?, split: LocalBenchmarkSample.Split,
                     tags: [String]) throws -> LocalBenchmarkSample {
-        lock.lock(); defer { lock.unlock() }
-        try prepareRoot()
-        var index = loadIndex()
-        var id = ""
-        repeat { id = "p-" + String(format: "%08x", UInt32.random(in: .min ... .max)) }
-        while index.contains { $0.id == id }
-        let sample = LocalBenchmarkSample(id: id, audioFile: id + ".wav", rawReference: rawReference, cleanReference: cleanReference,
-                                          split: split, tags: tags, approvedAt: nil)
-        try WAVFile.write(audio, to: root.appendingPathComponent(sample.audioFile))
-        index.append(sample)
-        do { try saveIndex(index) } catch {
-            try? FileManager.default.removeItem(at: root.appendingPathComponent(sample.audioFile))
-            throw error
+        try withLock(createRoot: true) {
+            var index = try loadIndex()
+            var id = ""
+            repeat { id = "p-" + String(format: "%08x", UInt32.random(in: .min ... .max)) }
+            while index.contains { $0.id == id }
+            let sample = LocalBenchmarkSample(id: id, audioFile: id + ".wav", rawReference: rawReference, cleanReference: cleanReference,
+                                              split: split, tags: tags, approvedAt: nil)
+            try WAVFile.write(audio, to: root.appendingPathComponent(sample.audioFile))
+            index.append(sample)
+            do { try saveIndex(index) } catch {
+                try? FileManager.default.removeItem(at: root.appendingPathComponent(sample.audioFile))
+                throw error
+            }
+            return sample
         }
-        return sample
     }
 
     public func update(_ sample: LocalBenchmarkSample) throws {
-        lock.lock(); defer { lock.unlock() }
-        var index = loadIndex()
-        guard let position = index.firstIndex(where: { $0.id == sample.id }) else { throw LocalDatasetError.unknownSample(sample.id) }
-        guard index[position].audioFile == sample.audioFile else { throw LocalDatasetError.audioFileChanged(sample.id) }
-        if sample.approvedAt != nil, !Self.hasBothReferences(sample) { throw LocalDatasetError.notApprovable(sample.id) }
-        index[position] = sample
-        try saveIndex(index)
+        try withLock(createRoot: true) {
+            var index = try loadIndex()
+            guard let position = index.firstIndex(where: { $0.id == sample.id }) else { throw LocalDatasetError.unknownSample(sample.id) }
+            guard index[position].audioFile == sample.audioFile else { throw LocalDatasetError.audioFileChanged(sample.id) }
+            if sample.approvedAt != nil, !Self.hasBothReferences(sample) { throw LocalDatasetError.notApprovable(sample.id) }
+            index[position] = sample
+            try saveIndex(index)
+        }
     }
 
     public func approve(_ id: String, at date: Date) throws {
-        lock.lock(); defer { lock.unlock() }
-        var index = loadIndex()
-        guard let position = index.firstIndex(where: { $0.id == id }) else { throw LocalDatasetError.unknownSample(id) }
-        guard Self.hasBothReferences(index[position]) else { throw LocalDatasetError.notApprovable(id) }
-        index[position].approvedAt = date
-        try saveIndex(index)
+        try withLock(createRoot: true) {
+            var index = try loadIndex()
+            guard let position = index.firstIndex(where: { $0.id == id }) else { throw LocalDatasetError.unknownSample(id) }
+            guard Self.hasBothReferences(index[position]) else { throw LocalDatasetError.notApprovable(id) }
+            index[position].approvedAt = date
+            try saveIndex(index)
+        }
     }
 
     public func delete(_ id: String) throws {
-        lock.lock(); defer { lock.unlock() }
-        var index = loadIndex()
-        guard let position = index.firstIndex(where: { $0.id == id }) else { throw LocalDatasetError.unknownSample(id) }
-        let sample = index.remove(at: position)
-        try saveIndex(index)
-        try? FileManager.default.removeItem(at: root.appendingPathComponent(sample.audioFile))
+        try withLock(createRoot: true) {
+            var index = try loadIndex()
+            guard let position = index.firstIndex(where: { $0.id == id }) else { throw LocalDatasetError.unknownSample(id) }
+            let sample = index.remove(at: position)
+            try saveIndex(index)
+            try? FileManager.default.removeItem(at: root.appendingPathComponent(sample.audioFile))
+        }
+    }
+
+    /// Moves a damaged index aside so a new one can start. WAV files stay; an existing backup is never overwritten.
+    public func backUpCorruptIndex(now: Date) throws -> URL {
+        try withLock(createRoot: true) {
+            guard FileManager.default.fileExists(atPath: indexURL.path) else { throw LocalDatasetError.io("There is no dataset index to back up.") }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyyMMdd-HHmmss"
+            let stamp = formatter.string(from: now)
+            var backup = root.appendingPathComponent("index.corrupt-\(stamp).json")
+            var suffix = 0
+            while FileManager.default.fileExists(atPath: backup.path) {
+                suffix += 1
+                backup = root.appendingPathComponent("index.corrupt-\(stamp)-\(suffix).json")
+            }
+            do { try FileManager.default.moveItem(at: indexURL, to: backup) } catch { throw LocalDatasetError.io("Could not back up the dataset index.") }
+            return backup
+        }
     }
 
     public func audio(for sample: LocalBenchmarkSample) throws -> [Int16] {
@@ -161,11 +210,14 @@ nonisolated public final class LocalPersonalDataset: @unchecked Sendable {
         } catch { throw LocalDatasetError.io("Could not create the dataset directory.") }
     }
 
-    private func loadIndex() -> [LocalBenchmarkSample] {
-        guard let data = try? Data(contentsOf: indexURL) else { return [] }
+    /// Absent file is an empty dataset; anything unreadable or undecodable is refused so a mutation never overwrites it.
+    private func loadIndex() throws -> [LocalBenchmarkSample] {
+        guard FileManager.default.fileExists(atPath: indexURL.path) else { return [] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        guard let all = try? decoder.decode([LocalBenchmarkSample].self, from: data) else { return [] }
+        guard let data = try? Data(contentsOf: indexURL), let all = try? decoder.decode([LocalBenchmarkSample].self, from: data) else {
+            throw LocalDatasetError.indexCorrupt
+        }
         return all.filter { DatasetNames.isSafe($0.id) && DatasetNames.isSafe($0.audioFile) }
     }
 

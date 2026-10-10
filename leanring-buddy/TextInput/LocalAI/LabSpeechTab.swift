@@ -163,6 +163,9 @@ struct LabSpeechTab: View {
         LabCard(title: "Personal benchmark samples") {
             labNote("Stored only on this Mac. Never uploaded or used for training.")
             if let message = model.saveMessage { labNote(message) }
+            if model.datasetIndexDamaged {
+                Button("Back up and start new index") { model.backUpDamagedIndex() }.islandButton(.secondary)
+            }
             if model.savedSamples.isEmpty { labNote("No samples saved yet.") }
             ForEach(model.savedSamples) { sample in
                 HStack(spacing: 8) {

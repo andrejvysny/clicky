@@ -44,7 +44,7 @@ final class LocalBenchmarkDatasetTests: XCTestCase {
     func testPersonalDatasetLifecycle() throws {
         let root = try temporaryDirectory().appendingPathComponent("personal")
         let dataset = LocalPersonalDataset(root: root)
-        XCTAssertEqual(dataset.samples(), [])
+        XCTAssertEqual(try dataset.samples(), [])
         let audio = [Int16](repeating: 7, count: 160)
         var sample = try dataset.add(audio, rawReference: "uh hello", cleanReference: nil, split: .development, tags: ["note"])
         XCTAssertTrue(sample.id.hasPrefix("p-"))
@@ -59,19 +59,19 @@ final class LocalBenchmarkDatasetTests: XCTestCase {
         sample.cleanReference = "hello"
         try dataset.update(sample)
         try dataset.approve(sample.id, at: Date(timeIntervalSince1970: 100))
-        XCTAssertEqual(dataset.samples().first?.approvedAt, Date(timeIntervalSince1970: 100))
-        XCTAssertTrue(dataset.samples()[0].isApproved)
+        XCTAssertEqual(try dataset.samples().first?.approvedAt, Date(timeIntervalSince1970: 100))
+        XCTAssertTrue(try dataset.samples()[0].isApproved)
 
-        var tampered = dataset.samples()[0]
+        var tampered = try dataset.samples()[0]
         tampered.audioFile = "other.wav"
         XCTAssertThrowsError(try dataset.update(tampered))
-        var blank = dataset.samples()[0]
+        var blank = try dataset.samples()[0]
         blank.cleanReference = "  "
         XCTAssertThrowsError(try dataset.update(blank))   // approved sample cannot lose a reference
 
-        XCTAssertEqual(LocalPersonalDataset(root: root).samples().count, 1)
+        XCTAssertEqual(try LocalPersonalDataset(root: root).samples().count, 1)
         try dataset.delete(sample.id)
-        XCTAssertEqual(dataset.samples(), [])
+        XCTAssertEqual(try dataset.samples(), [])
         XCTAssertFalse(FileManager.default.fileExists(atPath: dataset.url(for: sample).path))
         XCTAssertThrowsError(try dataset.delete(sample.id))
     }
@@ -86,7 +86,94 @@ final class LocalBenchmarkDatasetTests: XCTestCase {
         // A hand-edited index with an unsafe entry drops it.
         let index = #"[{"id":"p-1","audioFile":"../x.wav","split":"heldOut","tags":[]}]"#
         try Data(index.utf8).write(to: root.appendingPathComponent("index.json"))
-        XCTAssertEqual(dataset.samples(), [])
+        XCTAssertEqual(try dataset.samples(), [])
+    }
+
+    private func seedCorruptIndex(_ root: URL) throws -> Data {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let bytes = Data("{ not json".utf8)
+        try bytes.write(to: root.appendingPathComponent("index.json"))
+        return bytes
+    }
+
+    func testCorruptIndexIsRefusedAndNeverOverwritten() throws {
+        let root = try temporaryDirectory().appendingPathComponent("personal")
+        let bytes = try seedCorruptIndex(root)
+        let dataset = LocalPersonalDataset(root: root)
+        XCTAssertThrowsError(try dataset.samples()) { XCTAssertEqual($0 as? LocalDatasetError, .indexCorrupt) }
+        XCTAssertThrowsError(try dataset.add([1, 2], rawReference: nil, cleanReference: nil, split: .development, tags: [])) {
+            XCTAssertEqual($0 as? LocalDatasetError, .indexCorrupt)
+        }
+        XCTAssertThrowsError(try dataset.delete("p-1"))
+        XCTAssertThrowsError(try dataset.approve("p-1", at: Date()))
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("index.json")), bytes)
+        let wavs = try FileManager.default.contentsOfDirectory(atPath: root.path).filter { $0.hasSuffix(".wav") }
+        XCTAssertEqual(wavs, [])
+    }
+
+    func testMissingIndexIsEmptyWithoutCreatingRoot() throws {
+        let root = try temporaryDirectory().appendingPathComponent("personal")
+        XCTAssertEqual(try LocalPersonalDataset(root: root).samples(), [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+    }
+
+    func testConcurrentAddsFromTwoInstancesKeepEverySample() throws {
+        let root = try temporaryDirectory().appendingPathComponent("personal")
+        let instances = [LocalPersonalDataset(root: root), LocalPersonalDataset(root: root)]
+        let failures = NSLock()
+        var errors: [Error] = []
+        DispatchQueue.concurrentPerform(iterations: 40) { iteration in
+            do { _ = try instances[iteration % 2].add([Int16(iteration)], rawReference: nil, cleanReference: nil, split: .development, tags: []) }
+            catch { failures.lock(); errors.append(error); failures.unlock() }
+        }
+        XCTAssertTrue(errors.isEmpty, "\(errors)")
+        let all = try instances[0].samples()
+        XCTAssertEqual(all.count, 40)
+        XCTAssertEqual(Set(all.map(\.id)).count, 40)
+    }
+
+    func testSaveAndDeleteOverlapKeepIndexConsistent() throws {
+        let root = try temporaryDirectory().appendingPathComponent("personal")
+        let dataset = LocalPersonalDataset(root: root)
+        let doomed = try (0..<10).map { _ in try dataset.add([1], rawReference: nil, cleanReference: nil, split: .development, tags: []) }
+        let other = LocalPersonalDataset(root: root)
+        DispatchQueue.concurrentPerform(iterations: 20) { iteration in
+            if iteration % 2 == 0 { _ = try? other.add([2], rawReference: nil, cleanReference: nil, split: .development, tags: []) }
+            else { try? dataset.delete(doomed[iteration / 2].id) }
+        }
+        let remaining = try dataset.samples()
+        XCTAssertEqual(remaining.count, 10)
+        XCTAssertTrue(remaining.allSatisfy { sample in doomed.allSatisfy { $0.id != sample.id } })
+        for sample in remaining { XCTAssertTrue(FileManager.default.fileExists(atPath: dataset.url(for: sample).path)) }
+    }
+
+    func testBackUpCorruptIndexRenamesAndKeepsAudio() throws {
+        let root = try temporaryDirectory().appendingPathComponent("personal")
+        let dataset = LocalPersonalDataset(root: root)
+        let sample = try dataset.add([5, 6], rawReference: nil, cleanReference: nil, split: .development, tags: [])
+        let bytes = Data("garbage".utf8)
+        try bytes.write(to: root.appendingPathComponent("index.json"))
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let first = try dataset.backUpCorruptIndex(now: now)
+        XCTAssertTrue(first.lastPathComponent.hasPrefix("index.corrupt-"))
+        XCTAssertEqual(try Data(contentsOf: first), bytes)
+        XCTAssertEqual(try dataset.samples(), [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dataset.url(for: sample).path))
+        try Data("again".utf8).write(to: root.appendingPathComponent("index.json"))
+        let second = try dataset.backUpCorruptIndex(now: now)
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(try Data(contentsOf: first), bytes)
+        XCTAssertThrowsError(try dataset.backUpCorruptIndex(now: now))   // nothing left to back up
+    }
+
+    func testLeftoverTempFileDoesNotBreakLoading() throws {
+        let root = try temporaryDirectory().appendingPathComponent("personal")
+        let dataset = LocalPersonalDataset(root: root)
+        _ = try dataset.add([1], rawReference: nil, cleanReference: nil, split: .development, tags: [])
+        try Data("partial".utf8).write(to: root.appendingPathComponent("index.json.tmp.1234"))
+        XCTAssertEqual(try dataset.samples().count, 1)
+        _ = try dataset.add([2], rawReference: nil, cleanReference: nil, split: .development, tags: [])
+        XCTAssertEqual(try dataset.samples().count, 2)
     }
 
     func testCSVQuotingAndPublicLoad() throws {

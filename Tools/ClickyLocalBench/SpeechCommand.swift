@@ -124,7 +124,7 @@ enum SpeechCommand {
         case "personal":
             let root = options.one("personal-root").map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) } ?? BenchPaths.personalRoot
             let dataset = LocalPersonalDataset(root: root)
-            let approved = dataset.samples().filter { $0.isApproved && (split == nil || $0.split == split) }
+            let approved = try dataset.samples().filter { $0.isApproved && (split == nil || $0.split == split) }
             let pool = LocalPublicDataset(name: "personal", revision: nil, samples: approved, root: root)
             return (pool.select(ids: ids, count: count, seed: seed), "personal", nil, { sample in try dataset.audio(for: sample) })
         default: throw CLIError("--dataset must be disfluency or personal.")
