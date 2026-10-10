@@ -25,11 +25,14 @@ final class LocalAILabTextTests: XCTestCase {
         XCTAssertNil(LabJSON.firstObject(in: "{\"a\": 1"))
     }
 
-    func testGroundedTargetParsingChecksBounds() {
-        let good = "{\"label\":\"Save\",\"x\":10,\"y\":20,\"width\":100,\"height\":40}"
-        XCTAssertEqual(LabGroundedTarget.parse(good, imageWidth: 800, imageHeight: 600)?.label, "Save")
-        XCTAssertNil(LabGroundedTarget.parse(good, imageWidth: 50, imageHeight: 600))
-        XCTAssertNil(LabGroundedTarget.parse("{\"label\":\"x\",\"x\":-1,\"y\":0,\"width\":5,\"height\":5}", imageWidth: 800, imageHeight: 600))
-        XCTAssertNil(LabGroundedTarget.parse("{\"label\":\"x\"}", imageWidth: 800, imageHeight: 600))
+    func testGroundedTargetConvertsModelGridToImagePixels() {
+        let good = "Sure: {\"label\":\"Save\",\"bbox_2d\":[100,250,300,500]}"
+        let target = LabGroundedTarget.parse(good, imageWidth: 800, imageHeight: 600)
+        XCTAssertEqual(target?.label, "Save")
+        XCTAssertEqual(target?.x, 80); XCTAssertEqual(target?.y, 150)
+        XCTAssertEqual(target?.width, 160); XCTAssertEqual(target?.height, 150)
+        XCTAssertNil(LabGroundedTarget.parse("{\"label\":\"x\",\"bbox_2d\":[300,0,100,10]}", imageWidth: 800, imageHeight: 600))
+        XCTAssertNil(LabGroundedTarget.parse("{\"label\":\"x\",\"bbox_2d\":[0,0,1200,10]}", imageWidth: 800, imageHeight: 600))
+        XCTAssertNil(LabGroundedTarget.parse("{\"label\":\"x\",\"x\":1,\"y\":1,\"width\":5,\"height\":5}", imageWidth: 800, imageHeight: 600))
     }
 }

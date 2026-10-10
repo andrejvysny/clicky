@@ -17,7 +17,7 @@ final class MLXEngine: GeneratingEngine, @unchecked Sendable {
     static func load(
         _ reference: LocalModelReference, warmUp: Bool, progress: @Sendable (String, Double?) -> Void
     ) async throws -> LoadedEngine {
-        guard WorkerMemory.metallibAvailable else { throw LocalWorkerError(.loadFailed, "mlx.metallib missing next to the worker.") }
+        guard WorkerMemory.metallibAvailable else { throw LocalWorkerError(.loadFailed, "mlx.metallib missing (next to the worker or in the app Resources).") }
         let directory = URL(fileURLWithPath: reference.directory, isDirectory: true)
         progress("loading", nil)
         let loader = LocalDirectoryTokenizerLoader()

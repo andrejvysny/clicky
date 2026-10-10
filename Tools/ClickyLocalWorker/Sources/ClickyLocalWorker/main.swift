@@ -27,7 +27,9 @@ if options.sandbox {
     }
 }
 
-if options.role == .inference, WorkerMemory.metallibAvailable {
+if options.role == .inference, let metallib = WorkerMemory.metallibURL {
+    // Explicit path before the first MLX call, so the bundle's Resources copy is found too.
+    GPU.metallib = metallib
     Memory.cacheLimit = options.gpuCacheMegabytes * 1024 * 1024
     if let limit = options.memoryLimitMegabytes { Memory.memoryLimit = limit * 1024 * 1024 }
 }

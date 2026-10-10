@@ -141,9 +141,14 @@ nonisolated public struct LocalGenerationCase: Sendable {
     public let messages: [LocalChatMessage]
     public let image: Data?
     public let expectedBox: LocalVisionBox?
+    /// Pixel size of `image`; grounded answers are converted from the model's 0–1000 grid into this frame.
+    public let imageWidth: Int
+    public let imageHeight: Int
 
-    public init(id: String, messages: [LocalChatMessage], image: Data? = nil, expectedBox: LocalVisionBox? = nil) {
+    public init(id: String, messages: [LocalChatMessage], image: Data? = nil, expectedBox: LocalVisionBox? = nil,
+                imageWidth: Int = 0, imageHeight: Int = 0) {
         self.id = id; self.messages = messages; self.image = image; self.expectedBox = expectedBox
+        self.imageWidth = imageWidth; self.imageHeight = imageHeight
     }
 }
 
@@ -166,8 +171,8 @@ nonisolated public enum LocalVisionScoring {
         public var intersectionOverUnion: Double
     }
 
-    public static func score(output: String, expected: LocalVisionBox) -> Score {
-        guard let predicted = parse(output) else { return Score(schemaCompliant: false, targetHit: false, intersectionOverUnion: 0) }
+    public static func score(output: String, expected: LocalVisionBox, imageWidth: Int, imageHeight: Int) -> Score {
+        guard let predicted = LocalGrounding.parse(output, imageWidth: imageWidth, imageHeight: imageHeight) else { return Score(schemaCompliant: false, targetHit: false, intersectionOverUnion: 0) }
         let centerX = predicted.x + predicted.width / 2, centerY = predicted.y + predicted.height / 2
         let hit = centerX >= expected.x && centerX <= expected.x + expected.width
             && centerY >= expected.y && centerY <= expected.y + expected.height
@@ -178,21 +183,6 @@ nonisolated public enum LocalVisionScoring {
         return Score(schemaCompliant: true, targetHit: hit, intersectionOverUnion: union > 0 ? intersection / union : 0)
     }
 
-    /// Valid JSON object (optionally inside a code fence) with a string `label` and numeric x/y/width/height.
-    public static func parse(_ output: String) -> LocalVisionBox? {
-        guard let open = output.firstIndex(of: "{"), let close = output.lastIndex(of: "}"), open < close,
-              let data = String(output[open...close]).data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let label = object["label"] as? String,
-              let x = number(object["x"]), let y = number(object["y"]), let width = number(object["width"]), let height = number(object["height"]),
-              width >= 0, height >= 0 else { return nil }
-        return LocalVisionBox(label: label, x: x, y: y, width: width, height: height)
-    }
-
-    private static func number(_ value: Any?) -> Double? {
-        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
-        return number.doubleValue
-    }
 }
 
 /// Text and vision generation benchmark through one inference connection. Text uses cases without images.
@@ -251,7 +241,7 @@ nonisolated public struct LocalGenerationBenchmark: Sendable {
             // hostCleanupMilliseconds doubles as the host-side generation time so the schema stays unchanged.
             result.hostCleanupMilliseconds = stage.hostMilliseconds
             if let expected = item.expectedBox {
-                let score = LocalVisionScoring.score(output: stage.text, expected: expected)
+                let score = LocalVisionScoring.score(output: stage.text, expected: expected, imageWidth: item.imageWidth, imageHeight: item.imageHeight)
                 result.schemaCompliant = score.schemaCompliant
                 result.targetHit = score.targetHit
                 result.intersectionOverUnion = score.intersectionOverUnion

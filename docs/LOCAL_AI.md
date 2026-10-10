@@ -58,7 +58,17 @@ DisfluencySpeech test subset, the same 10 clips as voice-benchmark run_001. Warm
 | Whisper large-v3-turbo 632 MB (WhisperKit 1.1.1) | 10.8% | 562 / 679 ms | 153 s / 1.28 s |
 | Whisper small.en 217 MB (WhisperKit 1.1.1) | 10.0% | 410 / 557 ms | 15.0 s / 434 ms |
 
-The first load includes Core ML/ANE compilation. Worker `phys_footprint` (69 MB Parakeet, 393 MB Whisper) does not include Neural Engine allocations, so it is not a full memory figure. Ten clips are not enough to rank close candidates. Cleanup (S1-mini via MLX) and Qwen3-VL text/vision are pending the Metal Toolchain.
+The first load includes Core ML/ANE compilation. Worker `phys_footprint` (69 MB Parakeet, 393 MB Whisper) does not include Neural Engine allocations, so it is not a full memory figure. Ten clips are not enough to rank close candidates. MLX (metallib built with the Metal Toolchain, worker at the commit after 4f4e189):
+
+| Pipeline | Quality | Latency | Memory (combined peak footprint) |
+|---|---|---|---|
+| S1-mini cleanup on reference transcripts | clean WER 7.1% (Python: 7.1%); gate 7 accept / 1 review / 2 reject, including the known wrong repair | 189 ms P50 per clip; load 368 ms | 1.8 GB |
+| Parakeet + S1-mini (model-card prompt) | clean WER 8.5% (Python: 11.3%); gate 8 / 1 / 1 | stop-to-final 241 / 346 ms P50 / P95 | 1.87 GB |
+| Parakeet + S1-mini (lowercase prompt) | clean WER 9.4% | 243 / 345 ms | 1.87 GB |
+| Qwen3-VL-4B 4-bit, text rewrite | correct, polite rewrite | first token 58 ms, 195 ms total (warm); load 826 ms | 3.3 GB |
+| Qwen3-VL-4B 4-bit, synthetic button grounding (10 × 1280×800) | JSON 10/10, target 10/10, mean IoU 0.91 | 2.5 s per image (about 1,100 prompt tokens of prefill) | 4.6 GB |
+
+Grounding must use the model-native `bbox_2d` box on a 0–1000 grid (`Core/LocalGrounding.swift`). Asking for pixels gave 1/10, because the model answered in its own grid regardless, and the worker downscales images to 1024 px. Image-size and crop trade-offs for vision latency are not measured yet.
 
 ## Limitations
 

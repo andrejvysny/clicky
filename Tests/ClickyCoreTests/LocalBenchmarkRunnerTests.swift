@@ -110,14 +110,18 @@ final class LocalBenchmarkRunnerTests: XCTestCase {
         XCTAssertNotNil(run.summary)
     }
 
-    func testVisionScoring() {
-        let box = LocalVisionBox(label: "Save", x: 100, y: 100, width: 100, height: 40)
-        let exact = LocalVisionScoring.score(output: "```json\n{\"label\":\"Save\",\"x\":100,\"y\":100,\"width\":100,\"height\":40}\n```", expected: box)
+    func testVisionScoringConvertsModelGridToPixels() {
+        // 2000×500 image: grid x maps ×2, grid y maps ×0.5.
+        let box = LocalVisionBox(label: "Save", x: 200, y: 50, width: 200, height: 20)
+        let exact = LocalVisionScoring.score(output: "```json\n{\"label\":\"Save\",\"bbox_2d\":[100,100,200,140]}\n```", expected: box,
+                                             imageWidth: 2000, imageHeight: 500)
         XCTAssertTrue(exact.schemaCompliant); XCTAssertTrue(exact.targetHit); XCTAssertEqual(exact.intersectionOverUnion, 1, accuracy: 1e-9)
-        let off = LocalVisionScoring.score(output: #"{"label":"Save","x":500,"y":500,"width":10,"height":10}"#, expected: box)
+        let off = LocalVisionScoring.score(output: #"{"label":"Save","bbox_2d":[800,800,810,810]}"#, expected: box, imageWidth: 2000, imageHeight: 500)
         XCTAssertTrue(off.schemaCompliant); XCTAssertFalse(off.targetHit); XCTAssertEqual(off.intersectionOverUnion, 0)
-        XCTAssertFalse(LocalVisionScoring.score(output: "I think it is on the left", expected: box).schemaCompliant)
-        XCTAssertFalse(LocalVisionScoring.score(output: #"{"label":"Save","x":true,"y":1,"width":2,"height":3}"#, expected: box).schemaCompliant)
+        XCTAssertFalse(LocalVisionScoring.score(output: "I think it is on the left", expected: box, imageWidth: 2000, imageHeight: 500).schemaCompliant)
+        XCTAssertFalse(LocalVisionScoring.score(output: #"{"label":"Save","x":100,"y":100,"width":100,"height":40}"#, expected: box,
+                                                imageWidth: 2000, imageHeight: 500).schemaCompliant)
+        XCTAssertFalse(LocalVisionScoring.score(output: #"{"label":"Save","bbox_2d":[1,true,3,4]}"#, expected: box, imageWidth: 2000, imageHeight: 500).schemaCompliant)
     }
 
     func testGenerationBenchmarkRecordsMetricsAndSchemaFailure() async throws {

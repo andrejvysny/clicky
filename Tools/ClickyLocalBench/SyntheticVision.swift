@@ -31,12 +31,11 @@ enum SyntheticVision {
             let buttons = layout(&generator)
             let target = buttons[generator.int(0...(buttons.count - 1))]
             let png = try render(buttons)
-            let question = "The image is \(width) by \(height) pixels. Find the button labeled \"\(target.label)\". Reply with only JSON of the form "
-                + "{\"label\":\"\(target.label)\",\"x\":<left>,\"y\":<top>,\"width\":<w>,\"height\":<h>} where x and y are the button's top-left corner in image pixels."
+            let question = "Find the button labeled \"\(target.label)\". " + LocalGrounding.instruction(label: target.label)
             let box = LocalVisionBox(label: target.label, x: target.rect.minX, y: target.rect.minY, width: target.rect.width, height: target.rect.height)
             return LocalGenerationCase(id: "synthetic-\(seed)-\(index)", messages: [
                 LocalChatMessage(role: .system, text: "You locate user-interface elements in screenshots and answer with JSON only."),
-                LocalChatMessage(role: .user, text: question)], image: png, expectedBox: box)
+                LocalChatMessage(role: .user, text: question)], image: png, expectedBox: box, imageWidth: width, imageHeight: height)
         }
     }
 

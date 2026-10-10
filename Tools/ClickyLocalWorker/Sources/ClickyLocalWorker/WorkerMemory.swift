@@ -4,12 +4,18 @@ import Foundation
 import MLX
 
 enum WorkerMemory {
-    /// MLX resolves `mlx.metallib` next to the executable (or in `Resources/`). Touching any MLX allocator or
-    /// kernel without it makes MLX exit the process, so every MLX call is gated on this check.
-    static let metallibAvailable: Bool = {
-        guard let directory = Bundle.main.executableURL?.resolvingSymlinksInPath().deletingLastPathComponent() else { return false }
-        return ["mlx.metallib", "Resources/mlx.metallib"].contains { FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path) }
+    /// Where `mlx.metallib` lives: next to the executable (development build), or in the app's
+    /// `Contents/Resources` when the worker runs from `Contents/Helpers` — a code-signed Helpers directory may hold
+    /// only signed code, so the bundle keeps the data file in Resources. Touching any MLX allocator or kernel
+    /// without it makes MLX exit the process, so every MLX call is gated on this.
+    static let metallibURL: URL? = {
+        guard let directory = Bundle.main.executableURL?.resolvingSymlinksInPath().deletingLastPathComponent() else { return nil }
+        return ["mlx.metallib", "Resources/mlx.metallib", "../Resources/mlx.metallib"]
+            .map { directory.appendingPathComponent($0).standardizedFileURL }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
     }()
+
+    static var metallibAvailable: Bool { metallibURL != nil }
 
     /// phys_footprint and the lifetime peak come from the kernel ledger; MLX numbers come from MLX's allocator
     /// and exclude Core ML allocations (so Parakeet/Whisper show up only in the footprint).

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(ClickyCore)
+import ClickyCore
+#endif
 
 /// Word-level diff (LCS) for the Lab's raw-versus-cleaned transcript view.
 enum LabWordDiff {
@@ -59,26 +62,18 @@ enum LabJSON {
     }
 }
 
-/// The Grounded target answer: a labeled rectangle in image pixels, drawn only on the Lab's own preview.
-struct LabGroundedTarget: Equatable, Decodable {
+/// The Grounded target answer converted to pixels of the chosen image, drawn only on the Lab's own preview.
+struct LabGroundedTarget: Equatable {
     let label: String
     let x: Double
     let y: Double
     let width: Double
     let height: Double
 
-    static let systemPrompt = """
-    You locate one user interface element in the image. Answer with a single JSON object and nothing else: \
-    {"label": short element name, "x": left edge, "y": top edge, "width": width, "height": height}. \
-    All numbers are pixels in the image as given, origin at the top-left corner.
-    """
+    static let systemPrompt = "You locate one user interface element in the image. " + LocalGrounding.instruction()
 
     static func parse(_ output: String, imageWidth: Int, imageHeight: Int) -> LabGroundedTarget? {
-        guard let data = LabJSON.firstObject(in: output), let target = try? JSONDecoder().decode(Self.self, from: data) else { return nil }
-        let values = [target.x, target.y, target.width, target.height]
-        guard values.allSatisfy(\.isFinite), target.width > 0, target.height > 0,
-              target.x >= 0, target.y >= 0,
-              target.x + target.width <= Double(imageWidth) * 1.02, target.y + target.height <= Double(imageHeight) * 1.02 else { return nil }
-        return target
+        guard let box = LocalGrounding.parse(output, imageWidth: imageWidth, imageHeight: imageHeight) else { return nil }
+        return LabGroundedTarget(label: box.label, x: box.x, y: box.y, width: box.width, height: box.height)
     }
 }
