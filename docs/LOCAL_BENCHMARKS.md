@@ -57,7 +57,7 @@ clicky-local-bench text --model qwen3-vl-2b-instruct-4bit --prompt-file prompt.t
 clicky-local-bench vision --model qwen3-vl-4b-instruct-4bit --count 10 --seed 42
 ```
 
-Vision uses deterministic synthetic screenshots (1280x800, 3-5 labeled colored buttons at seeded positions, generated with CoreGraphics; no binary fixtures in Git). The model must answer `{"label":"..","x":..,"y":..,"width":..,"height":..}` in image pixels (top-left origin). Recorded: schema compliance, target accuracy (predicted box center inside the true box) and IoU.
+Vision uses deterministic synthetic screenshots (1280x800, 3-5 labeled colored buttons at seeded positions, generated with CoreGraphics; no binary fixtures in Git). The model answers `{"label":"..","bbox_2d":[x1,y1,x2,y2]}` on its native 0–1000 grid; `LocalGrounding` converts that to image pixels (top-left origin). Recorded: schema compliance, target accuracy (predicted box center inside the true box) and IoU.
 
 ## Personal dataset workflow
 
@@ -77,7 +77,7 @@ Manual protocol to see whether a benchmark disturbs, or is disturbed by, foregro
 3. Chrome load: open a fixed set of heavy tabs (e.g. a 4K video + a WebGL demo), run the same command. Observe tab smoothness (dropped frames, scroll lag).
 4. Blender load: run a fixed GPU/CPU render or viewport animation (same scene each time), run the same command. Observe viewport FPS and render time with and without the benchmark.
 5. Repeat 3 and 4 with `--priority foreground-protected`.
-6. Record per run: commit (`environment.commit`), thermal state before/after, foreground app responsiveness notes (`--observation`, repeatable), render time or FPS number, stop-to-final P50/P95, WER, combined peak memory. Do not mix conditions in one result file.
+6. Record per run: commit (`environment.commit`), thermal state before/after, foreground app responsiveness notes (`--observation`, repeatable), render time or FPS number, pipeline processing P50/P95, WER, sampled combined peak and sum-of-worker-peaks memory. Do not mix conditions in one result file.
 
 ## Metric definitions
 
@@ -86,8 +86,13 @@ Same normalization and aggregation as `voice-benchmark` (`benchmark/normalize.py
 - WER = (substitutions + deletions + insertions) / reference words. CER likewise on normalized characters. Corpus rates are total errors / total reference units, never a mean of per-sample rates.
 - Raw WER: ASR text vs `raw_reference`. Clean WER/CER: final text (cleaned, or raw for `asr`) vs `clean_reference`. `cleanup-on-reference` feeds `raw_reference` to cleanup (no ASR) and records no raw WER.
 - Gate verdict: `CleanupGate.assess(raw, cleaned)` (accept/review/reject/noSpeech) with concerns; counts in `summary.verdictCounts`.
-- stop-to-final (`asr+cleanup`): one monotonic host span from before transcribe to after the gate, including IPC and queueing. For `asr` it equals the host recognizer time. Worker-measured times are in `recognizerMetrics` / `cleanupMetrics` / `generationMetrics`.
+- pipeline processing (JSON key `stopToFinalMilliseconds`, `summary.stopToFinalP50/P95`; `asr+cleanup`): one monotonic host span from the start of transcription to final text after the gate, including IPC and queueing. It excludes stopping and draining a microphone recording, so it is not a user-perceived stop-to-final latency. For `asr` it equals the host recognizer time. Worker-measured times are in `recognizerMetrics` / `cleanupMetrics` / `generationMetrics`.
 - P50/P95 are reported only with at least 5 successful samples (`n/a` otherwise).
 - Warm-ups run on the first sample and are excluded from results. The very first call after load (warm-up or not) is kept in `coldFirstMilliseconds` under `recognizer`, `cleanup` or `generation`. `loadMilliseconds` is keyed by catalog entry id and measured without warm-up.
-- Memory: a `.memory` request on each worker after the loop. `combinedPeakFootprintBytes` = sum of both workers' peak physical footprint (both stayed loaded for the whole run, so this is a simultaneous-residency figure).
+- Memory (schema version 2, `run.memory`):
+  - `speechWorker` / `inferenceWorker`: a `.memory` report from each worker after the loop.
+  - `sumOfWorkerPeaksBytes` (was `combinedPeakFootprintBytes`; v1 files still decode): sum of each worker's own peak physical footprint. The peaks need not coincide, so this is an upper bound, not a simultaneous measurement.
+  - `sampledCombinedPeakBytes`, `sampleCount`, `samplingIntervalMilliseconds`: every 100 ms during the measured loop (warm-up excluded) the runner asks each worker for `.memory` and sums the current physical footprints; the maximum is recorded. Workers answer `.memory` immediately even while a job runs. Spikes shorter than the interval can be missed; a sample missing any worker's answer is dropped.
+  - `acceleratorMemory`: always `"unknown"`; Neural Engine/GPU driver allocations outside `phys_footprint` are not measured.
+  - `workerReuse`: `"fresh"` when the CLI launched the workers for this run, `"reused"` for Lab runs on the runtime's existing workers, absent when unknown. Reused workers keep earlier peaks in their own counters.
 - Ctrl-C stops after the current sample and still writes partial results.

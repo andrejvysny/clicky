@@ -41,7 +41,12 @@ final class LocalBenchmarkRunnerTests: XCTestCase {
         XCTAssertNotNil(run.summary?.corpusRawWordErrorRate)
         XCTAssertNotNil(run.summary?.stopToFinalP50)
         XCTAssertNotNil(run.memory.speechWorker)
-        XCTAssertEqual(run.memory.combinedPeakFootprintBytes, 1234 + 0 + (run.memory.inferenceWorker?.physicalFootprintBytes ?? 0))
+        XCTAssertEqual(run.memory.sumOfWorkerPeaksBytes, 1234 + 0 + (run.memory.inferenceWorker?.physicalFootprintBytes ?? 0))
+        XCTAssertEqual(run.schemaVersion, 2)
+        XCTAssertEqual(run.memory.acceleratorMemory, "unknown")
+        XCTAssertGreaterThan(run.memory.sampleCount, 0)
+        XCTAssertEqual(run.memory.sampledCombinedPeakBytes, 1234 * 2)
+        XCTAssertEqual(run.memory.samplingIntervalMilliseconds, 100)
         let small = await (try await benchmark(.asrOnly)).run(samples: samples(4), audio: pcm, progress: { _, _ in })
         XCTAssertNil(small.summary?.stopToFinalP50)
         XCTAssertEqual(small.summary?.samples, 4)
@@ -138,6 +143,29 @@ final class LocalBenchmarkRunnerTests: XCTestCase {
         XCTAssertEqual(run.summary?.schemaComplianceRate, 0)
         XCTAssertNotNil(run.coldFirstMilliseconds["generation"])
         XCTAssertNotNil(run.memory.inferenceWorker)
+    }
+
+    func testSamplerRecordsMaxOfSummedFootprintsAndLeavesNoTask() async throws {
+        let speech = try await worker(.speech)
+        let inference = try await worker(.inference)
+        let sampler = BenchmarkSupport.MemorySampler(connections: [speech, inference], intervalMilliseconds: 10)
+        sampler.start()
+        XCTAssertTrue(sampler.isRunning)
+        try await Task.sleep(nanoseconds: 120_000_000)
+        let result = await sampler.stop()
+        XCTAssertFalse(sampler.isRunning)
+        XCTAssertGreaterThan(result.count, 0)
+        XCTAssertEqual(result.peak, 2468)
+    }
+
+    func testMemoryDecodesLegacyV1Key() throws {
+        let json = #"{"combinedPeakFootprintBytes":4096}"#
+        let memory = try JSONDecoder().decode(LocalBenchmarkMemory.self, from: Data(json.utf8))
+        XCTAssertEqual(memory.sumOfWorkerPeaksBytes, 4096)
+        XCTAssertEqual(memory.sampleCount, 0)
+        XCTAssertEqual(memory.acceleratorMemory, "unknown")
+        let roundTrip = try JSONDecoder().decode(LocalBenchmarkMemory.self, from: JSONEncoder().encode(memory))
+        XCTAssertEqual(roundTrip, memory)
     }
 }
 

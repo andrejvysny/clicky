@@ -137,7 +137,7 @@ enum BenchRuntime {
             print("WER (corpus)    raw \(rate(summary.corpusRawWordErrorRate))  clean \(rate(summary.corpusCleanWordErrorRate))  clean CER \(rate(summary.corpusCleanCharacterErrorRate))")
             let verdicts = summary.verdictCounts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
             print("gate verdicts   \(verdicts.isEmpty ? "-" : verdicts)")
-            print("stop-to-final   P50 \(ms(summary.stopToFinalP50))  P95 \(ms(summary.stopToFinalP95)) ms (needs >= 5 samples)")
+            print("pipeline proc.  P50 \(ms(summary.stopToFinalP50))  P95 \(ms(summary.stopToFinalP95)) ms (needs >= 5 samples)")
         } else {
             let times = run.results.filter { $0.failure == nil }.compactMap(\.hostCleanupMilliseconds)
             print("generation      P50 \(times.count >= 5 ? ms(SpeechMetrics.percentile(times, 50)) : "n/a")  P95 \(times.count >= 5 ? ms(SpeechMetrics.percentile(times, 95)) : "n/a") ms (needs >= 5 samples)")
@@ -147,8 +147,12 @@ enum BenchRuntime {
         }
         print("load ms         " + (run.loadMilliseconds.isEmpty ? "-" : run.loadMilliseconds.sorted { $0.key < $1.key }.map { "\($0.key)=\(ms($0.value))" }.joined(separator: " ")))
         print("cold first ms   " + (run.coldFirstMilliseconds.isEmpty ? "-" : run.coldFirstMilliseconds.sorted { $0.key < $1.key }.map { "\($0.key)=\(ms($0.value))" }.joined(separator: " ")))
-        let megabytes = run.memory.combinedPeakFootprintBytes.map { String(format: "%.0f MB", Double($0) / 1_048_576) } ?? "-"
-        print("combined peak   \(megabytes) (both workers resident together)")
+        func megabytes(_ value: UInt64?) -> String { value.map { String(format: "%.0f MB", Double($0) / 1_048_576) } ?? "-" }
+        let memory = run.memory
+        let interval = memory.samplingIntervalMilliseconds.map { "every \($0) ms" } ?? "not sampled"
+        print("sampled combined peak \(megabytes(memory.sampledCombinedPeakBytes)) (\(memory.sampleCount) samples, \(interval); can miss shorter spikes)")
+        print("sum of worker peaks   \(megabytes(memory.sumOfWorkerPeaksBytes)) (upper bound; peaks need not coincide)")
+        print("accelerator memory    \(memory.acceleratorMemory)  worker reuse \(memory.workerReuse ?? "unknown")")
         print("result file     \(file.path)")
     }
 }

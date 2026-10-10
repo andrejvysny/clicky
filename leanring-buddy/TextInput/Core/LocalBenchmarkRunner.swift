@@ -23,14 +23,79 @@ nonisolated enum BenchmarkSupport {
         return nil
     }
 
-    /// Both workers stayed loaded for the whole run, so the sum of their peaks is the simultaneous resident peak.
+    /// End-of-run reports plus the sum of the workers' own peaks (an upper bound, not a simultaneous measurement).
     static func memory(speech: LocalWorkerConnection?, inference: LocalWorkerConnection?) async -> LocalBenchmarkMemory {
         var memory = LocalBenchmarkMemory()
         if let speech { memory.speechWorker = await memoryReport(speech) }
         if let inference { memory.inferenceWorker = await memoryReport(inference) }
         let peaks = [memory.speechWorker, memory.inferenceWorker].compactMap { $0 }.map { $0.peakPhysicalFootprintBytes ?? $0.physicalFootprintBytes }
-        memory.combinedPeakFootprintBytes = peaks.isEmpty ? nil : peaks.reduce(0, +)
+        memory.sumOfWorkerPeaksBytes = peaks.isEmpty ? nil : peaks.reduce(0, +)
         return memory
+    }
+
+    /// Samples the summed current physical footprint of the given workers on a timer. Workers answer `.memory`
+    /// immediately even while a job runs, so sampling does not queue behind measured work.
+    final class MemorySampler: @unchecked Sendable {
+        let intervalMilliseconds: Int
+        private let connections: [LocalWorkerConnection]
+        private let lock = NSLock()
+        private var peak: UInt64?
+        private var count = 0
+        private var task: Task<Void, Never>?
+
+        init(connections: [LocalWorkerConnection], intervalMilliseconds: Int = 100) {
+            self.connections = connections; self.intervalMilliseconds = intervalMilliseconds
+        }
+
+        func start() {
+            guard task == nil, !connections.isEmpty else { return }
+            let connections = connections
+            let interval = intervalMilliseconds
+            task = Task { [weak self] in
+                while !Task.isCancelled {
+                    let total = await Self.sampleOnce(connections)
+                    if Task.isCancelled { break }
+                    self?.record(total)
+                    try? await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000)
+                }
+            }
+        }
+
+        /// Cancels the timer, waits for it to end, and returns the sampling evidence.
+        func stop() async -> (peak: UInt64?, count: Int) {
+            let running = task
+            task = nil
+            running?.cancel()
+            await running?.value
+            return lock.withLock { (peak, count) }
+        }
+
+        var isRunning: Bool { task != nil }
+
+        private func record(_ total: UInt64?) {
+            guard let total else { return }
+            lock.lock()
+            peak = max(peak ?? 0, total); count += 1
+            lock.unlock()
+        }
+
+        /// Nil unless every connection answered, so a partial sum never lowers or distorts the peak.
+        private static func sampleOnce(_ connections: [LocalWorkerConnection]) async -> UInt64? {
+            await withTaskGroup(of: UInt64?.self) { group in
+                for connection in connections { group.addTask { await BenchmarkSupport.memoryReport(connection)?.physicalFootprintBytes } }
+                var total: UInt64 = 0
+                var answered = 0
+                for await value in group { if let value { total += value; answered += 1 } }
+                return answered == connections.count ? total : nil
+            }
+        }
+    }
+
+    /// Adds the sampler evidence to a memory record.
+    static func apply(_ sampled: (peak: UInt64?, count: Int), interval: Int, to memory: inout LocalBenchmarkMemory) {
+        memory.sampledCombinedPeakBytes = sampled.peak
+        memory.sampleCount = sampled.count
+        memory.samplingIntervalMilliseconds = sampled.count > 0 ? interval : nil
     }
 }
 
@@ -42,6 +107,8 @@ nonisolated public struct LocalSpeechBenchmark: Sendable {
     public let environment: LocalBenchmarkEnvironment
     /// Load times measured by the caller (keyed by catalog entry id); copied into the run.
     public var loadMilliseconds: [String: Double] = [:]
+    /// "fresh" or "reused"; copied into the memory record. Nil when the caller cannot tell.
+    public var workerReuse: String?
 
     public init(pipeline: LocalSpeechPipeline, configuration: LocalBenchmarkConfiguration, environment: LocalBenchmarkEnvironment) {
         self.pipeline = pipeline; self.configuration = configuration; self.environment = environment
@@ -63,6 +130,8 @@ nonisolated public struct LocalSpeechBenchmark: Sendable {
                 _ = await measure(first, repetition: 0, audio: samplesAudio, cold: &run.coldFirstMilliseconds)
             }
         }
+        let sampler = BenchmarkSupport.MemorySampler(connections: [configuration.pipeline == .cleanupOnReference ? nil : pipeline.speech, pipeline.inference].compactMap { $0 })
+        sampler.start()
         loop: for sample in samples {
             for repetition in 0..<repetitions {
                 if Task.isCancelled { break loop }
@@ -77,9 +146,12 @@ nonisolated public struct LocalSpeechBenchmark: Sendable {
                 progress(done, total)
             }
         }
+        let sampled = await sampler.stop()
         if !Task.isCancelled {
             run.memory = await BenchmarkSupport.memory(speech: configuration.pipeline == .cleanupOnReference ? nil : pipeline.speech,
                                                        inference: pipeline.inference)
+            BenchmarkSupport.apply(sampled, interval: sampler.intervalMilliseconds, to: &run.memory)
+            run.memory.workerReuse = workerReuse
         }
         run.summarize(references: references)
         return run
@@ -193,6 +265,8 @@ nonisolated public struct LocalGenerationBenchmark: Sendable {
     public let configuration: LocalBenchmarkConfiguration
     public let environment: LocalBenchmarkEnvironment
     public var loadMilliseconds: [String: Double] = [:]
+    /// "fresh" or "reused"; copied into the memory record. Nil when the caller cannot tell.
+    public var workerReuse: String?
 
     public init(connection: LocalWorkerConnection, modelIdentifier: String, parameters: LocalGenerationParameters,
                 configuration: LocalBenchmarkConfiguration, environment: LocalBenchmarkEnvironment) {
@@ -213,6 +287,8 @@ nonisolated public struct LocalGenerationBenchmark: Sendable {
                 if run.coldFirstMilliseconds["generation"] == nil, let ms = warm.hostCleanupMilliseconds { run.coldFirstMilliseconds["generation"] = ms }
             }
         }
+        let sampler = BenchmarkSupport.MemorySampler(connections: [connection])
+        sampler.start()
         loop: for item in cases {
             for repetition in 0..<repetitions {
                 if Task.isCancelled { break loop }
@@ -224,7 +300,12 @@ nonisolated public struct LocalGenerationBenchmark: Sendable {
                 progress(done, total)
             }
         }
-        if !Task.isCancelled { run.memory = await BenchmarkSupport.memory(speech: nil, inference: connection) }
+        let sampled = await sampler.stop()
+        if !Task.isCancelled {
+            run.memory = await BenchmarkSupport.memory(speech: nil, inference: connection)
+            BenchmarkSupport.apply(sampled, interval: sampler.intervalMilliseconds, to: &run.memory)
+            run.memory.workerReuse = workerReuse
+        }
         run.summarize(references: [:])
         Self.addVisionSummary(&run)
         return run

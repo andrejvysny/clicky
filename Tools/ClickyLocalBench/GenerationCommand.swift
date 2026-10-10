@@ -40,6 +40,7 @@ enum GenerationCommand {
                                                  configuration: configuration,
                                                  environment: BenchRuntime.environment(worker: started.readiness.runtime, metalDevice: started.readiness.metalDevice))
         benchmark.loadMilliseconds = [model.entry.id: loadMilliseconds]
+        benchmark.workerReuse = "fresh"
         let caseList = cases
         let task = Task { await benchmark.run(cases: caseList, progress: SpeechCommand.progress) }
         let interrupt = InterruptHandler { task.cancel() }

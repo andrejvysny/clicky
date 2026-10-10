@@ -62,6 +62,7 @@ enum SpeechCommand {
         var benchmark = LocalSpeechBenchmark(pipeline: pipeline, configuration: configuration,
                                              environment: BenchRuntime.environment(worker: runtime, metalDevice: metal))
         benchmark.loadMilliseconds = loads
+        benchmark.workerReuse = "fresh"
         let task = Task { await benchmark.run(samples: samples, audio: audio, progress: Self.progress) }
         let interrupt = InterruptHandler { task.cancel() }
         var run = await task.value

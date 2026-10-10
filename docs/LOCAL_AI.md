@@ -31,19 +31,19 @@ Development milestone for the target Mac (M4 Pro, 24 GB). Nothing here changes t
 - **Priority:** "Protect foreground apps" (default on) renices workers to 10. This is CPU scheduling only; GPU and Neural Engine sharing are not controlled.
 - **Loading:** manual by default per group (vision, cleanup, speech). Opt-in "Load when needed" and "Load at startup", plus idle unload. A manual-policy voice shortcut shows "Load speech pipeline" and does not record. An explicit benchmark Run may load its models without changing preferences.
 - **Resource protection:** one expensive job per worker role; voice and Lab runs preempt benchmark jobs. Memory-pressure warning cancels benchmarks and clears caches; critical also unloads idle groups and refuses new loads. Serious or critical thermal state refuses benchmark runs. Model budget: 45% of physical memory, checked against measured footprints.
-- **Cleanup is untrusted.** `CleanupGate` checks additions, unexplained deletions, negation, numbers, names, length and recall. Only `accept` auto-inserts; `review` and `reject` show an editable preview with the raw transcript available. Self-reported confidence is never used.
+- **Cleanup is untrusted.** `CleanupGate` checks additions, unexplained deletions, negation, numbers, names, length and recall. It spells minus signs and decimal points as words before aligning, because WER normalization drops them, so a lost sign or split decimal goes to review. A dropped repeat of a number or negation ("5 5 1", "not not") is never excused as a stutter and also goes to review. Only `accept` auto-inserts; `review` and `reject` show an editable preview with the raw transcript available. Self-reported confidence is never used.
 - **Providers:** writing has its own provider preference (`askWritingProvider`), migrated from the shared one unchanged. Local speech never falls back to any cloud service.
 
 ## Setup
 
 1. Install the Metal Toolchain (Xcode › Settings › Components, or `xcodebuild -downloadComponent MetalToolchain`). Without it MLX models cannot load; Core ML speech still works.
-2. `bash scripts/build-local-worker.sh` writes `build/local-worker/{clicky-local-worker, mlx.metallib, VERSION}`. **Run it before building the app.** The Xcode target's "Embed Local Worker" Copy Files phase copies both files into `Contents/Helpers` and signs the worker on copy, so the app build fails if they are missing.
+2. `bash scripts/build-local-worker.sh` writes `build/local-worker/{clicky-local-worker, mlx.metallib, VERSION}`. **Run it before building the app.** The Xcode target's "Embed Local Worker" phase copies the worker into `Contents/Helpers` and signs it on copy; the "Embed MLX Shaders" phase copies `mlx.metallib` into `Contents/Resources`. The app build fails if either file is missing.
 3. Models: Local AI Lab › Models (Download / Import folder…), or `clicky-local-bench models download <id>`. Store: `~/Library/Application Support/Clicky/Models/<id>/<revision>`, verified against pinned hashes. Nothing downloads automatically.
 4. Load models explicitly in the Lab (or set a policy), then use the Lab tabs or the voice shortcuts.
 
 ## Voice input
 
-- **Dictate Anywhere** (default ⌥⇧D) binds the focused destination at key-down. After stop it transcribes, cleans and gates the text, then inserts it once through the writing coordinator. Insertion requires the unchanged empty caret in the same app, and uninterrupted recording. Selections, unverified paste-only targets, multi-line terminal text, changed targets and gate concerns all give an editable review with Insert / Use original / Copy / Discard. Dictated text is never routed to an assistant or parsed as a command. Return is never sent.
+- **Dictate Anywhere** (default ⌥⇧D) binds the focused destination at key-down. After stop it transcribes, cleans and gates the text, then inserts it once through the writing coordinator. Insertion requires the unchanged empty caret in the same app, and uninterrupted recording. Selections, unverified paste-only targets, multi-line terminal text, changed targets and gate concerns all give an editable review with Insert / Use original / Copy / Discard. The voice session keeps its Cancel button and ⌥⇧Esc until the writer reports an outcome. Cancel before the commit point writes nothing; a write that already committed is reported as "Already inserted". After an insertion the panel offers Undo (only for a read-back-verified edit, and only if the field still holds that text) and Copy original. The raw transcript stays in memory until the next dictation. If the runtime unloads the speech model mid-transcription the session fails visibly; if it unloads the cleanup model, the raw transcript goes to review. Dictated text is never routed to an assistant or parsed as a command. Return is never sent.
 - **Ask Clicky by voice** (default ⌥⇧A) opens Quick Ask at key-down. The text goes into the draft: set when the draft is empty, appended otherwise. It waits for your own Enter. "Use original" swaps back the raw transcript if that span is unchanged.
 - **Activation:** a tap shorter than 0.25 s toggles; a hold records until release. Repeats are ignored, and a lost key-up is detected by polling key state. Stop and Cancel are buttons in the status panel; ⌥⇧Esc cancels while a session is active. The panel shows only mode, elapsed time and limit, device, level and stage. There is no live transcript.
 - **Limits:** recordings default to 120 s, configurable from 60 to 300 s. Reaching the limit stops the recording visibly and processes what was captured. Silence is detected before ASR and inserts nothing. A device change, sleep or lock stops the recording; captured audio is processed but always goes to review. Audio stays in memory and is released after processing.
@@ -58,15 +58,15 @@ DisfluencySpeech test subset, the same 10 clips as voice-benchmark run_001. Warm
 | Whisper large-v3-turbo 632 MB (WhisperKit 1.1.1) | 10.8% | 562 / 679 ms | 153 s / 1.28 s |
 | Whisper small.en 217 MB (WhisperKit 1.1.1) | 10.0% | 410 / 557 ms | 15.0 s / 434 ms |
 
-The first load includes Core ML/ANE compilation. Worker `phys_footprint` (69 MB Parakeet, 393 MB Whisper) does not include Neural Engine allocations, so it is not a full memory figure. Ten clips are not enough to rank close candidates. MLX (metallib built with the Metal Toolchain, worker at the commit after 4f4e189):
+The first load includes Core ML/ANE compilation. Worker `phys_footprint` (69 MB Parakeet, 393 MB Whisper) does not include Neural Engine allocations, so it is not a full memory figure. Ten clips are not enough to rank close candidates. MLX (metallib built with the Metal Toolchain), re-run with schema v2 after the review fixes. Memory is the sampled combined `phys_footprint` of the fresh workers (every 100 ms during the measured loop; short spikes can be missed), with the sum of each worker's own peak in parentheses as an upper bound. Neither includes Neural Engine/GPU accelerator allocations. Latency is CLI pipeline processing, not the GUI stop-to-text-ready interval:
 
-| Pipeline | Quality | Latency | Memory (combined peak footprint) |
+| Pipeline | Quality | Latency | Memory: sampled combined peak (sum of peaks) |
 |---|---|---|---|
-| S1-mini cleanup on reference transcripts | clean WER 7.1% (Python: 7.1%); gate 7 accept / 1 review / 2 reject, including the known wrong repair | 189 ms P50 per clip; load 368 ms | 1.8 GB |
-| Parakeet + S1-mini (model-card prompt) | clean WER 8.5% (Python: 11.3%); gate 8 / 1 / 1 | stop-to-final 241 / 346 ms P50 / P95 | 1.87 GB |
-| Parakeet + S1-mini (lowercase prompt) | clean WER 9.4% | 243 / 345 ms | 1.87 GB |
-| Qwen3-VL-4B 4-bit, text rewrite | correct, polite rewrite | first token 58 ms, 195 ms total (warm); load 826 ms | 3.3 GB |
-| Qwen3-VL-4B 4-bit, synthetic button grounding (10 × 1280×800) | JSON 10/10, target 10/10, mean IoU 0.91 | 2.5 s per image (about 1,100 prompt tokens of prefill) | 4.6 GB |
+| S1-mini cleanup on reference transcripts | clean WER 7.1% (Python: 7.1%); gate 7 accept / 1 review / 2 reject, including the known wrong repair; unchanged after the numeric-safety gate fix | 189 ms P50 per clip; load 368 ms | 1.54 GB (1.88 GB) |
+| Parakeet + S1-mini (model-card prompt) | clean WER 8.5% (Python: 11.3%); gate 8 / 1 / 1, unchanged after the gate fix | 244 / 348 ms P50 / P95 | 1.62 GB (1.90 GB) |
+| Parakeet + S1-mini (lowercase prompt) | clean WER 9.4% | 243 / 345 ms | not re-measured (1.87 GB) |
+| Qwen3-VL-4B 4-bit, text rewrite | correct, polite rewrite | first token 58 ms, 195 ms total (warm); load 826 ms | 3.22 GB (3.23 GB) |
+| Qwen3-VL-4B 4-bit, synthetic button grounding (10 × 1280×800) | JSON 10/10, target 10/10, mean IoU 0.91 | 2.5 s per image (about 1,100 prompt tokens of prefill) | 4.56 GB (4.58 GB) |
 
 Grounding must use the model-native `bbox_2d` box on a 0–1000 grid (`Core/LocalGrounding.swift`). Asking for pixels gave 1/10, because the model answered in its own grid regardless, and the worker downscales images to 1024 px. Image-size and crop trade-offs for vision latency are not measured yet.
 

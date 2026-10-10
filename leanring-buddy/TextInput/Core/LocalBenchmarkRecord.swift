@@ -3,7 +3,7 @@ import Foundation
 /// Versioned result schema shared by the Local AI Lab export and `clicky-local-bench`. Records contain sample
 /// identities, metrics and model output text; personal datasets stay outside Git and are never uploaded.
 nonisolated public enum LocalBenchmarkSchema {
-    public static let version = 1
+    public static let version = 2
 }
 
 nonisolated public struct LocalBenchmarkEnvironment: Codable, Equatable, Sendable {
@@ -95,6 +95,8 @@ nonisolated public struct LocalBenchmarkSampleResult: Codable, Equatable, Sendab
     public var generationMetrics: LocalRunMetrics?
     public var hostRecognizerMilliseconds: Double?
     public var hostCleanupMilliseconds: Double?
+    /// CLI: pipeline processing from the start of transcription to final text; excludes stopping and draining a
+    /// microphone recording. (Name kept for stored-file compatibility.)
     public var stopToFinalMilliseconds: Double?
     public var failure: String?
     public var annotation: LocalBenchmarkAnnotation?
@@ -109,14 +111,61 @@ nonisolated public struct LocalBenchmarkSampleResult: Codable, Equatable, Sendab
     }
 }
 
-/// Peak memory observed while every model of the configuration was resident together.
+/// Memory evidence for one run. Nothing here is a measured simultaneous peak except `sampledCombinedPeakBytes`,
+/// and that one is only as good as its sampling interval.
 nonisolated public struct LocalBenchmarkMemory: Codable, Equatable, Sendable {
+    /// End-of-run report from each worker (its own peak since launch, MLX counters).
     public var speechWorker: LocalMemoryReport?
     public var inferenceWorker: LocalMemoryReport?
-    public var combinedPeakFootprintBytes: UInt64?
+    /// Sum of each worker's own peak physical footprint. The peaks need not coincide, so this is an upper bound
+    /// on the combined footprint, not a simultaneous measurement. Legacy v1 key: `combinedPeakFootprintBytes`.
+    public var sumOfWorkerPeaksBytes: UInt64?
+    /// Largest sum of both workers' current physical footprint seen by the sampler during the measured loop
+    /// (warm-up excluded). Nil when nothing was sampled. It can miss spikes shorter than the interval.
+    public var sampledCombinedPeakBytes: UInt64?
+    public var sampleCount: Int
+    public var samplingIntervalMilliseconds: Int?
+    /// Neural Engine / GPU driver allocations outside `phys_footprint` are not measured.
+    public var acceleratorMemory: String
+    /// "fresh" when this run launched its workers, "reused" when they were already running; nil when unknown.
+    public var workerReuse: String?
 
-    public init(speechWorker: LocalMemoryReport? = nil, inferenceWorker: LocalMemoryReport? = nil, combinedPeakFootprintBytes: UInt64? = nil) {
-        self.speechWorker = speechWorker; self.inferenceWorker = inferenceWorker; self.combinedPeakFootprintBytes = combinedPeakFootprintBytes
+    public init(speechWorker: LocalMemoryReport? = nil, inferenceWorker: LocalMemoryReport? = nil, sumOfWorkerPeaksBytes: UInt64? = nil,
+                sampledCombinedPeakBytes: UInt64? = nil, sampleCount: Int = 0, samplingIntervalMilliseconds: Int? = nil,
+                acceleratorMemory: String = "unknown", workerReuse: String? = nil) {
+        self.speechWorker = speechWorker; self.inferenceWorker = inferenceWorker; self.sumOfWorkerPeaksBytes = sumOfWorkerPeaksBytes
+        self.sampledCombinedPeakBytes = sampledCombinedPeakBytes; self.sampleCount = sampleCount
+        self.samplingIntervalMilliseconds = samplingIntervalMilliseconds; self.acceleratorMemory = acceleratorMemory; self.workerReuse = workerReuse
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case speechWorker, inferenceWorker, sumOfWorkerPeaksBytes, sampledCombinedPeakBytes, sampleCount
+        case samplingIntervalMilliseconds, acceleratorMemory, workerReuse, combinedPeakFootprintBytes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        speechWorker = try c.decodeIfPresent(LocalMemoryReport.self, forKey: .speechWorker)
+        inferenceWorker = try c.decodeIfPresent(LocalMemoryReport.self, forKey: .inferenceWorker)
+        sumOfWorkerPeaksBytes = try c.decodeIfPresent(UInt64.self, forKey: .sumOfWorkerPeaksBytes)
+            ?? c.decodeIfPresent(UInt64.self, forKey: .combinedPeakFootprintBytes)
+        sampledCombinedPeakBytes = try c.decodeIfPresent(UInt64.self, forKey: .sampledCombinedPeakBytes)
+        sampleCount = try c.decodeIfPresent(Int.self, forKey: .sampleCount) ?? 0
+        samplingIntervalMilliseconds = try c.decodeIfPresent(Int.self, forKey: .samplingIntervalMilliseconds)
+        acceleratorMemory = try c.decodeIfPresent(String.self, forKey: .acceleratorMemory) ?? "unknown"
+        workerReuse = try c.decodeIfPresent(String.self, forKey: .workerReuse)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(speechWorker, forKey: .speechWorker)
+        try c.encodeIfPresent(inferenceWorker, forKey: .inferenceWorker)
+        try c.encodeIfPresent(sumOfWorkerPeaksBytes, forKey: .sumOfWorkerPeaksBytes)
+        try c.encodeIfPresent(sampledCombinedPeakBytes, forKey: .sampledCombinedPeakBytes)
+        try c.encode(sampleCount, forKey: .sampleCount)
+        try c.encodeIfPresent(samplingIntervalMilliseconds, forKey: .samplingIntervalMilliseconds)
+        try c.encode(acceleratorMemory, forKey: .acceleratorMemory)
+        try c.encodeIfPresent(workerReuse, forKey: .workerReuse)
     }
 }
 

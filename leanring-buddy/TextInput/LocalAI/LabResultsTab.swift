@@ -22,6 +22,7 @@ final class LabResults: ObservableObject {
             workerPriority: runtime.protectForeground ? LocalWorkerPriority.foregroundProtected.rawValue : LocalWorkerPriority.standard.rawValue,
             dataset: "lab-session")
         var run = LocalBenchmarkRun(environment: Self.environment(runtime), configuration: configuration)
+        run.memory.workerReuse = "reused"
         var result = LocalBenchmarkSampleResult(sampleIdentifier: "lab-\(runs.count + 1)", repetition: 0)
         fill(&result)
         run.results = [result]
@@ -98,7 +99,7 @@ struct LabResultsTab: View {
         if let metrics = result.generationMetrics { parts.append("worker \(LabFormat.milliseconds(metrics.totalMilliseconds))") }
         if let host = result.hostRecognizerMilliseconds { parts.append("ASR host \(LabFormat.milliseconds(host))") }
         if let host = result.hostCleanupMilliseconds { parts.append("cleanup host \(LabFormat.milliseconds(host))") }
-        if let stop = result.stopToFinalMilliseconds { parts.append("stop→final \(LabFormat.milliseconds(stop))") }
+        if let stop = result.stopToFinalMilliseconds { parts.append("pipeline \(LabFormat.milliseconds(stop))") }
         if let verdict = result.gateVerdict { parts.append("gate \(verdict.rawValue)") }
         return parts.isEmpty ? "no timings" : parts.joined(separator: " · ")
     }
