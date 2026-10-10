@@ -198,3 +198,24 @@ Additional native acceptance:
 12. Chrome: change one character of the field without changing its length during generation: the Write is refused as `contentChanged`.
 13. `/reply` with a pasted email chip or attached selection: the provider receives it as `writing.reference`; a clarification can be answered in Quick Ask; a provider failure shows Retry.
 14. Terminal with bash/fish in the foreground: preview + Copy only (automatic insertion limited to zsh).
+
+## Local AI and voice — 10 October 2026 (development; signed GUI acceptance pending)
+
+Design and setup: [LOCAL_AI.md](LOCAL_AI.md); benchmark procedure: [LOCAL_BENCHMARKS.md](LOCAL_BENCHMARKS.md). Layers are kept separate: portable/fake-worker tests are not native evidence, and nothing below is signed-GUI evidence.
+
+| Layer | Command | Result |
+|---|---|---|
+| Portable + coordinator (fake worker, fake clocks/audio/targets) | `bash scripts/test-core.sh` | 554 XCTest cases pass: protocol/framing/ledger, connection crash/hang/stale/cancel-grace, catalog/installer (hash, size, traversal, resume, redirect, cancel), residency, cleanup gate (answering, wrong repair, invented repetition, deletion, negation, numbers, names, soft markers, contractions), metrics, voice session, audio buffer, benchmark runner, `LocalAIRuntimeTests` (no startup work, policies, races, pressure, crash), `VoiceControllerTests`, `DictationWritingTests` |
+| App typecheck | `bash scripts/typecheck-app.sh` and `--debug` | no errors |
+| Real worker protocol (no models) | `build/local-worker/clicky-local-worker --role inference --self-test`, framed pipe tests | handshake with `networkDenied: true`, Metal device reported, duplicate/unknown/oversized/garbage/version-mismatch handled |
+| Real native ASR (Core ML, no GUI) | `clicky-local-bench speech --pipeline asr` on the run_001 subset | Parakeet v3 and WhisperKit turbo measured (see LOCAL_AI.md); offline after model download |
+| MLX cleanup, text, vision | — | **Blocked**: Metal Toolchain not installed, so `mlx.metallib` is not built |
+
+Signed native acceptance still required (scratch data only):
+
+1. Lab: opening Settings or the Lab starts no worker, captures nothing and records nothing (check Activity Monitor for `clicky-local-worker` and the microphone indicator). Load and unload each group. Text, Draft and Rewrite parse; a screenshot question and the grounded rectangle stay inside the preview. Speech: record, stop, transcribe, cleanup, diff, Use original, Save sample, Delete. Export JSON only through the save panel.
+2. Offline: with Wi-Fi off after setup, ASR + cleanup + text + vision all run.
+3. Dictate Anywhere into a Chrome textarea and a VS Code editor: exactly one insertion, no Send. With a selection, review appears. Switching apps mid-recording and pressing Cancel each produce no external write. At a Terminal prompt, a single-line result is inserted but not executed until your own Return.
+4. Ask by voice: the draft appears in Quick Ask, nothing is submitted until Enter, and an existing draft is preserved.
+5. Hold versus tap, repeats, releasing a modifier before the key, and Bluetooth/USB microphone unplug mid-recording.
+6. Contention: run a Lab vision prompt and an ASR+cleanup benchmark while scrolling a heavy Chrome page and orbiting a disposable Blender scene. Record observations in the run (`--observation`).

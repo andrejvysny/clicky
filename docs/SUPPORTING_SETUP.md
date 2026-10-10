@@ -2,7 +2,7 @@
 
 The active development delivery is the visual task guide described in [VISUAL_GUIDE_PROTOCOL.md](VISUAL_GUIDE_PROTOCOL.md). It uses clean provider sessions, task-window grants, persistent steps, and independent outcome checks. Native release acceptance remains incomplete; release capability flags stay unavailable. No model is downloaded at launch and no MCP listener starts. The scoped interaction observer runs only while a guide waits for an action.
 
-Audio, dictation, and MCP notes below are deferred reference material, outside the current implementation scope.
+MCP notes below are deferred reference material. Local audio and dictation are implemented for development (see LOCAL_AI.md).
 
 ## Writing targets
 
@@ -10,9 +10,7 @@ Writing and snippet insertion ([WRITING_PROTOCOL.md](WRITING_PROTOCOL.md)) uses 
 
 ## Local audio
 
-Recommended candidate: FluidAudio revision `0c0f113e8db4b862b19a99ce9fd7c9da73324f5f` (Apache-2.0), Swift 6+, macOS 14+. Add its Swift package to a separate integration target first. Its documented baseline is `AsrModels.downloadAndLoad(version: .ultra)`, followed by `AsrManager.loadModels` and `transcribe`. Ultra is not proof of smart cleanup or technical-token preservation. Validate its model license, download destinations, cache behavior, memory, and technical English speech on the M4 Pro before enabling it. WhisperKit remains an alternative requiring the same gates.
-
-Implement `LocalTranscriptionProvider`; use `HybridRecordingGesture` for separate Ask/Dictate shortcuts. It supplies transitions only, not microphone capture. Connect cancellation to audio finalization exactly once, and do not submit old callbacks after mode/session changes.
+Implemented as a development feature; see [LOCAL_AI.md](LOCAL_AI.md). Recognition runs in the bundled worker (FluidAudio 0.17.7 Parakeet TDT v3 via `AsrModels.loadLocal`, or WhisperKit 1.1.1 with a local tokenizer and downloads disabled). Cleanup runs S1-mini through MLX Swift. `HybridRecordingGesture` drives the separate Ask and Dictate shortcuts. Models are pinned and installed only on explicit Download/Import.
 
 ## Dictation
 
