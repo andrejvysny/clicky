@@ -10,3 +10,6 @@ releases/
 .claude/
 coding-plans/
 .vscode/
+
+# Local inference worker build output
+build/local-worker/
