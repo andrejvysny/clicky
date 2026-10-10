@@ -195,6 +195,7 @@ struct VoiceStatusView: View {
                     .disabled(voice.isLoadingModels).accessibilityIdentifier("voiceLoad")
                 if voice.isLoadingModels { SpinnerRing(size: 10) }
                 Spacer()
+                Button("Models…") { SettingsWindowController.shared.show(.models) }.islandButton(.quiet)
                 Button("Dismiss") { voice.dismiss() }.islandButton(.quiet)
             }
         }

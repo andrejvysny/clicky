@@ -35,7 +35,11 @@ struct CursorAskView: View {
         if controller.provider == .preview { return "Ask Clicky (preview, no AI)…" }
         // A live session means this is a follow-up in the same conversation.
         if controller.session != nil && !controller.response.isEmpty { return "Follow up…" }
-        return controller.provider == .codex ? "Ask Codex…" : "Ask Claude…"
+        switch controller.provider {
+        case .codex: return "Ask Codex…"
+        case .local: return "Ask on-device…"
+        default: return "Ask Claude…"
+        }
     }
 
     private var canAttach: Bool {
@@ -146,7 +150,8 @@ struct CursorAskView: View {
                 .frame(height: editorHeight)
                 .id(controller.editorGeneration)
             writingChips
-            effortPips
+            // The on-device model has one setting per prompt purpose, so effort does not apply.
+            if controller.provider != .local { effortPips }
             Button { submitOrApply() } label: {
                 ZStack {
                     Circle().fill(canSend ? ClickyChrome.ask : ClickyChrome.ask.opacity(0.35)).frame(width: 18, height: 18)

@@ -11,6 +11,8 @@ clicky-local-bench: local model management and benchmarks (same code as the app)
          [--priority foreground-protected|default] [--worker path] [--models-root path] [--out path] [--observation "text"]...
   text   --model <id> --prompt-file f [--max-tokens N] [--warmup N] [--repetitions N] [common options]
   vision --model <id> [--count N] [--seed N] [--warmup N] [--repetitions N] [common options]
+  guide  --model <id> [--count N] [--seed N] [--priority ...] [--worker path] [--models-root path] [--out path]
+         (on-device assistant path: LocalMLXAgent pointing + step requests on synthetic screens)
 """
 
 setvbuf(stdout, nil, _IOLBF, 0)
@@ -23,6 +25,12 @@ do {
     case "speech": try await SpeechCommand.run(rest)
     case "text": try await GenerationCommand.run(vision: false, rest)
     case "vision": try await GenerationCommand.run(vision: true, rest)
+    case "guide":
+        #if canImport(CoreGraphics) && canImport(ImageIO) && canImport(CoreText)
+        try await GuideCommand.run(rest)
+        #else
+        throw CLIError("The guide benchmark needs CoreGraphics (macOS).")
+        #endif
     case "--help", "-h", "help": print(usage)
     default: print(usage); exit(2)
     }

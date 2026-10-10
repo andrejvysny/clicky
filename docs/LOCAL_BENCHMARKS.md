@@ -57,11 +57,19 @@ clicky-local-bench text --model qwen3-vl-2b-instruct-4bit --prompt-file prompt.t
 clicky-local-bench vision --model qwen3-vl-4b-instruct-4bit --count 10 --seed 42
 ```
 
+`guide` runs the app's on-device assistant path (`LocalMLXAgent`, the same prompt, normalization and repair policy) on the same seeded synthetic screens, with one pointing request ("Where is the X button?") and one step request ("Help me press X") per screen:
+
+```bash
+clicky-local-bench guide --model qwen3-vl-8b-instruct-4bit --count 10 --seed 42 --out guide-8b.json
+```
+
+It reports the accepted-presentation rate, repair rate (more than one model call), target hit, IoU and latency per case; `--out` also keeps the raw model text per call (synthetic screens only). Synthetic buttons do not stand in for real applications.
+
 Vision uses deterministic synthetic screenshots (1280x800, 3-5 labeled colored buttons at seeded positions, generated with CoreGraphics; no binary fixtures in Git). The model answers `{"label":"..","bbox_2d":[x1,y1,x2,y2]}` on its native 0–1000 grid; `LocalGrounding` converts that to image pixels (top-left origin). Recorded: schema compliance, target accuracy (predicted box center inside the true box) and IoU.
 
 ## Personal dataset workflow
 
-Samples are recorded in the Lab (or added through `LocalPersonalDataset`) and stored in `Benchmarks/personal` as `p-<8 hex>.wav` + `index.json`.
+Samples are recorded in Settings › Playground › Speech (or added through `LocalPersonalDataset`) and stored in `Benchmarks/personal` as `p-<8 hex>.wav` + `index.json`.
 
 1. Record, then type both references: raw (what was said, with disfluencies) and clean (what you want inserted).
 2. Approve only samples with both references non-empty; unapproved samples are never benchmarked.

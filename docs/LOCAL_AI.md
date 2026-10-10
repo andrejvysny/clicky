@@ -1,6 +1,6 @@
 # Local AI: worker, Lab and voice input
 
-Development milestone for the target Mac (M4 Pro, 24 GB). Nothing here changes the default assistant backend; local inference is experimental until native acceptance passes (see [MAC_VALIDATION.md](MAC_VALIDATION.md) › Local AI and voice). Benchmark procedures and results: [LOCAL_BENCHMARKS.md](LOCAL_BENCHMARKS.md).
+Development milestone for the target Mac (M4 Pro, 24 GB). The default assistant backend stays Local preview; the on-device backend below is opt-in and, local inference is experimental until native acceptance passes (see [MAC_VALIDATION.md](MAC_VALIDATION.md) › Local AI and voice). Benchmark procedures and results: [LOCAL_BENCHMARKS.md](LOCAL_BENCHMARKS.md).
 
 ## Components
 
@@ -17,7 +17,7 @@ Development milestone for the target Mac (M4 Pro, 24 GB). Nothing here changes t
 | Benchmark schema, datasets, runner | `Core/LocalBenchmark*.swift`, `Tools/ClickyLocalBench` |
 | Worker executable (MLX text/vision/cleanup, Parakeet, WhisperKit) | `Tools/ClickyLocalWorker` (separate package) |
 | App runtime (assets, workers, policies, pressure) | `TextInput/LocalAI/LocalAIRuntime*.swift`, `LocalAIEnvironment.swift` |
-| Local AI Lab window | `TextInput/LocalAI/Lab*.swift`, `LocalAILab*.swift` |
+| Clicky window › Local AI (Models, Playground, Results) | `TextInput/Settings/Panes/Models*.swift`, `ModelRow.swift`, `PlaygroundPane.swift`, `ResultsPane.swift`, `TextInput/LocalAI/Lab*.swift`, `LocalAILabModel.swift` |
 | Microphone capture | `TextInput/VoiceAudioRecorder.swift` |
 | Voice modes, shortcuts, status panel | `TextInput/Voice/*.swift` |
 | Dictation insertion | `WritingCoordinator.startDictation` (intent `.dictation`) |
@@ -38,8 +38,21 @@ Development milestone for the target Mac (M4 Pro, 24 GB). Nothing here changes t
 
 1. Install the Metal Toolchain (Xcode › Settings › Components, or `xcodebuild -downloadComponent MetalToolchain`). Without it MLX models cannot load; Core ML speech still works.
 2. `bash scripts/build-local-worker.sh` writes `build/local-worker/{clicky-local-worker, mlx.metallib, VERSION}`. **Run it before building the app.** The Xcode target's "Embed Local Worker" phase copies the worker into `Contents/Helpers` and signs it on copy; the "Embed MLX Shaders" phase copies `mlx.metallib` into `Contents/Resources`. The app build fails if either file is missing.
-3. Models: Local AI Lab › Models (Download / Import folder…), or `clicky-local-bench models download <id>`. Store: `~/Library/Application Support/Clicky/Models/<id>/<revision>`, verified against pinned hashes. Nothing downloads automatically.
-4. Load models explicitly in the Lab (or set a policy), then use the Lab tabs or the voice shortcuts.
+3. Models: Settings › Models (Download; Import folder… in the expanded row), or `clicky-local-bench models download <id>`. Store: `~/Library/Application Support/Clicky/Models/<id>/<revision>`, verified against pinned hashes. Nothing downloads automatically.
+4. Load models explicitly in Settings › Models (or set a load policy in the expanded row), then use Playground or the voice shortcuts.
+
+## On-device assistant backend
+
+Settings › General › Backend › **On-device** (`AgentProvider.local`) answers Quick Ask, pointing, walkthroughs and writing with the selected vision model; writing can also pick it separately. Nothing runs through Claude Code or Codex and there is no cloud fallback.
+
+- `LocalMLXAgent` implements `GuideAgentRunning`. The worker keeps no state, so the agent holds the transcript in memory (44 KB UTF-8 budget, oldest exchanges dropped first) and resends it every turn. Only the latest capture is attached; a turn that names another capture gets no image.
+- Screen first: Qwen3-VL-4B answered "help me …" in text or with a guessed box instead of asking for the screen, so on-device questions attach the shared window on the first turn when sharing allows it (same grant and display-consent rules as a context request; the image never leaves the Mac). With sharing off the turn stays text only, and an annotation, step or verdict without a capture is turned into a context request.
+- `LocalPrompt` (`clicky-local-guide-1`, `clicky-local-writing-1`) is a compact version of the shared contracts, with one JSON example per kind. Boxes are `[x1, y1, x2, y2]` on the 0–1000 grid; the model never writes a captureID.
+- `LocalReply` extracts the first JSON object, converts grid boxes to pixels of the sent image, inserts that image's captureID, maps gesture synonyms (`left_click` → `click`), fills unused nullable fields and drops fields the kind does not use. The shared `GuidePresentation.parseResponse` then validates as for any provider, so a missing target, action or verdict still fails.
+- An unusable reply gets one repair turn naming the field to fix; a second failure is a normal provider error (Retry). The shared wrong-purpose correction still applies once.
+- Output caps: writing 4096 tokens, verification 512, other guide turns 1536. Image long side up to 1568 px. Effort does not apply.
+- Requests honour the vision group's load policy; with Manual the error asks you to load the model in Models. An assistant turn waits up to 5 s for another foreground job on the inference worker before reporting busy.
+- Candidates in the catalog: Qwen3-VL 4B (default), 2B, 8B 4-bit (5.8 GB) and 8B 8-bit (9.9 GB; above the default 45% budget on 24 GB). Qwen3-VL-30B-A3B 4-bit (18.3 GB weights, about 23 GB estimated) does not fit the 80% maximum budget on 24 GB and is not listed.
 
 ## Voice input
 
@@ -68,6 +81,8 @@ The first load includes Core ML/ANE compilation. Worker `phys_footprint` (69 MB 
 | Qwen3-VL-4B 4-bit, text rewrite | correct, polite rewrite | first token 58 ms, 195 ms total (warm); load 826 ms | 3.22 GB (3.23 GB) |
 | Qwen3-VL-4B 4-bit, synthetic button grounding (10 × 1280×800) | JSON 10/10, target 10/10, mean IoU 0.91 | 2.5 s per image (about 1,100 prompt tokens of prefill) | 4.56 GB (4.58 GB) |
 
+| Qwen3-VL-4B 4-bit, on-device assistant path (`clicky-local-bench guide`, 5 screens × pointing + step) | accepted 10/10, repairs 0, target hit 9/10, mean IoU 0.81 (before the example-based prompt: accepted 0/6, the model omitted `text` and wrote `left_click`) | 4.8 s per case (debug CLI, warm) | not measured |
+
 Grounding must use the model-native `bbox_2d` box on a 0–1000 grid (`Core/LocalGrounding.swift`). Asking for pixels gave 1/10, because the model answered in its own grid regardless, and the worker downscales images to 1024 px. Image-size and crop trade-offs for vision latency are not measured yet.
 
 ## Limitations
@@ -76,4 +91,4 @@ Grounding must use the model-native `bbox_2d` box on a 0–1000 grid (`Core/Loca
 - `mlx.metallib` targets macOS 14+. mlx-swift runs in JIT mode, so on M5 with macOS 26.2+ the NAX kernels are compiled at runtime from source embedded in the worker; they don't need to be in the metallib, and one metallib serves all Apple Silicon. This is untested on M5 hardware.
 - Parakeet cancellation takes effect only after the current Core ML call returns, so the delay is bounded by one transcription. That measured 59 / 64 ms (P50 / P95) on 7.5 s clips and scales roughly linearly with audio length; Clicky revokes delivery immediately either way. WhisperKit cancels mid-call.
 - SwiftPM fetches FluidAudio's NeMo text-processing binary at resolve time, although it is not linked.
-- Personal benchmark recordings exist only after you record them in the Lab. Personal acceptance is pending.
+- Personal benchmark recordings exist only after you record them in Settings › Playground › Speech. Personal acceptance is pending.

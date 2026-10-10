@@ -122,6 +122,8 @@ nonisolated public final class ManagedAgentRunner: @unchecked Sendable {
                 var process: AgentProcess?
                 do {
                     try Task.checkCancellation()
+                    // The legacy runner only drives CLIs; the on-device model goes through `LocalMLXAgent`.
+                    if provider == .local { throw AskError.protocolFailure("The on-device model is not available in this runner.") }
                     if provider == .preview {
                         continuation.yield(.status("Local preview — no AI request was made."))
                         continuation.yield(.textDelta("Quick Ask received your text:\n\n" + request.text))

@@ -18,10 +18,13 @@ extension LocalAIRuntime {
     /// Runs `body` as the role's single expensive job. A foreground job cancels a running benchmark job first;
     /// any other overlap is refused with `.busy` rather than queued silently. The body runs off the main actor,
     /// so large payload writes never block the UI.
-    func perform<T: Sendable>(_ group: LocalModelGroup, jobClass: LocalAIJobClass = .foreground,
+    /// `slotWait` lets a foreground caller wait that many seconds for another foreground job to finish instead of
+    /// failing with `.busy` at once; the wait ends early on cancellation.
+    func perform<T: Sendable>(_ group: LocalModelGroup, jobClass: LocalAIJobClass = .foreground, slotWait: TimeInterval = 0,
                               _ body: @escaping @Sendable (LocalWorkerConnection, LocalModelReference) async throws -> T) async throws -> T {
         if jobClass == .benchmark { try requireCoolEnough() }
         let role = group.role
+        if jobClass == .foreground, slotWait > 0 { try await waitForForegroundSlot(role, seconds: slotWait) }
         let job = try await claimSlot(group, jobClass: jobClass)
         guard let model = loaded[group], let connection = connections[role], connection.isRunning else {
             finish(job)
@@ -55,6 +58,16 @@ extension LocalAIRuntime {
         return job
     }
 
+    /// Polls until no foreground job holds the role's slot or `seconds` pass; `claimSlot` then decides as usual.
+    func waitForForegroundSlot(_ role: LocalWorkerRole, seconds: TimeInterval) async throws {
+        // Wall time, not `env.now`: the wait bounds what the user experiences even when tests fake idle time.
+        let clock = ContinuousClock()
+        let deadline = clock.now + .milliseconds(Int(seconds * 1000))
+        while let active = activeJobs[role], active.jobClass == .foreground, clock.now < deadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
     func cancelJob(_ job: LocalAIJob) {
         if groups[job.group]?.phase == .running { groups[job.group]?.phase = .canceling }
         job.cancel()
@@ -74,12 +87,12 @@ extension LocalAIRuntime {
 
     /// Streams a generation for a loaded text or vision model. The image (if any) is sent from a detached task.
     func generate(group: LocalModelGroup, messages: [LocalChatMessage], imagePNG: Data? = nil,
-                  parameters: LocalGenerationParameters, jobClass: LocalAIJobClass = .foreground)
+                  parameters: LocalGenerationParameters, jobClass: LocalAIJobClass = .foreground, slotWait: TimeInterval = 0)
         -> AsyncThrowingStream<LocalWorkerEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { [self] in
                 do {
-                    try await perform(group, jobClass: jobClass) { connection, reference in
+                    try await perform(group, jobClass: jobClass, slotWait: slotWait) { connection, reference in
                         let command = LocalWorkerCommand.generate(request: UUID(), modelIdentifier: reference.identifier, messages: messages,
                                                                   parameters: parameters, hasImage: imagePNG != nil)
                         for try await event in connection.request(command, payload: imagePNG ?? Data()) { continuation.yield(event) }

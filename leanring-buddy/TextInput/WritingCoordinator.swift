@@ -258,7 +258,7 @@ final class WritingCoordinator: ObservableObject {
             let text = intent == .rewrite ? source?.text ?? "" : "Preview draft (no AI): " + instruction
             return .draft(text: text, subject: nil)
         }
-        guard let executable else { throw AskError.missingExecutable(provider.displayName) }
+        if provider.needsExecutable, executable == nil { throw AskError.missingExecutable(provider.displayName) }
         let context = surrounding ? await bound.asyncMap(environment.readSurrounding) : nil
         let payload = WritingHostPayload(operation: intent, skill: skill.map { .init(name: $0.name, instructions: $0.instructions) },
                                          source: source?.text, reference: reference, surrounding: context ?? nil,

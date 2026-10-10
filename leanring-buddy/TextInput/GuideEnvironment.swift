@@ -41,7 +41,8 @@ struct GuideEnvironment {
     var beginSelection: (CGRect, @escaping (CGPoint) -> Void, @escaping () -> Void) -> GuideSelectionSurface?
     /// Installs the system event sources for one observation; returns a token that removes them.
     var installEventSources: (GuideObserver, _ keys: Bool) -> GuideEventSources?
-    var makeAgent: (_ provider: AgentProvider, _ executable: URL, _ root: URL, _ effort: AskEffort,
+    /// `executable` is nil for providers that need none (`AgentProvider.needsExecutable`).
+    var makeAgent: (_ provider: AgentProvider, _ executable: URL?, _ root: URL, _ effort: AskEffort,
                     _ onUnexpectedExit: @escaping @Sendable (String) -> Void) throws -> any GuideAgentRunning
 
     static let live = GuideEnvironment(
@@ -71,9 +72,10 @@ struct GuideEnvironment {
         frontmostProcess: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
         requestDisplayConsent: { target, provider in
             let alert = NSAlert()
-            alert.messageText = "Share this display with \(provider.displayName)?"
+            alert.messageText = provider == .local ? "Share this display with the on-device model?" : "Share this display with \(provider.displayName)?"
             alert.informativeText = "No window was focused, so Clicky would capture the whole display under the pointer when a question needs it. "
                 + "Approval lasts until Clicky quits or you turn it off in Settings; another display or provider asks again. Images stay in memory."
+                + (provider == .local ? " The on-device model runs on this Mac; nothing is sent over the network." : "")
             alert.addButton(withTitle: "Share display"); alert.addButton(withTitle: "Text only")
             NSApp.activate(ignoringOtherApps: true)
             return alert.runModal() == .alertFirstButtonReturn
@@ -82,6 +84,8 @@ struct GuideEnvironment {
         beginSelection: { TargetSelectionPanel.present(over: $0, onSelect: $1, onCancel: $2) },
         installEventSources: { GuideEventSources.installSystem(for: $0, keys: $1) },
         makeAgent: { provider, executable, root, effort, onUnexpectedExit in
+            if provider == .local { return LocalMLXAgent(contract: .guide, client: LocalAIRuntime.assistantClient) }
+            guard let executable else { throw AskError.missingExecutable(provider.displayName) }
             let profile = try GuideAgentProfile(provider: provider, root: root, taskID: UUID(), effort: effort)
             return GuideAgentSession(profile: profile, executable: executable, onUnexpectedExit: onUnexpectedExit)
         })

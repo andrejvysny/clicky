@@ -95,6 +95,9 @@ final class FakeWritingWorld {
 
     nonisolated static func range(_ location: Int, _ length: Int) -> UTF16Range { UTF16Range(location: location, length: length)! }
 
+    /// When set, `.local` coordinators get the real `LocalMLXAgent` over this scripted client.
+    var localModel: LocalInferenceClient?
+
     var environment: WritingEnvironment {
         WritingEnvironment(
             captureTargets: { [unowned self] _ in WritingTargets(primary: primary, alternate: alternate, ambiguous: ambiguous) },
@@ -123,7 +126,11 @@ final class FakeWritingWorld {
                 events.append("restore"); restoreCalls.append(edit); return restoreResult
             },
             copy: { [unowned self] text in copied.append(text) },
-            makeAgent: { [unowned self] _, _, _, _ in agentsMade += 1; return agent })
+            makeAgent: { [unowned self] provider, _, _, _ in
+                agentsMade += 1
+                if let localModel, provider == .local { return LocalMLXAgent(contract: .writing, client: localModel) }
+                return agent
+            })
     }
 
     /// A coordinator over this world, bound to the primary/alternate targets as Quick Ask opening would.

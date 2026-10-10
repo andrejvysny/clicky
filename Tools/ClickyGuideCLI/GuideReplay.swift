@@ -34,7 +34,7 @@ enum GuideReplay {
         let flags = Set(options.filter { $0.hasPrefix("--") && !$0.hasPrefix("--runs=") })
         let runs = options.first { $0.hasPrefix("--runs=") }.flatMap { Int($0.dropFirst(7)) } ?? 1
         let positional = options.filter { !$0.hasPrefix("--") }
-        guard positional.count == 4, let provider = AgentProvider(rawValue: positional[0]), provider != .preview else {
+        guard positional.count == 4, let provider = AgentProvider(rawValue: positional[0]), provider.needsExecutable else {
             throw AskError.protocolFailure("Usage: clicky-guide replay claude|codex EXECUTABLE CLICKY_PROFILE_ROOT MANIFEST [--runs=N] [--show-text] [--recovery]")
         }
         let manifest = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: URL(fileURLWithPath: positional[3])))

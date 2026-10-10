@@ -39,7 +39,7 @@ struct WritingEnvironment {
     /// Guarded inverse of one applied edit; refuses when the inserted text or revision changed since.
     var restore: (TextTargetSnapshot, WritingAppliedEdit, _ authorized: @escaping WritingAuthorization) async -> Bool
     var copy: (String) -> Void
-    var makeAgent: (_ provider: AgentProvider, _ executable: URL, _ root: URL, _ effort: AskEffort) throws -> any GuideAgentRunning
+    var makeAgent: (_ provider: AgentProvider, _ executable: URL?, _ root: URL, _ effort: AskEffort) throws -> any GuideAgentRunning
 }
 
 enum WritingRequestError: LocalizedError {

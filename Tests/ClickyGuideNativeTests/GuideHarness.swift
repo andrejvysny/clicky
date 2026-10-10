@@ -109,6 +109,9 @@ final class FakeScreen {
         }
     }
 
+    /// When set, captures return this PNG instead of the painted canvas; its pixel size must match `bounds`.
+    var render: (() -> Data)?
+
     /// Runs before every capture so tests can assert what was on screen (e.g. Clicky's selection UI).
     var beforeCapture: (() -> Void)?
 
@@ -118,6 +121,11 @@ final class FakeScreen {
         captures += 1
         if holdCaptures { await withCheckedContinuation { captureGate = $0 } }
         guard let bounds else { throw AttachmentError.targetChanged }
+        let identityFor = ScreenContextIdentity(applicationIdentifier: target.applicationIdentifier,
+                                                windowIdentifier: target.windowIdentifier, displayIdentifier: 1, capturedAt: Date())
+        if let rendered = render?() {
+            return try PNGImageAttachment(data: rendered, displayName: "Rendered fixture", context: identityFor, capturedRegion: bounds)
+        }
         let provider = CGDataProvider(data: Data(pixels) as CFData)!
         let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
                             space: CGColorSpaceCreateDeviceRGB(),
@@ -185,7 +193,8 @@ final class GuideHarness {
     let selection = SelectionScript()
     private let suite = "ClickyGuideHarness." + UUID().uuidString
 
-    init() {
+    /// With `localModel`, the controller runs the real on-device `LocalMLXAgent` over that scripted client instead.
+    init(localModel: LocalInferenceClient? = nil) {
         defaults = UserDefaults(suiteName: suite)!
         let clock = clock, screen = screen, agent = agent
         var environment = GuideEnvironment.live
@@ -208,15 +217,18 @@ final class GuideHarness {
         environment.focusedElement = { _ in nil }
         environment.fieldFrame = { _, _ in nil }
         environment.frontmostProcess = { screen.frontmost }
-        environment.makeAgent = { _, _, _, _, _ in agent }
+        environment.makeAgent = { provider, _, _, _, _ in
+            if let localModel, provider == .local { return LocalMLXAgent(contract: .guide, client: localModel) }
+            return agent
+        }
         environment.installEventSources = { _, _ in nil }
         environment.watchActivation = { _ in nil }
         let selection = selection
         environment.beginSelection = { region, select, cancel in selection.open(region, select, cancel) }
         controller = VisualGuideController(environment: environment)
         controller.defaults = defaults
-        controller.provider = .claude
-        controller.executable = URL(fileURLWithPath: "/nonexistent/scripted-agent")
+        controller.provider = localModel == nil ? .claude : .local
+        controller.executable = localModel == nil ? URL(fileURLWithPath: "/nonexistent/scripted-agent") : nil
         controller.sharingPreference = .always
         controller.onTarget = { [weak self] mark in self?.shownTargets.append(mark.target) }
         controller.onClearTarget = { [weak self] in self?.clearedTargets += 1 }

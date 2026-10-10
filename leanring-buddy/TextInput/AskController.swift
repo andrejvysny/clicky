@@ -25,7 +25,6 @@ final class AskController: ObservableObject {
     @Published private(set) var captureTargetName: String?
     @Published var editorGeneration = UUID()
     @Published private(set) var presentationHasSubmission = false
-    @Published var showSettings = false
     /// Per-prompt effort; resets to Low after every submission.
     @Published private(set) var effort: AskEffort = .low
     @Published private(set) var selection: SelectionQuote?
@@ -68,6 +67,14 @@ final class AskController: ObservableObject {
             preferences.set(provider.rawValue, forKey: "askProvider")
             cancelLogin()
             guide.endTask(); writing.reset(); syncGuideSettings(); response = ""; removeAttachment(); replySpeech.stop()
+            if writingFollowsBackend { writingProvider = provider }
+        }
+    }
+    /// "Same as backend": writing uses the chat provider and follows it when it changes.
+    @Published var writingFollowsBackend: Bool {
+        didSet {
+            preferences.set(writingFollowsBackend, forKey: "askWritingFollowsBackend")
+            if writingFollowsBackend { writingProvider = provider }
         }
     }
     /// Writing (Write/Rewrite/skills) has its own provider; it starts as whatever the shared provider was, so
@@ -108,7 +115,10 @@ final class AskController: ObservableObject {
         let sharedProvider = AgentProvider(rawValue: defaults.string(forKey: "askProvider") ?? "") ?? .preview
         provider = sharedProvider
         if defaults.string(forKey: "askWritingProvider") == nil { defaults.set(sharedProvider.rawValue, forKey: "askWritingProvider") }
-        writingProvider = AgentProvider(rawValue: defaults.string(forKey: "askWritingProvider") ?? "") ?? sharedProvider
+        let savedWritingProvider = AgentProvider(rawValue: defaults.string(forKey: "askWritingProvider") ?? "") ?? sharedProvider
+        writingProvider = savedWritingProvider
+        // Before this preference existed, a writing provider equal to the backend behaved as "same as backend".
+        writingFollowsBackend = defaults.object(forKey: "askWritingFollowsBackend") as? Bool ?? (savedWritingProvider == sharedProvider)
         speechPreference = SpeechReplyPreference(rawValue: defaults.string(forKey: "askSpeechPreference") ?? "") ?? .voiceOnly
         let savedSharing = defaults.string(forKey: "askTaskSharing") ?? defaults.string(forKey: "askScreenInclusion") ?? ""
         screenInclusion = ScreenInclusionPreference.stored(savedSharing) ?? (testing ? .off : .always)
@@ -139,6 +149,7 @@ final class AskController: ObservableObject {
     var selectedExecutable: URL? { executable(for: provider) }
     var writingExecutable: URL? { executable(for: writingProvider) }
     private func executable(for provider: AgentProvider) -> URL? {
+        guard provider.needsExecutable else { return nil }
         let path = provider == .claude ? claudeExecutable : codexExecutable
         return path.isEmpty ? nil : URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
     }
@@ -155,7 +166,7 @@ final class AskController: ObservableObject {
         if isCapturing { submitAfterCapture = canSubmit; return submitAfterCapture }
         guard canSubmit else { return false }
         do {
-            if provider != .preview {
+            if provider.needsExecutable {
                 guard let selectedExecutable, FileManager.default.isExecutableFile(atPath: selectedExecutable.path) else { throw AskError.missingExecutable(provider.displayName) }
             }
             syncGuideSettings(); replySpeech.stop()
@@ -250,7 +261,7 @@ final class AskController: ObservableObject {
         case .localError(let message):
             errorMessage = message; return .handled(false)
         case .snippet, .write, .rewrite:
-            if case .snippet = route {} else if writingProvider != .preview {
+            if case .snippet = route {} else if writingProvider.needsExecutable {
                 guard let writingExecutable, FileManager.default.isExecutableFile(atPath: writingExecutable.path) else {
                     errorMessage = AskError.missingExecutable(writingProvider.displayName).localizedDescription; return .handled(false)
                 }

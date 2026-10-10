@@ -8,7 +8,7 @@ Environment: Apple Silicon, macOS 26.6.2, Xcode 26.6, Swift 6.3.3, Claude 2.1.29
 
 | QA finding | Change and evidence |
 |---|---|
-| QA-01: native Settings scene was empty | The native scene uses the same live controller and grouped settings as the companion menu. Cmd+, opened populated backend, shortcut, screen and speech settings in the signed app. |
+| QA-01: native Settings scene was empty | The native scene uses the same live controller and grouped settings as the companion menu. Cmd+, opened populated backend, shortcut, screen and speech settings in the signed app. Superseded: ⌘, now opens the single Clicky window (`TextInput/Settings/`); the empty `Settings` scene exists only because a SwiftUI app needs one scene. |
 | QA-02: initial shortcut failure | Carbon rebinding is transactional: registration failure preserves the previous working shortcut. Native Option+Shift+Space opened Quick Ask repeatedly after permissions and relaunch. The original physical-shortcut failure's cause was not isolated; portable registration tests do not prove that historical cause. |
 | QA-03: Codex 0.162.0 rejected | Kept unavailable with a specific isolation error. All owned effective configuration and runtime restrictions are audited before a user turn. A temporary unauthenticated audit established that configuration alone cannot exclude model-required code/patch tools; no user request or inference was sent. |
 | QA-04: layout diagnostics | Deferred/coalesced fitting and finite initial frames harden the island, composer and menu panel. A symbolic breakpoint traced the remaining recursion warning to AppKit's `NSStatusBarContentView` during a system scene resize, with no Clicky layout callback on the stack. That platform warning remains; no blanket warning-free claim is made. |
@@ -63,7 +63,7 @@ The previous 44-test text-client/provider transport evidence concerned `clicky-t
 
 Use Xcode 26+ / Swift 6.2+ with the shared `leanring-buddy` scheme and My Mac destination. Set the user's signing team, Cmd+B to build, Cmd+R to run, Cmd+U to test. The product is `Clicky.app`; test host/module settings use Clicky while the legacy directory/scheme stay unchanged. Never invoke terminal `xcodebuild`, which can alter the application's TCC identity.
 
-For native provider setup, temporarily add `--clicky-show-settings` to the Xcode Run arguments. DEBUG only: it opens the full composer with Settings using the ordinary provider/authentication paths. Remove the launch argument after validation. It does not grant capture or Accessibility access. Requested model defaults are Haiku 5.5 and GPT-6 Luna, both low effort; no model substitution is enabled.
+For native provider setup, temporarily add `--clicky-show-settings` to the Xcode Run arguments. DEBUG only: it opens the Clicky window (General, or the pane named by `--clicky-open-settings=<pane>`) using the ordinary provider/authentication paths. Remove the launch argument after validation. It does not grant capture or Accessibility access. Requested model defaults are Haiku 5.5 and GPT-6 Luna, both low effort; no model substitution is enabled.
 
 ```bash
 bash scripts/mac-preflight.sh
@@ -170,7 +170,7 @@ Environment: macOS 26.6.2 (Apple Silicon), Chrome 154.0.8037.98, Terminal 2.15 w
 | | `scripts/probe-writing-native.sh terminal` | Pass: ready zsh prompt bound by window id + tty, complex single-line command inserted verbatim with no confirmation, execution-counter file absent after insertion, present only after the tester's separate Return; multiline refused; busy tab (`sleep`) bound as not ready |
 | | `scripts/probe-writing-native.sh chrome-rich` | **Not passed.** Contenteditable located and focused, but another application became frontmost during the run; the adapter refused both writes (`focusChanged`) and the content stayed unchanged. Rerun on an idle desktop |
 | | `scripts/probe-writing-native.sh vscode`, `vscode-terminal` | **Not run.** An isolated VS Code instance could not start from the session scratch directory (IPC socket path > 103 bytes), and installing the bridge into the user's VS Code needs explicit approval |
-| Signed GUI (Xcode, `leanring-buddy` scheme) | Quick Ask picker, Write/Rewrite/snippet end to end, key hold/repeat, notice panel, Settings › Writing | **Not run** |
+| Signed GUI (Xcode, `leanring-buddy` scheme) | Quick Ask picker, Write/Rewrite/snippet end to end, key hold/repeat, notice panel, Clicky window › Writing | **Not run** |
 | Real provider | Claude/Codex `writing` contract (`clicky-writing-2`) drafts, rewrites, clarifications | **Not run** |
 
 Findings fixed during native probing: Chrome applies AX selection asynchronously (the adapter now waits for the exact range to read back); Chrome ignores `AXSelectedText` and `AXReplaceRangeWithText` writes even though they report success (paste is the only write path); Terminal's `processes` must be bound to a variable before `last item` and `tab` inside `tell application "Terminal"` is Terminal's tab class; Terminal's AX character count drops one character per soft-wrapped line (the insertion caret delta is the evidence instead); key events reach only the frontmost application (every adapter re-checks frontmost and the focused control immediately before ⌘V).
@@ -213,9 +213,26 @@ Design and setup: [LOCAL_AI.md](LOCAL_AI.md); benchmark procedure: [LOCAL_BENCHM
 
 Signed native acceptance still required (scratch data only):
 
-1. Lab: opening Settings or the Lab starts no worker, captures nothing and records nothing (check Activity Monitor for `clicky-local-worker` and the microphone indicator). Load and unload each group. Text, Draft and Rewrite parse; a screenshot question and the grounded rectangle stay inside the preview. Speech: record, stop, transcribe, cleanup, diff, Use original, Save sample, Delete. Export JSON only through the save panel.
+1. Clicky window: opening any pane (Settings, Models, Playground, Results) starts no worker, captures nothing and records nothing (check Activity Monitor for `clicky-local-worker` and the microphone indicator). Load and unload each group. Text, Draft and Rewrite parse; a screenshot question and the grounded rectangle stay inside the preview. Speech: record, stop, transcribe, cleanup, diff, Use original, Save sample, Delete. Export JSON only through the save panel.
 2. Offline: with Wi-Fi off after setup, ASR + cleanup + text + vision all run.
 3. Dictate Anywhere into a Chrome textarea and a VS Code editor: exactly one insertion, no Send. With a selection, review appears. Switching apps mid-recording and pressing Cancel each produce no external write. At a Terminal prompt, a single-line result is inserted but not executed until your own Return.
 4. Ask by voice: the draft appears in Quick Ask, nothing is submitted until Enter, and an existing draft is preserved.
 5. Hold versus tap, repeats, releasing a modifier before the key, and Bluetooth/USB microphone unplug mid-recording.
-6. Contention: run a Lab vision prompt and an ASR+cleanup benchmark while scrolling a heavy Chrome page and orbiting a disposable Blender scene. Record observations in the run (`--observation`).
+6. Contention: run a Playground vision prompt and an ASR+cleanup benchmark while scrolling a heavy Chrome page and orbiting a disposable Blender scene. Record observations in the run (`--observation`).
+
+## On-device backend — 10 October 2026 (development; signed GUI acceptance pending)
+
+| Layer | Command | Result |
+|---|---|---|
+| Portable + coordinator | `bash scripts/test-core.sh` | 601 XCTest cases pass, including `LocalMLXAgentTests` (normalization, repair once, history bounds, image attachment, busy/close/cancel/timeout) and `LocalBackendTests` (production `VisualGuideController` walkthrough step → verification → next step and `WritingCoordinator` draft through the real `LocalMLXAgent` with scripted model text, no executable) |
+| App typecheck | `bash scripts/typecheck-app.sh` and `--debug` | no errors |
+| Real model through the production coordinators | `CLICKY_LIVE_MODEL=qwen3-vl-4b-instruct-4bit CLICKY_LOCAL_WORKER=$PWD/build/local-worker/clicky-local-worker bash scripts/test-core.sh --filter LocalLiveWorkflowTests` (skipped without the variables) | Rendered two-pane settings fixture, simulated clicks and clock: walkthrough Appearance → Dark Mode toggle, both steps verified, goal check verified, completed in 38 s; side question kept the step; a different goal returned task_proposal; writing draft applied and rewrite proposed for Replace selection. Not GUI, focus or real-app evidence |
+| Real worker, synthetic screens | `clicky-local-bench guide --model qwen3-vl-4b-instruct-4bit --count 5` | accepted 10/10, target hit 9/10, IoU 0.81 (see LOCAL_AI.md); not real-application or GUI evidence |
+
+Signed native acceptance still required:
+
+1. With Backend On-device and the vision model loaded: a Quick Ask text answer, a follow-up that keeps context, "where is …" on a Chrome window (mark on the right control), and a 3–5 step walkthrough with verification. No `claude`/`codex` process starts (Activity Monitor) and the Mac can be offline.
+2. `/rewrite` and `/write` in a Chrome field via On-device writing: apply and Replace selection behave as with other providers.
+3. With the model unloaded and Manual policy, the error points to Models; with On demand it loads and answers.
+4. Desktop (no window) asks display consent naming the on-device model.
+5. Run the `guide` benchmark for each 8B candidate and compare before changing the default vision model.

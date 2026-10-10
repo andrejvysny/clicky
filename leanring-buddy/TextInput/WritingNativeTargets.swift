@@ -108,6 +108,8 @@ final class WritingNativeTargets {
             restore: { [weak self] in await self?.restore($0, $1, authorized: $2) ?? false },
             copy: { text in NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) },
             makeAgent: { provider, executable, root, effort in
+                if provider == .local { return LocalMLXAgent(contract: .writing, client: LocalAIRuntime.assistantClient) }
+                guard let executable else { throw AskError.missingExecutable(provider.displayName) }
                 let profile = try GuideAgentProfile(provider: provider, root: root, taskID: UUID(), effort: effort, contract: .writing)
                 return GuideAgentSession(profile: profile, executable: executable)
             })

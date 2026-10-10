@@ -17,9 +17,13 @@ struct leanring_buddyApp: App {
     @NSApplicationDelegateAdaptor(CompanionAppDelegate.self) var appDelegate
 
     var body: some Scene {
-        Settings {
-            AppSettingsView(controller: appDelegate.askController)
-        }
+        // A SwiftUI app needs one scene; Settings lives in the AppKit Clicky window, and ⌘, opens it.
+        Settings { EmptyView() }
+            .commands {
+                CommandGroup(replacing: .appSettings) {
+                    Button("Settings…") { SettingsWindowController.shared.show() }.keyboardShortcut(",")
+                }
+            }
     }
 }
 
@@ -73,12 +77,14 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         askController.guide.onAnnotate = { [weak self] mark in self?.pointingPresenter.show(Self.spec(mark), persistent: false) }
         askController.guide.onClearAnnotation = { [weak self] in self?.pointingPresenter.hide() }
         quickAskPanelManager = QuickAskPanelManager(controller: askController)
+        SettingsWindowController.shared.configure(ask: askController, companion: companionManager)
         island.refresh()
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager, askController: askController) { [weak self] presentation in
             self?.quickAskPanelManager?.show(presentation)
         }
         if ProcessInfo.processInfo.arguments.contains("--clicky-ui-test") {
-            if ProcessInfo.processInfo.arguments.contains("--clicky-guide-demo") { askController.guide.startDemo() }
+            if let pane = Self.settingsPaneArgument() { SettingsWindowController.shared.show(pane) }
+            else if ProcessInfo.processInfo.arguments.contains("--clicky-guide-demo") { askController.guide.startDemo() }
             else { quickAskPanelManager?.show() }
             return
         }
@@ -94,7 +100,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         companionManager.startTextMode()
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--clicky-show-settings") {
-            quickAskPanelManager?.show(.details(showSettings: true))
+            SettingsWindowController.shared.show(Self.settingsPaneArgument() ?? .general)
             return
         }
         #endif
@@ -121,6 +127,13 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         scopedShortcuts.unregisterAll()
         quickAskPanelManager?.close(restoreFocus: false)
         companionManager.stopTextMode()
+    }
+
+    /// `--clicky-open-settings=<pane>` (UI tests and DEBUG) opens the Clicky window on that pane.
+    private static func settingsPaneArgument() -> SettingsPaneID? {
+        let prefix = "--clicky-open-settings="
+        guard let argument = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix(prefix) }) else { return nil }
+        return SettingsPaneID(rawValue: String(argument.dropFirst(prefix.count)))
     }
 
     private static func spec(_ mark: GuideMark) -> AnnotationOverlay.AnnotationSpec {

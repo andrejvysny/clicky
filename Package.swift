@@ -44,7 +44,7 @@ package.targets += [
                       "WritingCoordinator.swift", "WritingEnvironment.swift", "WritingClipboard.swift",
                       "QuickAskHotkey.swift", "VoiceAudioRecorder.swift",
                       "Voice/VoiceEnvironment.swift", "Voice/VoiceTypes.swift", "Voice/VoiceDraft.swift", "Voice/VoiceController.swift", "Voice/VoiceController+Session.swift", "Voice/VoiceController+Delivery.swift",
-                      "LocalAI/LocalAIEnvironment.swift", "LocalAI/LocalAIRuntime.swift", "LocalAI/LocalAIRuntime+Models.swift", "LocalAI/LocalAIRuntime+Workers.swift", "LocalAI/LocalAIRuntime+Jobs.swift", "LocalAI/LabText.swift"],
+                      "LocalAI/LocalAIEnvironment.swift", "LocalAI/LocalAIRuntime.swift", "LocalAI/LocalAIRuntime+Models.swift", "LocalAI/LocalAIRuntime+Workers.swift", "LocalAI/LocalAIRuntime+Jobs.swift", "LocalAI/LocalAIRuntime+Assistant.swift", "LocalAI/LabText.swift"],
             swiftSettings: appTargetSwiftSettings),
     .testTarget(name: "ClickyGuideNativeTests", dependencies: ["ClickyGuideNative", "ClickyCore", "ClickyFakeWorker"], path: "Tests/ClickyGuideNativeTests",
                 swiftSettings: appTargetSwiftSettings),

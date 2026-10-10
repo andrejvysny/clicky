@@ -2,14 +2,20 @@ import Foundation
 
 nonisolated public enum AgentProvider: String, Codable, CaseIterable, Sendable {
     case claude, codex, preview
+    /// The bundled MLX worker: no CLI executable, no network, nothing leaves the Mac.
+    case local
 
     public var displayName: String {
         switch self {
         case .claude: return "Claude Code"
         case .codex: return "Codex"
         case .preview: return "Local preview (no AI)"
+        case .local: return "On-device (MLX)"
         }
     }
+
+    /// Claude and Codex run a user-installed CLI; preview and the on-device model need no executable.
+    public var needsExecutable: Bool { self == .claude || self == .codex }
 }
 
 nonisolated public struct AgentSession: Codable, Equatable, Sendable {

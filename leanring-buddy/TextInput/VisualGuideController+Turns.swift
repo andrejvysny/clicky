@@ -21,6 +21,7 @@ extension VisualGuideController {
                     var turn = GuideAgentTurn(message: message, purpose: sideQuestion ? .sideQuestion : .planning,
                                               taskContext: task.map(GuideHostTaskContext.init))
                     if captureFirst { turn = try await captureTurn(message: message, crop: crop, current: current) }
+                    else if provider == .local, let screenFirst = try await screenFirstTurn(turn, current: current) { turn = screenFirst }
                     try await presentationLoop(turn, current: current)
                 }
             } catch {
@@ -45,7 +46,7 @@ extension VisualGuideController {
 
     private func getAgent(effort: AskEffort) throws -> any GuideAgentRunning {
         if let agent { return agent }
-        guard let executable, task != nil else { throw AskError.missingExecutable(provider.displayName) }
+        guard task != nil, executable != nil || !provider.needsExecutable else { throw AskError.missingExecutable(provider.displayName) }
         agentGeneration &+= 1; let generation = agentGeneration
         let value = try environment.makeAgent(provider, executable, profileRoot, effort, { [weak self] message in
             guard let controller = self else { return }
@@ -142,6 +143,17 @@ extension VisualGuideController {
         // A crop is only meaningful against the window capture it names.
         let crop = result.crop != nil && result.captureID == lastContext?.captureID ? result.crop : nil
         return try await captureTurn(message: task.map(GuideHostMessages.requestedContext) ?? "", crop: crop, current: current)
+    }
+
+    /// The on-device model answers screen questions blind instead of asking for context, so when sharing allows it
+    /// the first turn already carries the capture a context_request would have fetched, under the same grant and
+    /// consent rules. Nothing leaves the Mac; with sharing off or no target the turn stays text-only.
+    private func screenFirstTurn(_ text: GuideAgentTurn, current: UInt64) async throws -> GuideAgentTurn? {
+        guard screenAvailable, let currentTarget, displayConsentForRequest(currentTarget) else { return nil }
+        if task?.grant == nil { task?.authorize(currentTarget) }
+        let captured = try await captureTurn(message: text.message, current: current)
+        return GuideAgentTurn(message: captured.message, image: captured.image, context: captured.context, purpose: text.purpose,
+                              taskContext: captured.taskContext)
     }
 
     /// Resolves display consent for the current request without capturing anything.

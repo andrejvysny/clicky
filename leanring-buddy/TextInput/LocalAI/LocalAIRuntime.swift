@@ -25,7 +25,7 @@ enum LocalAIError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .needsExplicitLoad(let model): return "Load \(model) first."
-        case .notInstalled(let model): return "\(model) is not installed. Download or import it in the Models tab."
+        case .notInstalled(let model): return "\(model) is not installed. Download or import it in Settings › Models."
         case .notLoaded(let model): return "\(model) is not loaded."
         case .busy: return "Another local job is running. Wait for it to finish or cancel it."
         case .workerMissing: return "The local worker is not bundled with this build. Set CLICKY_LOCAL_WORKER in a debug build."

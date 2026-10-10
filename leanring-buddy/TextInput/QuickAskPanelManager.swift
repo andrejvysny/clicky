@@ -10,7 +10,7 @@ private final class QuickAskPanel: NSPanel {
 
 enum QuickAskPresentation: Equatable {
     case ghost
-    case details(showSettings: Bool)
+    case lastReply
 }
 
 @MainActor
@@ -42,19 +42,15 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
 
     func show(_ presentation: QuickAskPresentation = .ghost) {
         NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
-        // The shortcut must never type into an open Settings window: close it and open a fresh Quick Ask.
+        // The shortcut must never type into an open Last reply panel: close it and open a fresh Quick Ask.
         if presentation == .ghost, currentPresentation != .ghost, panel?.isVisible == true { close(restoreFocus: false) }
         if let panel, panel.isVisible {
             if presentation != currentPresentation {
                 presentationIdentifier = UUID()
                 scheduledResize = nil
                 currentPresentation = presentation
-                if case .details(let settings) = presentation { controller.showSettings = settings }
                 panel.contentView = makeHostingView(for: presentation)
                 if !isUITest { installFocusObservers() }
-                resize()
-            } else if case .details(true) = presentation {
-                controller.showSettings = true
                 resize()
             }
             panel.makeKeyAndOrderFront(nil)
@@ -68,7 +64,6 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
         presentationPointer = NSEvent.mouseLocation
         anchoredTop = nil
         currentPresentation = presentation
-        if case .details(let settings) = presentation { controller.showSettings = settings } else { controller.showSettings = false }
         controller.editorGeneration = UUID()
         let newPanel = QuickAskPanel(contentRect: CGRect(x: 0, y: 0, width: panelWidth, height: 280),
                                     styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -113,7 +108,7 @@ final class QuickAskPanelManager: NSObject, NSWindowDelegate {
         switch presentation {
         case .ghost:
             host = NSHostingView(rootView: AnyView(CursorAskView(controller: controller, onCancel: onCancel, onLayoutChanged: onLayoutChanged)))
-        case .details:
+        case .lastReply:
             let screen = NSScreen.screens.first(where: { $0.frame.contains(presentationPointer) }) ?? NSScreen.main
             host = NSHostingView(rootView: AnyView(QuickAskView(controller: controller, onCancel: onCancel, onLayoutChanged: onLayoutChanged,
                                                                maximumHeight: max(240, (screen?.visibleFrame.height ?? 800) - 24))))

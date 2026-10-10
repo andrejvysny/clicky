@@ -16,15 +16,13 @@ struct TextCompanionPanelView: View {
             if let error = controller.errorMessage { Text(error).font(.caption).foregroundStyle(DS.Colors.warningText).lineLimit(4) }
             if !controller.response.isEmpty || controller.isBusy {
                 divider
-                LastReplySection(controller: controller, onOpen: { onOpenQuickAsk(.details(showSettings: false)) })
+                LastReplySection(controller: controller, onOpen: { onOpenQuickAsk(.lastReply) })
             }
             divider
             Toggle("Show blue companion", isOn: Binding(get: { companionManager.isClickyCursorEnabled }, set: { companionManager.setClickyCursorEnabled($0) }))
                 .toggleStyle(.switch).controlSize(.mini).font(.system(size: 12)).foregroundStyle(DS.Colors.textSecondary)
             HStack(spacing: 14) {
-                Button("Settings…") { onOpenQuickAsk(.details(showSettings: true)) }.buttonStyle(.plain).clickyPointerCursor()
-                Button("Local AI Lab…") { if let runtime = LocalAIRuntime.shared { LocalAILabWindow.shared.show(runtime: runtime) } }
-                    .buttonStyle(.plain).clickyPointerCursor()
+                Button("Settings…") { SettingsWindowController.shared.show() }.buttonStyle(.plain).clickyPointerCursor()
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }.buttonStyle(.plain).foregroundStyle(DS.Colors.textTertiary).clickyPointerCursor()
             }
@@ -68,12 +66,12 @@ struct TextCompanionPanelView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text(controller.provider.displayName).font(.system(size: 12, weight: .medium))
-                Text(controller.provider == .preview ? "no AI" : "managed")
+                Text(controller.provider == .preview ? "no AI" : controller.provider == .local ? "on-device" : "managed")
                     .font(.system(size: 10)).foregroundStyle(DS.Colors.textSecondary)
                     .padding(.horizontal, 5).padding(.vertical, 1)
                     .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 3))
                 Spacer()
-                Button("Switch") { onOpenQuickAsk(.details(showSettings: true)) }
+                Button("Switch") { SettingsWindowController.shared.show(.general) }
                     .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(DS.Colors.blue400).clickyPointerCursor()
             }
             Text(controller.session.map { "Clicky-owned task · " + String($0.identifier.prefix(12)) + "…" } ?? "New Clicky-owned task session")
@@ -98,13 +96,15 @@ struct TextCompanionPanelView: View {
                 .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
             }
             .buttonStyle(.plain).accessibilityLabel("Ask Clicky").clickyPointerCursor()
-            Button { controller.cycleEffort() } label: {
-                ModeRow(shortcut: "⌥⇧E in Quick Ask") {
-                    EffortPips(effort: controller.displayedEffort, size: 3).frame(width: 9)
-                    Text("Effort · \(controller.displayedEffort.displayName), resets each prompt")
+            if controller.provider != .local {
+                Button { controller.cycleEffort() } label: {
+                    ModeRow(shortcut: "⌥⇧E in Quick Ask") {
+                        EffortPips(effort: controller.displayedEffort, size: 3).frame(width: 9)
+                        Text("Effort · \(controller.displayedEffort.displayName), resets each prompt")
+                    }
                 }
+                .buttonStyle(.plain).disabled(!controller.effortAdjustable).clickyPointerCursor()
             }
-            .buttonStyle(.plain).disabled(!controller.effortAdjustable).clickyPointerCursor()
             ModeRow(shortcut: "Not enabled") {
                 Triangle().fill(ClickyChrome.ask.opacity(0.4)).frame(width: 9, height: 8)
                 Text("Ask by voice")

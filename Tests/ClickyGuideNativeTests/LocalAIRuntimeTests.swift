@@ -210,6 +210,27 @@ final class LocalAIRuntimeTests: XCTestCase {
         _ = await first.value
     }
 
+    func testAssistantSlotWaitRunsAfterTheForegroundJobInsteadOfBusy() async throws {
+        let runtime = try await makeRuntime()
+        try await runtime.load(.vision)
+        let first = Task { try? await runtime.perform(.vision) { _, _ in try await Task.sleep(nanoseconds: 200_000_000) } }
+        await eventually("job started") { runtime.activeJobs[.inference] != nil }
+        let waited = try await runtime.perform(.vision, slotWait: 5) { _, _ in 7 }
+        XCTAssertEqual(waited, 7)
+        _ = await first.value
+    }
+
+    func testAssistantSlotWaitStillReportsBusyAfterItsDeadline() async throws {
+        let runtime = try await makeRuntime()
+        try await runtime.load(.vision)
+        let first = Task { try? await runtime.perform(.vision) { _, _ in try await Task.sleep(nanoseconds: 60_000_000_000) } }
+        await eventually("job started") { runtime.activeJobs[.inference] != nil }
+        do { _ = try await runtime.perform(.vision, slotWait: 0.2) { _, _ in 1 }; XCTFail("expected busy") }
+        catch let error as LocalAIError { XCTAssertEqual(error, .busy) }
+        first.cancel()
+        _ = await first.value
+    }
+
     func testMemoryPressureWarningCancelsBenchmarkJobButNotForeground() async throws {
         let runtime = try await makeRuntime()
         try await runtime.load(.vision)
