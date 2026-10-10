@@ -111,6 +111,10 @@ final class VoiceController: ObservableObject {
     /// Review context for the dictation currently handed to the writing coordinator.
     var pendingReview: DictationReview?
     var awaitingWriter = false
+    /// Cancel was pressed while the writer was still deciding or applying; the outcome is reported honestly.
+    var insertionCanceled = false
+    @Published var undoing = false
+    var lastDictation: VoiceDictationRecord?
     var reconcileScheduled = false
     var writerObserver: AnyCancellable?
 

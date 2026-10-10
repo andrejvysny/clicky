@@ -134,7 +134,8 @@ struct VoiceStatusView: View {
         case .recording(let mode, let elapsed, let limit, let deviceName, let level): recording(mode, elapsed, limit, deviceName, level)
         case .transcribing: progress(voice.statusNote ?? "Transcribing…", cancel: true)
         case .cleaning: progress("Cleaning up…", cancel: true)
-        case .inserting: progress("Inserting…", cancel: false)
+        case .inserting: progress(voice.undoing ? "Undoing…" : "Inserting…", cancel: true)
+        case .inserted(let outcome): inserted(outcome)
         case .review(let review): VoiceReviewView(voice: voice, writer: voice.writer, review: review)
         case .result(let message): Text(message).font(.system(size: 12)).foregroundStyle(DS.Colors.textPrimary).fixedSize(horizontal: false, vertical: true)
         case .failed(let message): failed(message)
@@ -195,6 +196,23 @@ struct VoiceStatusView: View {
                 if voice.isLoadingModels { SpinnerRing(size: 10) }
                 Spacer()
                 Button("Dismiss") { voice.dismiss() }.islandButton(.quiet)
+            }
+        }
+    }
+
+    private func inserted(_ outcome: VoiceInsertedOutcome) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(outcome.message).font(.system(size: 12)).foregroundStyle(DS.Colors.textPrimary).fixedSize(horizontal: false, vertical: true)
+            if outcome.canUndo || outcome.offersOriginal {
+                HStack(spacing: 6) {
+                    if outcome.canUndo { Button("Undo") { voice.undoInsertion() }.islandButton(.secondary).accessibilityIdentifier("voiceUndo") }
+                    if outcome.offersOriginal {
+                        Button("Copy original") { voice.copyOriginalTranscript() }.islandButton(.secondary)
+                            .accessibilityIdentifier("voiceCopyOriginal")
+                    }
+                    Spacer()
+                    Button("Dismiss") { voice.dismiss() }.islandButton(.quiet)
+                }
             }
         }
     }

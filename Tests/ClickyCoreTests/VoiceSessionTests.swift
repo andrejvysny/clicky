@@ -8,7 +8,7 @@ final class VoiceSessionTests: XCTestCase {
         XCTAssertTrue(state.isRecording)
         XCTAssertTrue(state.stop(generation))
         XCTAssertEqual(state.transcribed(generation, raw: "um so I think uh we should go"), .cleaning(raw: "um so I think uh we should go"))
-        XCTAssertEqual(state.cleaned(generation, cleaned: "So I think we should go."), .insert(text: "So I think we should go."))
+        XCTAssertEqual(state.cleaned(generation, cleaned: "So I think we should go."), .insert(text: "So I think we should go.", raw: "um so I think uh we should go", cleaned: "So I think we should go."))
         XCTAssertTrue(state.finish(generation))
         XCTAssertEqual(state.stage, .completed)
     }
@@ -68,7 +68,7 @@ final class VoiceSessionTests: XCTestCase {
         var state = VoiceSessionState()
         let generation = state.begin(mode: .dictate, cleanup: false, at: 0)!
         _ = state.stop(generation)
-        XCTAssertEqual(state.transcribed(generation, raw: "uh hello there"), .delivering(.insert(text: "uh hello there")))
+        XCTAssertEqual(state.transcribed(generation, raw: "uh hello there"), .delivering(.insert(text: "uh hello there", raw: "uh hello there", cleaned: nil)))
     }
 
     func testStaleGenerationsCannotReachNewerSession() {

@@ -82,8 +82,11 @@ final class CleanupGateTests: XCTestCase {
         XCTAssertEqual(verdict("send three copies please now", "Send 3 copies please now."), .accept)
     }
 
-    func testStutteredNumberIsNotAChange() {
-        XCTAssertEqual(verdict("send 5 5 copies today", "Send 5 copies today."), .accept)
+    func testStutteredNumberIsReviewedNotRejected() {
+        // "5 5" may be a stutter or a real value; a person decides, but it is not treated as a changed number.
+        let a = CleanupGate.assess(raw: "send 5 5 copies today", cleaned: "Send 5 copies today.")
+        XCTAssertEqual(a.verdict, .review)
+        XCTAssertEqual(a.concerns, [.protectedRepetition])
     }
 
     // j
@@ -225,5 +228,46 @@ final class CleanupGateTests: XCTestCase {
         XCTAssertEqual(CleanupGate.assess(raw: "it's been a while", cleaned: "It has been a while.").verdict, .accept)
         XCTAssertEqual(CleanupGate.assess(raw: "she's finished the report", cleaned: "She has finished the report.").verdict, .accept)
         XCTAssertNotEqual(CleanupGate.assess(raw: "it's fine", cleaned: "It has fine.").verdict, .accept)
+    }
+
+    // Review findings F1: WER normalization must not hide sign, decimal or intentional repetition changes.
+    func testDroppedMinusSignNeedsReview() {
+        let a = CleanupGate.assess(raw: "The temperature is -5 degrees.", cleaned: "The temperature is 5 degrees.")
+        XCTAssertEqual(a.verdict, .review)
+        XCTAssertTrue(a.concerns.contains(.numberFormatChanged))
+    }
+
+    func testRepeatedDigitRemovalNeedsReview() {
+        let a = CleanupGate.assess(raw: "The number is 5 5 1.", cleaned: "The number is 5 1.")
+        XCTAssertEqual(a.verdict, .review)
+        XCTAssertTrue(a.concerns.contains(.protectedRepetition))
+    }
+
+    func testSplitDecimalNeedsReview() {
+        let a = CleanupGate.assess(raw: "The amount is 3.50 euros.", cleaned: "The amount is 3 50 euros.")
+        XCTAssertEqual(a.verdict, .review)
+        XCTAssertTrue(a.concerns.contains(.numberFormatChanged))
+    }
+
+    func testRepeatedNegationRemovalNeedsReview() {
+        let a = CleanupGate.assess(raw: "I do not not agree with you.", cleaned: "I do not agree with you.")
+        XCTAssertEqual(a.verdict, .review)
+        XCTAssertTrue(a.concerns.contains(.protectedRepetition))
+    }
+
+    func testNumericFormsThatKeepMeaningAreAccepted() {
+        XCTAssertEqual(verdict("um the temperature is minus five degrees", "The temperature is -5 degrees."), .accept)
+        XCTAssertEqual(verdict("it costs uh three point five euros", "It costs 3.5 euros."), .accept)
+        XCTAssertEqual(verdict("it is negative 5 today", "It is -5 today."), .accept)
+        XCTAssertEqual(verdict("pages 5-10 and a well-known fix", "Pages 5-10 and a well-known fix."), .accept)
+    }
+
+    func testOrdinaryStutterAndFillerCleanupStillAccepted() {
+        XCTAssertEqual(verdict("so um I I think we should uh leave at noon", "I think we should leave at noon."), .accept)
+    }
+
+    func testNegationDeletionAndNumberSubstitutionStillRejected() {
+        XCTAssertEqual(verdict("I do not want to go there", "I do want to go there."), .reject)
+        XCTAssertEqual(verdict("the meeting is at 5 tomorrow", "The meeting is at 6 tomorrow."), .reject)
     }
 }

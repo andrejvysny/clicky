@@ -462,6 +462,9 @@ final class WritingCoordinator: ObservableObject {
         generate(instruction: request.instruction, skill: request.skill, intent: request.intent, effort: request.effort)
     }
 
+    /// Copies text the caller already holds (voice "Copy original") through the same clipboard path.
+    func copyText(_ text: String) { environment.copy(text) }
+
     func copyProposal() {
         let text = previewText.isEmpty ? (clarification ?? "") : previewText
         guard !text.isEmpty else { return }

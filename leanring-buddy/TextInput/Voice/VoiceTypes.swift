@@ -31,6 +31,20 @@ struct DictationReview: Equatable {
     var offersOriginal: Bool { cleaned != nil && cleaned != raw }
 }
 
+/// A dictation that reached its destination. Undo is offered only for a read-back-verified edit.
+struct VoiceInsertedOutcome: Equatable {
+    var message: String
+    var canUndo: Bool
+    var offersOriginal: Bool
+}
+
+/// The last dictation's transcript, in memory only, replaced by the next dictation.
+struct VoiceDictationRecord: Equatable {
+    var session: UUID
+    var raw: String
+    var cleaned: String?
+}
+
 enum VoicePhase: Equatable {
     case idle
     case needsSpeechModels(InputMode)
@@ -40,6 +54,7 @@ enum VoicePhase: Equatable {
     case transcribing(InputMode)
     case cleaning(InputMode)
     case inserting
+    case inserted(VoiceInsertedOutcome)
     case review(DictationReview)
     case result(String)
     case failed(String)
@@ -59,6 +74,8 @@ extension CleanupConcern {
         case .numberInCorrection: return "A number was part of a self-correction."
         case .nameInCorrection: return "A name was part of a self-correction."
         case .inputTooLong: return "The text is too long to check automatically."
+        case .protectedRepetition: return "A repeated number or \"not\" was removed — it may have been intended."
+        case .numberFormatChanged: return "A minus sign or decimal point changed."
         }
     }
 }

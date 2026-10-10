@@ -61,6 +61,17 @@ nonisolated final class FakeVoiceStages: @unchecked Sendable {
     func enqueueTranscribe(_ script: StageScript) { lock.withLock { transcribeScripts.append(script) } }
     func enqueueCleanup(_ script: StageScript) { lock.withLock { cleanupScripts.append(script) } }
 
+    /// Ends the oldest suspended stage with `CancellationError` without canceling the caller's task, as the
+    /// runtime does when it unloads the model the stage is running on.
+    func cancelFromRuntime() {
+        let continuation = lock.withLock { () -> CheckedContinuation<String?, Error>? in
+            guard !waiting.isEmpty else { return nil }
+            ignoring.removeFirst()
+            return waiting.removeFirst()
+        }
+        continuation?.resume(throwing: CancellationError())
+    }
+
     /// Resolves the oldest suspended stage with `text`.
     func release(_ text: String?) {
         let continuation = lock.withLock { () -> CheckedContinuation<String?, Error>? in
@@ -625,6 +636,90 @@ final class VoiceControllerTests: XCTestCase {
         XCTAssertFalse("\(h.controller.phase)".contains("SECRETMARKER"))
     }
 
+    // Review findings: raw transcript, cancel through insertion, runtime cancellation
+
+    func testAcceptedCleanupKeepsRawForUndoAndCopyOriginal() async {
+        let h = VoiceHarness(cleanup: true)
+        h.world.stages.enqueueTranscribe(.text("um so we should meet at noon tomorrow"))
+        h.world.stages.enqueueCleanup(.text("So we should meet at noon tomorrow."))
+        h.hold()
+        await waitUntil("not inserted") { if case .inserted = h.controller.phase { return true }; return false }
+        guard case .inserted(let outcome) = h.controller.phase else { return XCTFail("expected inserted") }
+        XCTAssertTrue(outcome.canUndo)
+        XCTAssertTrue(outcome.offersOriginal)
+        XCTAssertEqual(h.controller.lastDictation?.raw, "um so we should meet at noon tomorrow")
+        h.controller.copyOriginalTranscript()
+        XCTAssertEqual(h.writing.copied, ["um so we should meet at noon tomorrow"])
+
+        let u = VoiceHarness(cleanup: true)
+        u.world.stages.enqueueTranscribe(.text("um so we should meet at noon tomorrow"))
+        u.world.stages.enqueueCleanup(.text("So we should meet at noon tomorrow."))
+        u.hold()
+        await waitUntil("not inserted") { if case .inserted = u.controller.phase { return true }; return false }
+        u.controller.undoInsertion()
+        await waitUntil("not restored") { u.writing.restoreCalls.count == 1 && self.isResult(u.controller.phase) }
+        XCTAssertFalse(u.controller.awaitingWriter)
+    }
+
+    func testRefusedAutomaticInsertReviewsTheTrueRawTranscript() async {
+        let h = VoiceHarness(cleanup: true)
+        h.writing.focusRestorable = false
+        h.world.stages.enqueueTranscribe(.text("um so we should meet at noon tomorrow"))
+        h.world.stages.enqueueCleanup(.text("So we should meet at noon tomorrow."))
+        h.hold()
+        await waitUntil("no review") { self.isReview(h.controller.phase) }
+        guard case .review(let review) = h.controller.phase else { return XCTFail("expected review") }
+        XCTAssertEqual(review.raw, "um so we should meet at noon tomorrow")
+        XCTAssertEqual(review.cleaned, "So we should meet at noon tomorrow.")
+        h.controller.useOriginalTranscript()
+        XCTAssertEqual(h.controller.writer.previewText, "um so we should meet at noon tomorrow")
+        XCTAssertTrue(h.writing.applyCalls.isEmpty)
+    }
+
+    func testCancelWhileInsertingRevokesTheUncommittedWrite() async {
+        let h = VoiceHarness()
+        h.world.stages.enqueueTranscribe(.text("do not write this"))
+        h.writing.beforeCommit = { [controller = h.controller] in
+            XCTAssertEqual(controller.phase, .inserting)
+            controller.cancel()
+        }
+        h.hold()
+        await waitUntil("not canceled at commit") { h.writing.canceledAtCommit == 1 }
+        await waitUntil("not idle") { h.controller.phase == .idle && !h.controller.awaitingWriter }
+        XCTAssertTrue(h.writing.applyCalls.isEmpty)
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertTrue(h.writing.applyCalls.isEmpty)
+        XCTAssertEqual(h.controller.writer.phase, .idle)
+    }
+
+    func testRecognizerUnloadedMidTranscriptionFailsVisiblyAndAllowsNewRecording() async {
+        let h = VoiceHarness()
+        h.world.stages.enqueueTranscribe(.suspend)
+        h.hold()
+        await waitUntil("not transcribing") { h.world.stages.pending == 1 }
+        h.world.stages.cancelFromRuntime()
+        await waitUntil("not failed") { self.isFailed(h.controller.phase) }
+        XCTAssertFalse(h.controller.state.isActive)
+        h.world.stages.enqueueTranscribe(.text("second try"))
+        h.hold()
+        await waitUntil("second not inserted") { h.writing.applyCalls.count == 1 }
+        XCTAssertEqual(h.writing.applyCalls.first?.text, "second try")
+    }
+
+    func testCleanupUnloadedMidCleanupReviewsRawTranscript() async {
+        let h = VoiceHarness(cleanup: true)
+        h.world.stages.enqueueTranscribe(.text("send the invoice to finance"))
+        h.world.stages.enqueueCleanup(.suspend)
+        h.hold()
+        await waitUntil("not cleaning") { h.world.stages.pending == 1 }
+        h.world.stages.cancelFromRuntime()
+        await waitUntil("no review") { self.isReview(h.controller.phase) }
+        guard case .review(let review) = h.controller.phase else { return XCTFail("expected review") }
+        XCTAssertTrue(review.cleanupFailed)
+        XCTAssertEqual(h.controller.writer.previewText, "send the invoice to finance")
+        XCTAssertTrue(h.writing.applyCalls.isEmpty)
+    }
+
     // Hardening
 
     func testDeliveryHappensExactlyOncePerGeneration() async {
@@ -633,7 +728,7 @@ final class VoiceControllerTests: XCTestCase {
         h.hold()
         await waitUntil("not inserted") { h.writing.applyCalls.count == 1 }
         let generation = h.controller.state.generation
-        h.controller.deliver(.insert(text: "again"), generation, interrupted: false)
+        h.controller.deliver(.insert(text: "again", raw: "again", cleaned: nil), generation, interrupted: false)
         h.controller.deliver(.review(raw: "r", cleaned: nil, preferRaw: true, concerns: [], cleanupFailed: false), generation, interrupted: false)
         try? await Task.sleep(nanoseconds: 30_000_000)
         XCTAssertEqual(h.writing.applyCalls.count, 1)

@@ -232,7 +232,12 @@ extension VoiceController {
                 publishAskStatus()
                 var cleaned: String?
                 do { cleaned = try await stages.cleanup(transcript) }
-                catch is CancellationError { return }
+                catch is CancellationError {
+                    // Our own Cancel already ended the session; a runtime cancel (cleanup model unloaded) did not,
+                    // so the raw transcript goes to review instead of leaving the HUD in Cleaning.
+                    guard generation == state.generation, state.isActive else { return }
+                    cleaned = nil
+                }
                 catch { cleaned = nil }
                 guard let delivery = state.cleaned(generation, cleaned: cleaned) else { return }
                 deliver(delivery, generation, interrupted: interrupted)
@@ -241,7 +246,11 @@ extension VoiceController {
             default: return
             }
         } catch is CancellationError {
-            return
+            // Only a cancel from outside (speech model unloaded, worker stopped) reaches here with the session active.
+            let message = "Transcription stopped — the speech model was unloaded or stopped. Nothing was inserted."
+            guard generation == state.generation, state.isActive, state.fail(generation, .transcriptionFailed(message)) else { return }
+            endActive()
+            showFailed(message)
         } catch {
             guard state.fail(generation, .transcriptionFailed(Self.describe(error))) else { return }
             endActive()
@@ -267,6 +276,7 @@ extension VoiceController {
             phase = .idle
             return
         }
+        if awaitingWriter { cancelHandOff(); return }
         clearTransient()
     }
 

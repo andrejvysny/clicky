@@ -7,6 +7,10 @@ nonisolated public enum CleanupConcern: String, Codable, Sendable, CaseIterable 
     case tooShort, lowRecall, numberInCorrection, nameInCorrection
     /// Input beyond `CleanupGate.maxTokens`: alignment is skipped and a human decides.
     case inputTooLong
+    /// A repeated number, negation or numeric marker was dropped; the repetition may be intentional ("5 5 1").
+    case protectedRepetition
+    /// A minus sign or decimal point disappeared or appeared ("-5" → "5", "3.50" → "3 50").
+    case numberFormatChanged
 }
 
 nonisolated public struct CleanupAssessment: Equatable, Sendable {
@@ -25,12 +29,14 @@ nonisolated public enum CleanupGate {
     public static let maxTokens = 2000
     static let restartWindow = 12
 
-    private enum Explanation { case none, filler, stutter, restart, correction }
+    /// `protectedRepeat`: a repeated number, negation or numeric marker was dropped. It is excused from the
+    /// survival counts (so it is not a reject) but always goes to review.
+    private enum Explanation { case none, filler, stutter, restart, correction, protectedRepeat }
 
     public static func assess(raw: String, cleaned: String) -> CleanupAssessment {
-        var rawInfo = TranscriptText.tokens(raw, expandContractions: true)
+        var rawInfo = TranscriptText.tokens(spellNumericMarkers(raw), expandContractions: true)
         var rawTokens = rawInfo.map { $0.word }
-        let cleanTokens = TranscriptText.tokens(cleaned, expandContractions: true).map { $0.word }
+        let cleanTokens = TranscriptText.tokens(spellNumericMarkers(cleaned), expandContractions: true).map { $0.word }
         let nonFiller = rawTokens.filter { !TranscriptText.isHardFiller($0) }
         if nonFiller.isEmpty { return CleanupAssessment(verdict: .noSpeech, concerns: [], addedWords: [], removedWords: [], explainedRemovals: 0) }
         if cleanTokens.isEmpty { return result(.reject, [.emptyCleanup]) }
@@ -53,6 +59,7 @@ nonisolated public enum CleanupGate {
         checkCorrections(rawTokens, rawAligned, explanations, kept: keptRaw, raw: raw, &findings)
         checkNegationAndNumbers(rawTokens, cleanTokens, rawAligned, explanations, &findings)
         checkNames(raw: raw, rawTokens: rawTokens, cleanTokens: cleanTokens, rawAligned, explanations, &findings)
+        if explanations.contains(.protectedRepeat) { findings.add(.protectedRepetition, .review) }
         let alignedNonFiller = rawTokens.indices.filter { rawAligned[$0] && !TranscriptText.isHardFiller(rawTokens[$0]) }.count
         let cleanNonFiller = cleanTokens.filter { !TranscriptText.isHardFiller($0) }.count
         if Double(alignedNonFiller) < 0.5 * Double(nonFiller.count) { findings.add(.lowRecall, .reject) }
@@ -61,6 +68,30 @@ nonisolated public enum CleanupGate {
         let verdict: CleanupVerdict = findings.concerns.isEmpty ? .accept : (findings.rejects ? .reject : .review)
         return CleanupAssessment(verdict: verdict, concerns: findings.concerns, addedWords: added,
                                  removedWords: removed.map { rawTokens[$0] }, explainedRemovals: explainedCount)
+    }
+
+    // MARK: numeric surface
+
+    private static let signedNumber = try! NSRegularExpression(pattern: "(?<![\\w.])[-\u{2212}\u{2013}](?=\\d)")
+    private static let decimalPoint = try! NSRegularExpression(pattern: "(?<=\\d)\\.(?=\\d)")
+
+    /// WER normalization (Python parity) drops minus signs and splits "3.50" into "3 50", which would let a
+    /// cleanup that loses either pass unnoticed. The gate spells them as words first so they align and count.
+    static func spellNumericMarkers(_ text: String) -> String {
+        var t = signedNumber.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "minus ")
+        t = decimalPoint.stringByReplacingMatches(in: t, range: NSRange(t.startIndex..., in: t), withTemplate: " point ")
+        return t.replacingOccurrences(of: "negative ", with: "minus ", options: .caseInsensitive)
+    }
+
+    /// Numbers, negations and numeric markers ("minus", "point" between numbers) whose repetition may be meant.
+    private static func isProtected(_ k: Int, _ tokens: [String]) -> Bool {
+        let t = tokens[k]
+        if TranscriptText.isNumber(t) || TranscriptText.isNegation(t) || t == "minus" { return true }
+        return t == "point" && k > 0 && k + 1 < tokens.count && TranscriptText.isNumber(tokens[k - 1]) && TranscriptText.isNumber(tokens[k + 1])
+    }
+
+    private static func isNumericMarker(_ k: Int, _ tokens: [String]) -> Bool {
+        tokens[k] == "minus" || (tokens[k] == "point" && isProtected(k, tokens))
     }
 
     private static func result(_ verdict: CleanupVerdict, _ concerns: [CleanupConcern]) -> CleanupAssessment {
@@ -204,9 +235,14 @@ nonisolated public enum CleanupGate {
         var lo = k, hi = k
         while lo > 0 && tokens[lo - 1] == tokens[k] { lo -= 1 }
         while hi + 1 < tokens.count && tokens[hi + 1] == tokens[k] { hi += 1 }
-        if (lo...hi).contains(where: { aligned[$0] }) && hi > lo { return .stutter }
-        let window = (spanEnd + 1)..<min(tokens.count, spanEnd + 1 + restartWindow)
-        return window.contains(where: { aligned[$0] && tokens[$0] == tokens[k] }) ? .restart : .none
+        let repeated: Explanation
+        if (lo...hi).contains(where: { aligned[$0] }) && hi > lo {
+            repeated = .stutter
+        } else {
+            let window = (spanEnd + 1)..<min(tokens.count, spanEnd + 1 + restartWindow)
+            repeated = window.contains(where: { aligned[$0] && tokens[$0] == tokens[k] }) ? .restart : .none
+        }
+        return repeated != .none && isProtected(k, tokens) ? .protectedRepeat : repeated
     }
 
     // MARK: checks
@@ -240,6 +276,10 @@ nonisolated public enum CleanupGate {
         }
         if surviving.filter(TranscriptText.isNumber).sorted() != clean.filter(TranscriptText.isNumber).sorted() {
             f.add(.numberChanged, .reject)
+        }
+        let survivingMarkers = raw.indices.filter { (aligned[$0] || explanations[$0] == .none) && isNumericMarker($0, raw) }.map { raw[$0] }
+        if survivingMarkers.sorted() != clean.indices.filter({ isNumericMarker($0, clean) }).map({ clean[$0] }).sorted() {
+            f.add(.numberFormatChanged, .review)
         }
     }
 

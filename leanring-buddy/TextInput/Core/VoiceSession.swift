@@ -14,7 +14,8 @@ nonisolated public enum VoiceDelivery: Equatable, Sendable {
     /// Silence, fillers only or unusable audio: nothing is inserted or placed anywhere.
     case noSpeech
     /// Dictate Anywhere: insert automatically, subject to the writing coordinator's destination checks.
-    case insert(text: String)
+    /// `raw` stays available for review and "Copy original" even after accepted cleanup.
+    case insert(text: String, raw: String, cleaned: String?)
     /// Dictate Anywhere: an editable preview offering both versions; nothing is written without a click.
     case review(raw: String, cleaned: String?, preferRaw: Bool, concerns: [CleanupConcern], cleanupFailed: Bool)
     /// Ask by voice: text goes into the Quick Ask draft and waits for a deliberate Enter.
@@ -30,9 +31,9 @@ nonisolated public enum VoiceDelivery: Equatable, Sendable {
         let concerns = assessment?.concerns ?? []
         switch mode {
         case .dictate:
-            guard cleanupRequested else { return .insert(text: trimmedRaw) }
+            guard cleanupRequested else { return .insert(text: trimmedRaw, raw: trimmedRaw, cleaned: nil) }
             switch verdict {
-            case .accept?: return .insert(text: cleanedText ?? trimmedRaw)
+            case .accept?: return .insert(text: cleanedText ?? trimmedRaw, raw: trimmedRaw, cleaned: cleanedText)
             case .noSpeech?: return .noSpeech
             case .review?: return .review(raw: trimmedRaw, cleaned: cleanedText, preferRaw: false, concerns: concerns, cleanupFailed: false)
             case .reject?, nil:
