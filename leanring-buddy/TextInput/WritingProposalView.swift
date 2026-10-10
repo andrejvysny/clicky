@@ -69,6 +69,7 @@ struct WritingProposalView: View {
             if writing.canRetry { return "Writing failed" }
             if writing.clarification != nil, writing.proposal == nil { return "Question" }
             if writing.proposal?.intent == .snippet { return "Snippet · No AI" }
+            if writing.proposal?.intent == .dictation { return "Dictation · Local" }
             return writing.proposal?.intent == .rewrite ? "Rewrite preview" : "Draft preview"
         }
     }

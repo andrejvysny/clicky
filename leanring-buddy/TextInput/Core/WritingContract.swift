@@ -4,6 +4,8 @@ import Foundation
 /// providers only ever produce text for `draft` and `rewrite`, and `snippet` never reaches a provider.
 nonisolated public enum WritingIntent: String, Codable, Sendable {
     case draft, rewrite, snippet
+    /// Finalized local speech from Dictate Anywhere; never routed to a provider or parsed as a command.
+    case dictation
 }
 
 /// What kind of editable destination was bound before Quick Ask took focus.
@@ -160,6 +162,7 @@ nonisolated public enum WritingBlockReason: String, Codable, Equatable, Sendable
 nonisolated public enum WritingProvenance: Equatable, Sendable {
     case generated(provider: AgentProvider, skillID: UUID?, skillRevision: UInt64?)
     case snippet(id: UUID, revision: UInt64)
+    case dictation(session: UUID)
     case preview
 }
 
@@ -212,13 +215,15 @@ nonisolated public enum WritingApplyPlan: Equatable, Sendable {
             return .automatic
         }
         if target.pasteOnly {
+            // Dictation never pastes blind: an unverified destination needs an explicit Paste in the preview.
+            if intent == .dictation { return .review(replacesSelection: false) }
             // Copy-and-paste semantics: a rewrite pastes over the selection it copied (undoable in the app with ⌘Z);
             // drafts and snippets paste at the cursor.
             return .automatic
         }
         switch intent {
         case .rewrite: return target.hasSelection ? .review(replacesSelection: true) : .previewOnly(.noSelection)
-        case .draft, .snippet: return target.hasSelection ? .review(replacesSelection: true) : .automatic
+        case .draft, .snippet, .dictation: return target.hasSelection ? .review(replacesSelection: true) : .automatic
         }
     }
 }

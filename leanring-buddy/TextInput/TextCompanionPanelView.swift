@@ -23,6 +23,8 @@ struct TextCompanionPanelView: View {
                 .toggleStyle(.switch).controlSize(.mini).font(.system(size: 12)).foregroundStyle(DS.Colors.textSecondary)
             HStack(spacing: 14) {
                 Button("Settings…") { onOpenQuickAsk(.details(showSettings: true)) }.buttonStyle(.plain).clickyPointerCursor()
+                Button("Local AI Lab…") { if let runtime = LocalAIRuntime.shared { LocalAILabWindow.shared.show(runtime: runtime) } }
+                    .buttonStyle(.plain).clickyPointerCursor()
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }.buttonStyle(.plain).foregroundStyle(DS.Colors.textTertiary).clickyPointerCursor()
             }

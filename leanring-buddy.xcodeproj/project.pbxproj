@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		AA00BB032F6500030039DA55 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB022F6500020039DA55 /* Sparkle */; };
+		CC10AA042F7000010039DA55 /* build/local-worker/clicky-local-worker in Embed Local Worker */ = {isa = PBXBuildFile; fileRef = CC10AA022F7000010039DA55 /* build/local-worker/clicky-local-worker */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		CC10AA052F7000010039DA55 /* build/local-worker/mlx.metallib in Embed Local Worker */ = {isa = PBXBuildFile; fileRef = CC10AA032F7000010039DA55 /* build/local-worker/mlx.metallib */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -27,10 +29,27 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		CC10AA012F7000010039DA55 /* Embed Local Worker */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Helpers;
+			dstSubfolderSpec = 1;
+			files = (
+				CC10AA042F7000010039DA55 /* build/local-worker/clicky-local-worker in Embed Local Worker */,
+				CC10AA052F7000010039DA55 /* build/local-worker/mlx.metallib in Embed Local Worker */,
+			);
+			name = "Embed Local Worker";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		28F22CBF2F56440300A0FC59 /* Clicky.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Clicky.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		28F22CCC2F56440300A0FC59 /* leanring-buddyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "leanring-buddyTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		28F22CD62F56440300A0FC59 /* leanring-buddyUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "leanring-buddyUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		CC10AA022F7000010039DA55 /* build/local-worker/clicky-local-worker */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "build/local-worker/clicky-local-worker"; sourceTree = SOURCE_ROOT; };
+		CC10AA032F7000010039DA55 /* build/local-worker/mlx.metallib */ = {isa = PBXFileReference; explicitFileType = "archive.metal-library"; includeInIndex = 0; path = "build/local-worker/mlx.metallib"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -84,6 +103,7 @@
 				28F22CCF2F56440300A0FC59 /* leanring-buddyTests */,
 				28F22CD92F56440300A0FC59 /* leanring-buddyUITests */,
 				28F22CC02F56440300A0FC59 /* Products */,
+				CC10AA062F7000010039DA55 /* Local Worker */,
 			);
 			sourceTree = "<group>";
 		};
@@ -97,6 +117,15 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		CC10AA062F7000010039DA55 /* Local Worker */ = {
+			isa = PBXGroup;
+			children = (
+				CC10AA022F7000010039DA55 /* build/local-worker/clicky-local-worker */,
+				CC10AA032F7000010039DA55 /* build/local-worker/mlx.metallib */,
+			);
+			name = "Local Worker";
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -107,6 +136,7 @@
 				28F22CBB2F56440300A0FC59 /* Sources */,
 				28F22CBC2F56440300A0FC59 /* Frameworks */,
 				28F22CBD2F56440300A0FC59 /* Resources */,
+				CC10AA012F7000010039DA55 /* Embed Local Worker */,
 			);
 			buildRules = (
 			);

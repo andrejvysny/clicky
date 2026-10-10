@@ -179,6 +179,27 @@ final class WritingCoordinator: ObservableObject {
         present(resolved, autoApply: true)
     }
 
+    /// Delivers finalized dictation to the destination bound when recording started. With `autoApply` it is
+    /// inserted only through the same plan as Write (unchanged empty caret, matching process); otherwise, or
+    /// when anything changed, it stays an editable preview.
+    @discardableResult
+    func startDictation(_ text: String, session: UUID, autoApply: Bool) -> Bool {
+        guard phase != .applying else { return false }
+        beginOperation()
+        let expected = generation
+        phase = .generating
+        work = Task { [weak self] in
+            await self?.bindTask?.value
+            guard let self, expected == generation, let operation else { return }
+            phase = .idle
+            operationTarget = target
+            let proposal = WritingProposal(operationID: operation, revision: 1, intent: .dictation, text: text,
+                                           provenance: .dictation(session: session))
+            present(proposal, autoApply: autoApply)
+        }
+        return true
+    }
+
     private func preferTarget(for restriction: SnippetRestriction) {
         let wantsTerminal = restriction == .terminalOnly
         guard restriction != .any, (target?.kind == .terminal) != wantsTerminal,
