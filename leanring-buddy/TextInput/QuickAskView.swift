@@ -109,6 +109,13 @@ struct AskSettingsView: View {
                     if controller.provider == .codex { Button("Sign in to Clicky Codex") { controller.signInCodex() }.islandButton(.secondary) }
                 }
             }
+            section("Writing provider") {
+                Picker("", selection: $controller.writingProvider) {
+                    ForEach(AgentProvider.allCases, id: \.self) { Text($0 == .preview ? "Preview" : $0.displayName).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden()
+                note("Used by /write, /rewrite and AI skills. Guidance and chat use the backend above; snippets never use a provider.")
+            }
             section("Shortcuts") {
                 HStack(spacing: 3) {
                     Text("Quick Ask").font(.system(size: 12))
@@ -156,6 +163,8 @@ struct AskSettingsView: View {
                     ForEach(SpeechReplyPreference.allCases, id: \.self) { Text($0.displayName).tag($0) }
                 }
             }
+            section("Local AI") { LocalAISettingsSection() }
+            section("Voice") { VoiceSettingsSection() }
             Button("New conversation") { controller.newConversation() }.islandButton(.secondary)
         }
         .disabled(controller.isBusy)

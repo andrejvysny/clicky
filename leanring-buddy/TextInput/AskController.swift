@@ -35,6 +35,18 @@ final class AskController: ObservableObject {
     @Published private(set) var isComposing = false
     @Published private(set) var lastReplyAt: Date?
     @Published private(set) var lastReplyEffort: AskEffort = .low
+    /// One line about a voice session started from Quick Ask (never transcript text); nil when none is running.
+    @Published private(set) var voiceStatus: VoiceAskStatus?
+    /// Explains how the voice text in the draft was produced, e.g. "Cleaned up · Use original".
+    @Published private(set) var voiceDraftNote: String?
+    private var voiceNoteOffersOriginal = false
+    var onVoiceStop: (() -> Void)?
+    var onVoiceCancel: (() -> Void)?
+    /// The span of `draft` (UTF-16 offsets) that voice placed, with the text it holds and the original transcript.
+    private var voiceSpan: VoiceDraftSpan?
+    /// The next submission came from a voice-placed draft, so `.voiceOnly` reply speech applies to its answer.
+    private var voiceInitiatedPending = false
+    private var replyVoiceInitiated = false
     /// Off by default: opening Quick Ask reads nothing unless the user opts in.
     @Published var attachSelection: Bool { didSet { preferences.set(attachSelection, forKey: "askAttachSelection") } }
     @Published var speechPreference: SpeechReplyPreference {
@@ -56,6 +68,15 @@ final class AskController: ObservableObject {
             preferences.set(provider.rawValue, forKey: "askProvider")
             cancelLogin()
             guide.endTask(); writing.reset(); syncGuideSettings(); response = ""; removeAttachment(); replySpeech.stop()
+        }
+    }
+    /// Writing (Write/Rewrite/skills) has its own provider; it starts as whatever the shared provider was, so
+    /// splitting the preference changes nothing until the user picks a different one.
+    @Published var writingProvider: AgentProvider {
+        didSet {
+            guard oldValue != writingProvider else { return }
+            preferences.set(writingProvider.rawValue, forKey: "askWritingProvider")
+            writing.reset(); syncGuideSettings()
         }
     }
     @Published var claudeExecutable: String { didSet { preferences.set(claudeExecutable, forKey: "askClaudeExecutable"); syncGuideSettings() } }
@@ -84,7 +105,10 @@ final class AskController: ObservableObject {
         let targets = WritingNativeTargets()
         writingTargets = targets
         writing = WritingCoordinator(environment: targets.environment)
-        provider = AgentProvider(rawValue: defaults.string(forKey: "askProvider") ?? "") ?? .preview
+        let sharedProvider = AgentProvider(rawValue: defaults.string(forKey: "askProvider") ?? "") ?? .preview
+        provider = sharedProvider
+        if defaults.string(forKey: "askWritingProvider") == nil { defaults.set(sharedProvider.rawValue, forKey: "askWritingProvider") }
+        writingProvider = AgentProvider(rawValue: defaults.string(forKey: "askWritingProvider") ?? "") ?? sharedProvider
         speechPreference = SpeechReplyPreference(rawValue: defaults.string(forKey: "askSpeechPreference") ?? "") ?? .voiceOnly
         let savedSharing = defaults.string(forKey: "askTaskSharing") ?? defaults.string(forKey: "askScreenInclusion") ?? ""
         screenInclusion = ScreenInclusionPreference.stored(savedSharing) ?? (testing ? .off : .always)
@@ -112,7 +136,9 @@ final class AskController: ObservableObject {
     var effortAdjustable: Bool { guide.effortAdjustable && !isBusy }
     /// What the next prompt will actually use: a running Claude task keeps its launch effort.
     var displayedEffort: AskEffort { provider == .claude && guide.agent != nil && guide.task != nil ? guide.agentEffort : effort }
-    var selectedExecutable: URL? {
+    var selectedExecutable: URL? { executable(for: provider) }
+    var writingExecutable: URL? { executable(for: writingProvider) }
+    private func executable(for provider: AgentProvider) -> URL? {
         let path = provider == .claude ? claudeExecutable : codexExecutable
         return path.isEmpty ? nil : URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
     }
@@ -137,6 +163,7 @@ final class AskController: ObservableObject {
             try guide.ask(message, target: presentationTarget, explicitlyVisual: attachment != nil, effort: effort)
             draft = ""; response = ""; errorMessage = nil; presentationHasSubmission = true
             selection = nil; snippets = []; effort = .low
+            replyVoiceInitiated = voiceInitiatedPending; clearVoiceDraft()
             removeAttachment(); return true
         } catch { errorMessage = error.localizedDescription; return false }
     }
@@ -168,7 +195,7 @@ final class AskController: ObservableObject {
     func removeSelection() { selection = nil }
     func removeSnippet(_ id: UUID) { snippets.removeAll { $0.id == id } }
     func addSnippet(_ text: String) { if !isBusy { snippets.append(PastedSnippet(text: text)) } }
-    func newConversation() { writing.discard(); guide.endTask(); response = ""; errorMessage = nil; removeAttachment(); replySpeech.stop(); lastReplyAt = nil }
+    func newConversation() { writing.discard(); guide.endTask(); response = ""; errorMessage = nil; removeAttachment(); replySpeech.stop(); lastReplyAt = nil; clearVoiceDraft(); replyVoiceInitiated = false }
     func beginPresentation(target: WindowCaptureTarget?) {
         isComposing = true
         presentationHasSubmission = false; removeAttachment(); presentationTarget = target
@@ -223,9 +250,9 @@ final class AskController: ObservableObject {
         case .localError(let message):
             errorMessage = message; return .handled(false)
         case .snippet, .write, .rewrite:
-            if case .snippet = route {} else if provider != .preview {
-                guard let selectedExecutable, FileManager.default.isExecutableFile(atPath: selectedExecutable.path) else {
-                    errorMessage = AskError.missingExecutable(provider.displayName).localizedDescription; return .handled(false)
+            if case .snippet = route {} else if writingProvider != .preview {
+                guard let writingExecutable, FileManager.default.isExecutableFile(atPath: writingExecutable.path) else {
+                    errorMessage = AskError.missingExecutable(writingProvider.displayName).localizedDescription; return .handled(false)
                 }
             }
             syncGuideSettings(); replySpeech.stop()
@@ -244,6 +271,39 @@ final class AskController: ObservableObject {
         let parts = [selection?.text].compactMap { $0 } + snippets.map(\.text)
         return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
     }
+
+    // MARK: Voice
+
+    /// Places voice text in the draft without sending it. An empty draft receives the text; anything the user already
+    /// wrote is kept in place and the voice text is appended on a new line. Only Enter submits.
+    func insertVoiceDraft(_ text: String, raw: String, concerns: [CleanupConcern], cleanupFailed: Bool = false) {
+        guard !text.isEmpty else { return }
+        voiceSpan = VoiceDraftPlacement.place(text: text, raw: raw, in: &draft)
+        voiceInitiatedPending = true
+        let described = VoiceDraftPlacement.note(text: text, raw: raw, concerns: concerns, cleanupFailed: cleanupFailed)
+        voiceDraftNote = described.note
+        voiceNoteOffersOriginal = described.offersOriginal
+    }
+
+    /// True while the voice-placed span is still exactly as placed and differs from the original transcript.
+    var canUseOriginalVoiceTranscript: Bool { VoiceDraftPlacement.canUseOriginal(voiceSpan, in: draft) }
+
+    /// Swaps exactly the voice-placed span for the original transcript; refuses when the user edited it.
+    func useOriginalVoiceTranscript() {
+        guard let span = voiceSpan, let updated = VoiceDraftPlacement.useOriginal(span, in: &draft) else { return }
+        voiceSpan = updated
+        voiceDraftNote = nil
+    }
+
+    /// The note to show now: the "Use original" offer disappears once the placed text was edited.
+    var visibleVoiceNote: String? {
+        guard let note = voiceDraftNote else { return nil }
+        return voiceNoteOffersOriginal && !canUseOriginalVoiceTranscript ? nil : note
+    }
+
+    func setVoiceStatus(_ status: VoiceAskStatus?) { if voiceStatus != status { voiceStatus = status } }
+
+    private func clearVoiceDraft() { voiceSpan = nil; voiceDraftNote = nil; voiceInitiatedPending = false }
 
     func attachWindowSnapshot() {
         guard !isBusy, !isCapturing else { return }
@@ -316,7 +376,7 @@ final class AskController: ObservableObject {
     }
     private func syncGuideSettings() {
         guide.provider = provider; guide.executable = selectedExecutable; guide.sharingPreference = screenInclusion
-        writing.provider = provider; writing.executable = selectedExecutable
+        writing.provider = writingProvider; writing.executable = writingExecutable
     }
     func cancelLogin() { loginTask?.cancel(); loginTask = nil }
     func shutdown() { writing.reset(); cancelLogin(); removeAttachment(); guide.endTask(); replySpeech.stop() }
@@ -328,7 +388,7 @@ final class AskController: ObservableObject {
     }
     private func showResponse(_ value: String) {
         response = value; lastReplyAt = Date(); lastReplyEffort = guide.replyEffort
-        if provider != .preview, speechPreference.shouldSpeak(voiceInitiated: false, dictation: false) { replySpeech.speak(value) }
+        if provider != .preview, speechPreference.shouldSpeak(voiceInitiated: replyVoiceInitiated, dictation: false) { replySpeech.speak(value) }
     }
     private static func discover(_ name: String) -> String {
         let directories = [NSHomeDirectory() + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"]

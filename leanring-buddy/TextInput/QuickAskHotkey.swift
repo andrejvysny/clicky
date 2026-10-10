@@ -2,6 +2,9 @@ import AppKit
 import Carbon
 import SwiftUI
 import os
+#if canImport(ClickyCore)
+import ClickyCore
+#endif
 
 @MainActor
 final class QuickAskHotkey {
@@ -11,6 +14,8 @@ final class QuickAskHotkey {
     /// Distinguishes several registrations; each handler only consumes its own identifier.
     private let identifier: UInt32
     var onPressed: (() -> Void)?
+    /// Key-up of the registered key (hybrid tap/hold recording). Unused by the Quick Ask shortcut itself.
+    var onReleased: (() -> Void)?
 
     init(identifier: UInt32 = 1) { self.identifier = identifier }
 
@@ -33,7 +38,8 @@ final class QuickAskHotkey {
 
     private func installHandler() -> Bool {
         if handler != nil { return true }
-        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        var eventTypes = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+                          EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
         let userData = Unmanaged.passUnretained(self).toOpaque()
         let installed = InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
             guard let event, let userData else { return OSStatus(eventNotHandledErr) }
@@ -42,9 +48,13 @@ final class QuickAskHotkey {
                   identifier.signature == 0x434C514B else { return OSStatus(eventNotHandledErr) }
             let monitor = Unmanaged<QuickAskHotkey>.fromOpaque(userData).takeUnretainedValue()
             guard identifier.id == monitor.identifier else { return OSStatus(eventNotHandledErr) }
-            Task { @MainActor in monitor.onPressed?() }
+            if GetEventKind(event) == UInt32(kEventHotKeyReleased) {
+                Task { @MainActor in monitor.onReleased?() }
+            } else {
+                Task { @MainActor in monitor.onPressed?() }
+            }
             return noErr
-        }, 1, &eventType, userData, &handler)
+        }, eventTypes.count, &eventTypes, userData, &handler)
         guard installed == noErr else {
             logger.error("Carbon shortcut handler installation failed: status \(installed, privacy: .public), identifier \(self.identifier, privacy: .public)")
             removeHandler()

@@ -46,6 +46,7 @@ struct CursorAskView: View {
         // Ghost layout: no surrounding card. The input pill and the answer float as separate translucent pieces.
         VStack(alignment: .leading, spacing: 6) {
             inputRow
+            voiceRow
             if pickerVisible {
                 SlashPickerView(suggestions: suggestions, highlighted: picker.highlighted) { command in
                     controller.draft = "/" + command.alias + " "
@@ -87,6 +88,34 @@ struct CursorAskView: View {
 
     private var hasMessage: Bool {
         controller.attachmentError != nil || controller.errorMessage != nil || showsStatus || !controller.response.isEmpty
+    }
+
+    /// One line for a voice session started here, or the note about voice text now in the draft. Never any transcript.
+    @ViewBuilder private var voiceRow: some View {
+        if let status = controller.voiceStatus {
+            HStack(spacing: 8) {
+                if status.canStop { StatusDot(color: DS.Colors.destructiveText) } else { SpinnerRing(size: 9) }
+                Text(status.line).font(.system(size: 11)).foregroundStyle(DS.Colors.textSecondary).lineLimit(1)
+                Spacer(minLength: 4)
+                if status.canStop { Button("Stop") { controller.onVoiceStop?() }.islandButton(.secondary).accessibilityIdentifier("voiceStop") }
+                Button("Cancel") { controller.onVoiceCancel?() }.islandButton(.quiet).accessibilityIdentifier("voiceCancel")
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .ghostPill()
+        } else if let note = controller.visibleVoiceNote {
+            HStack(spacing: 8) {
+                Text(note).font(.system(size: 11)).foregroundStyle(DS.Colors.textSecondary).lineLimit(2)
+                Spacer(minLength: 4)
+                if controller.canUseOriginalVoiceTranscript {
+                    Button("Use original") { controller.useOriginalVoiceTranscript() }.islandButton(.secondary)
+                        .accessibilityIdentifier("voiceUseOriginal")
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .ghostPill()
+        }
     }
 
     private var effortPips: some View {

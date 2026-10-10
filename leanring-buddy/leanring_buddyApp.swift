@@ -30,10 +30,18 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
     private let companionManager = CompanionManager()
     let askController = AskController()
+    /// Local model assets, workers and residency policy. Inert until the user loads a model (or opts into startup preload).
+    let localAI: LocalAIRuntime = {
+        let testing = ProcessInfo.processInfo.arguments.contains("--clicky-ui-test")
+        return LocalAIRuntime(preferences: testing ? (UserDefaults(suiteName: "ClickyUITests") ?? .standard) : .standard)
+    }()
     private var quickAskPanelManager: QuickAskPanelManager?
     private let quickAskHotkey = QuickAskHotkey()
     private let pointingPresenter = PointingPresenter()
     private let scopedShortcuts = ScopedShortcuts()
+    /// Voice input. Created on launch but inert: no microphone, model or worker is touched until a voice shortcut is pressed.
+    private var voiceController: VoiceController?
+    private var voiceStatusPanel: VoiceStatusPanelController?
     private lazy var island = IslandController(ask: askController)
     private var sparkleUpdaterController: SPUStandardUpdaterController?
     #if DEBUG
@@ -46,6 +54,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         print("🎯 Clicky: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
+        LocalAIRuntime.shared = localAI
 
         askController.onPointTarget = { [weak self] mark in
             // The target carries one short action (or consequence warning); the island keeps full status.
@@ -74,6 +83,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         quickAskHotkey.onPressed = { [weak self] in self?.quickAskPanelManager?.show() }
+        startVoice()
         WindowSnapshotCapture.trackExternalActivation()
         WindowSnapshotCapture.runFirstLaunchSetup { [weak self] shareScreen in
             self?.askController.screenInclusion = shareScreen ? .always : .off
@@ -89,6 +99,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         }
         #endif
         menuBarPanelManager?.showPanelOnLaunch()
+        Task { await localAI.startupPreload() }
         // startSparkleUpdater()
     }
 
@@ -103,8 +114,10 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         askController.shutdown()
+        localAI.shutdown()
         pointingPresenter.hide()
         quickAskHotkey.unregister()
+        voiceController?.shutdown()
         scopedShortcuts.unregisterAll()
         quickAskPanelManager?.close(restoreFocus: false)
         companionManager.stopTextMode()
@@ -129,6 +142,15 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         }
         island.onReplyAvailabilityChanged = { [weak self] available in self?.scopedShortcuts.setReplyActive(available) }
         island.onCompanionState = { [weak self] working, failed in self?.companionManager.setTextActivity(working: working, failed: failed) }
+    }
+
+    private func startVoice() {
+        guard let quickAskPanelManager else { return }
+        let voice = VoiceController(askController: askController, quickAskPanelManager: quickAskPanelManager, runtime: localAI)
+        VoiceController.shared = voice
+        voiceController = voice
+        voiceStatusPanel = VoiceStatusPanelController(voice: voice)
+        voice.registerShortcuts()
     }
 
     @discardableResult
