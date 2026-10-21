@@ -209,11 +209,11 @@ Design and setup: [LOCAL_AI.md](LOCAL_AI.md); benchmark procedure: [LOCAL_BENCHM
 | App typecheck | `bash scripts/typecheck-app.sh` and `--debug` | no errors |
 | Real worker protocol (no models) | `build/local-worker/clicky-local-worker --role inference --self-test`, framed pipe tests | handshake with `networkDenied: true`, Metal device reported, duplicate/unknown/oversized/garbage/version-mismatch handled |
 | Real native ASR (Core ML, no GUI) | `clicky-local-bench speech --pipeline asr` on the run_001 subset | Parakeet v3 and WhisperKit turbo measured (see LOCAL_AI.md); offline after model download |
-| MLX cleanup, text, vision | — | **Blocked**: Metal Toolchain not installed, so `mlx.metallib` is not built |
+| MLX cleanup, text, vision (no GUI) | `clicky-local-bench speech --pipeline cleanup-on-reference`, `asr+cleanup`, `text`, `vision`, `guide` | Measured after installing the Metal Toolchain and building `mlx.metallib`; see LOCAL_AI.md › Measured so far |
 
 Signed native acceptance still required (scratch data only):
 
-1. Clicky window: opening any pane (Settings, Models, Playground, Results) starts no worker, captures nothing and records nothing (check Activity Monitor for `clicky-local-worker` and the microphone indicator). Load and unload each group. Text, Draft and Rewrite parse; a screenshot question and the grounded rectangle stay inside the preview. Speech: record, stop, transcribe, cleanup, diff, Use original, Save sample, Delete. Export JSON only through the save panel.
+1. Clicky window: opening any pane (General, Shortcuts, Voice, Writing, Screen & privacy, Models, Playground, Results) starts no worker, captures nothing and records nothing (check Activity Monitor for `clicky-local-worker` and the microphone indicator). Load and unload each group. Text, Draft and Rewrite parse; a screenshot question and the grounded rectangle stay inside the preview. Speech: record, stop, transcribe, cleanup, diff, Use original, Save sample, Delete. Export JSON only through the save panel.
 2. Offline: with Wi-Fi off after setup, ASR + cleanup + text + vision all run.
 3. Dictate Anywhere into a Chrome textarea and a VS Code editor: exactly one insertion, no Send. With a selection, review appears. Switching apps mid-recording and pressing Cancel each produce no external write. At a Terminal prompt, a single-line result is inserted but not executed until your own Return.
 4. Ask by voice: the draft appears in Quick Ask, nothing is submitted until Enter, and an existing draft is preserved.

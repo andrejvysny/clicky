@@ -105,17 +105,41 @@ struct TextCompanionPanelView: View {
                 }
                 .buttonStyle(.plain).disabled(!controller.effortAdjustable).clickyPointerCursor()
             }
-            ModeRow(shortcut: "Not enabled") {
-                Triangle().fill(ClickyChrome.ask.opacity(0.4)).frame(width: 9, height: 8)
-                Text("Ask by voice")
+            if let voice = VoiceController.shared {
+                VoiceModeRows(voice: voice)
+            } else {
+                VoiceModeRows.rows(ask: "Not enabled", dictate: "Not enabled", active: false)
             }
-            .foregroundStyle(DS.Colors.textTertiary)
-            ModeRow(shortcut: "Not enabled") {
-                RoundedRectangle(cornerRadius: 1).fill(Color(hex: "#F0784A").opacity(0.5)).frame(width: 2, height: 11).frame(width: 9)
-                Text("Dictate anywhere")
-            }
-            .foregroundStyle(DS.Colors.textTertiary)
         }
+    }
+}
+
+/// Voice rows reflect the live shortcuts; they read "Off" while voice input is disabled in Settings.
+private struct VoiceModeRows: View {
+    @ObservedObject var voice: VoiceController
+
+    var body: some View {
+        Self.rows(ask: label(.ask), dictate: label(.dictate), active: voice.enabled)
+    }
+
+    private func label(_ mode: InputMode) -> String {
+        guard voice.enabled else { return "Off" }
+        let shortcut = voice.shortcut(for: mode)
+        return ShortcutLabel.text(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers)
+    }
+
+    @ViewBuilder
+    static func rows(ask: String, dictate: String, active: Bool) -> some View {
+        ModeRow(shortcut: ask) {
+            Triangle().fill(ClickyChrome.ask.opacity(active ? 1 : 0.4)).frame(width: 9, height: 8)
+            Text("Ask by voice")
+        }
+        .foregroundStyle(active ? Color.white : DS.Colors.textTertiary)
+        ModeRow(shortcut: dictate) {
+            RoundedRectangle(cornerRadius: 1).fill(Color(hex: "#F0784A").opacity(active ? 1 : 0.5)).frame(width: 2, height: 11).frame(width: 9)
+            Text("Dictate anywhere")
+        }
+        .foregroundStyle(active ? Color.white : DS.Colors.textTertiary)
     }
 }
 
