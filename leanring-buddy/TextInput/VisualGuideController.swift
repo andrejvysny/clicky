@@ -130,6 +130,7 @@ final class VisualGuideController: ObservableObject {
             targetGuardSuspendedUntil = environment.uptime() + NSEvent.doubleClickInterval + 0.25
         }
         observer.onEvidence = { [weak self] in self?.evidenceObserved() }
+        observer.onTrace = { [weak self] in self?.trace($0) }
         observer.onInvalidated = { [weak self] in self?.relocateTarget(reason: "observed_change") }
         observer.onUnavailable = { [weak self] in self?.interruptForAppSwitch() }
         observer.onClosed = { [weak self] in
@@ -263,16 +264,19 @@ final class VisualGuideController: ObservableObject {
     /// Settled attempt or relevant AX change. Without an attempt only a local AX predicate may check,
     /// so focus changes and notification noise never trigger captures or provider calls.
     func evidenceObserved() {
-        guard let task, let step = task.step, let target = currentTarget else { return }
+        guard let task, let step = task.step, let target = currentTarget else { trace("evidence ignored no_step"); return }
         if !task.actionDetected {
             guard axOutcomeWasSatisfied != true, let outcome = step.outcome,
                   environment.outcomeMatches(outcome, target) == true else { return }
+            trace("evidence ax_without_attempt")
         }
         checkNow(automatic: true)
     }
     /// Starts a verification episode. Automatic episodes are budgeted per step; an explicit Re-check is not.
     func checkNow(automatic: Bool = false) {
         guard !isBusy, !composerOpen, task?.historyIndex == nil, task?.beginVerification(automatic: automatic) == true else {
+            trace("check refused automatic=\(automatic) busy=\(isBusy) composer=\(composerOpen) history=\(task?.historyIndex != nil) "
+                  + "phase=" + String(describing: task?.phase))
             if automatic, task?.phase == .uncertain { status = "I couldn't confirm that · Re-check"; publish() }
             return
         }

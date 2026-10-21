@@ -14,6 +14,8 @@ final class GuideObserver {
     var onUnavailable: (() -> Void)?
     /// The approved window itself closed or was minimized; a deliberate recovery, not a temporary switch.
     var onClosed: (() -> Void)?
+    /// DEBUG trace sink for fixed, content-free codes (reasons, kinds, counts, rounded distances); never key codes.
+    var onTrace: ((String) -> Void)?
     private var sources: GuideEventSources?
     /// True while observing; tests use it to confirm a stopped observer cannot match late events.
     var isObserving: Bool { target != nil }
@@ -71,6 +73,8 @@ final class GuideObserver {
         expectedFieldFrame = expectedField.flatMap { environment.fieldFrame($0, target) }
         if let expectedField, let focused = environment.focusedElement(target) { hadFieldFocus = CFEqual(expectedField, focused) }
         if environment.accessibilityTrusted() { installAX(target) }
+        onTrace?("observe start action=\(action.kind.rawValue) rect=\(Int(rect.width))x\(Int(rect.height)) scopeContainsRect=\(self.scope?.contains(rect) ?? false) "
+                 + "keys=\(keys) field=\(expectedField != nil) ax=\(axObserver != nil)")
     }
     func stop() {
         generation &+= 1; pending?.cancel(); pending = nil; evidencePending = false; scope = nil
@@ -85,17 +89,26 @@ final class GuideObserver {
     func receiveMouse(_ event: GuideMouseEvent) {
         guard let target else { return }
         if event.dragged { mouseRelease?.cancel(); return }
-        guard environment.focused(target) else { mouseRelease?.cancel(); return }
-        if event.scroll { mouseRelease?.cancel(); onInvalidated?(); return }
-        guard environment.bounds(target) == targetBounds else { mouseRelease?.cancel(); onInvalidated?(); return }
+        guard environment.focused(target) else { mouseRelease?.cancel(); mouseTrace(event, "not_focused"); return }
+        if event.scroll { mouseRelease?.cancel(); onTrace?("observe mouse scroll_invalidates"); onInvalidated?(); return }
+        guard environment.bounds(target) == targetBounds else {
+            mouseRelease?.cancel(); mouseTrace(event, "bounds_changed"); onInvalidated?(); return
+        }
         let point = event.point
-        guard scope?.contains(point) == true else { mouseRelease?.cancel(); return }
+        guard scope?.contains(point) == true else { mouseRelease?.cancel(); mouseTrace(event, "outside_scope"); return }
         if event.pressed {
-            if mouseRelease?.began(button: event.button, count: event.count, point: point, timestamp: event.timestamp) == true { onInteractionBegan?() }
+            let began = mouseRelease?.began(button: event.button, count: event.count, point: point, timestamp: event.timestamp) == true
+            mouseTrace(event, began ? "press_on_target" : "press_off_target")
+            if began { onInteractionBegan?() }
             return
         }
-        guard let releaseCount = mouseRelease?.released(button: event.button, count: event.count, point: point, timestamp: event.timestamp),
-              matcher?.mouse(button: event.button, count: releaseCount, point: point, timestamp: event.timestamp) == true else { return }
+        guard let releaseCount = mouseRelease?.released(button: event.button, count: event.count, point: point, timestamp: event.timestamp) else {
+            mouseTrace(event, "release_untracked"); return
+        }
+        guard matcher?.mouse(button: event.button, count: releaseCount, point: point, timestamp: event.timestamp) == true else {
+            mouseTrace(event, "release_mismatch releaseCount=\(releaseCount)"); return
+        }
+        mouseTrace(event, "matched")
         lastAttemptTimestamp = event.timestamp
         onAction?()
         // The matched release already completes the gesture (a double-click arrives as one count-2 release),
@@ -106,7 +119,12 @@ final class GuideObserver {
         guard let target, environment.focused(target) else { return }
         if matcher?.action.kind == .field_commit, expectedField != nil,
            !hadFieldFocus, !isEditingExpectedField { return }
-        guard matcher?.key(code: code, modifiers: modifiers, timestamp: timestamp, repeated: repeated) == true else { return }
+        guard matcher?.key(code: code, modifiers: modifiers, timestamp: timestamp, repeated: repeated) == true else {
+            // Counted only: the key itself is never logged.
+            if !repeated { onTrace?("observe key mismatch expected=\(matcher?.action.kind.rawValue ?? "-")") }
+            return
+        }
+        onTrace?("observe key matched")
         lastAttemptTimestamp = timestamp
         onAction?()
         schedule(delay: 350_000_000)
@@ -117,6 +135,15 @@ final class GuideObserver {
               environment.frontmostProcess() != target.processIdentifier else { return }
         mouseRelease?.cancel()
         onUnavailable?()
+    }
+    /// Where the event fell relative to the expected target (rounded points outside it), not where on screen.
+    private func mouseTrace(_ event: GuideMouseEvent, _ reason: String) {
+        guard let onTrace else { return }
+        let rect = matcher?.target ?? .null
+        let dx = rect.isNull ? 0 : max(rect.minX - event.point.x, 0, event.point.x - rect.maxX)
+        let dy = rect.isNull ? 0 : max(rect.minY - event.point.y, 0, event.point.y - rect.maxY)
+        onTrace("observe mouse \(reason) button=\(event.button) count=\(event.count) expected=\(matcher?.action.kind.rawValue ?? "-") "
+                + "outside=\(Int(dx.rounded()))x\(Int(dy.rounded()))pt")
     }
     private func schedule(delay: UInt64) {
         pending?.cancel(); let current = generation
@@ -152,6 +179,7 @@ final class GuideObserver {
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
     }
     func receiveAccessibility(_ name: String) {
+        if name != kAXValueChangedNotification as String { onTrace?("observe ax " + name + " evidencePending=\(evidencePending)") }
         if [kAXWindowMovedNotification, kAXWindowResizedNotification].contains(name) { mouseRelease?.cancel(); onInvalidated?(); return }
         if name == kAXUIElementDestroyedNotification || name == kAXFocusedWindowChangedNotification {
             mouseRelease?.cancel()

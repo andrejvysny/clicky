@@ -31,9 +31,13 @@ public actor LocalMLXAgent: GuideAgentRunning {
     private var inflight: Task<String, Error>?
     private var busy = false
     private var closed = false
+    /// DEBUG-only content-free trace (see `LocalAgentDiagnostics`); nil in tests and release builds.
+    private let diagnostics: LocalAgentDiagnostics.Sink?
 
-    public init(contract: AgentContract, client: @escaping LocalInferenceClient, timeoutNanoseconds: UInt64 = 300_000_000_000) {
+    public init(contract: AgentContract, client: @escaping LocalInferenceClient, timeoutNanoseconds: UInt64 = 300_000_000_000,
+                diagnostics: LocalAgentDiagnostics.Sink? = nil) {
         self.contract = contract; self.client = client; self.timeoutNanoseconds = timeoutNanoseconds
+        self.diagnostics = diagnostics
     }
 
     public func identifier() -> String? { sessionIdentifier }
@@ -54,23 +58,48 @@ public actor LocalMLXAgent: GuideAgentRunning {
         let frame = attached.map { LocalReply.ImageFrame(captureID: $0.captureID, pixelWidth: $0.attachment.pixelWidth,
                                                          pixelHeight: $0.attachment.pixelHeight) }
         let user = LocalChatMessage(role: .user, text: Self.render(request, imageAttached: attached != nil))
-        let output = try await generate(history + [user], image: attached?.attachment, purpose: request.purpose)
+        let imageDropped = latestImage != nil && attached == nil
+        let output = try await generate(history + [user], image: attached?.attachment, purpose: request.purpose, imageDropped: imageDropped)
         do {
             let value = try LocalReply.presentation(from: output, purpose: request.purpose, frame: frame)
+            trace(parsed: value, frame: frame, repaired: false)
             remember(user, output)
             return value
         } catch let wrong as GuideWrongPurpose {
+            diagnostics?("wrong_purpose kind=\(wrong.kind.rawValue) purpose=\(wrong.purpose.rawValue)")
             // Kept so the shared one-time purpose correction reads as a follow-up to this reply.
             remember(user, output)
             throw wrong
         } catch AskError.protocolFailure(let problem) {
+            diagnostics?("repair reason=" + Self.validationCode(problem))
             let repair = LocalChatMessage(role: .user, text: LocalPrompt.repair(problem, allowedKinds: GuideContract.allowedKinds(for: request.purpose)))
             let retry = try await generate(history + [user, LocalChatMessage(role: .assistant, text: output), repair],
-                                           image: attached?.attachment, purpose: request.purpose)
-            let value = try LocalReply.presentation(from: retry, purpose: request.purpose, frame: frame)
-            remember(user, retry)
-            return value
+                                           image: attached?.attachment, purpose: request.purpose, imageDropped: imageDropped)
+            do {
+                let value = try LocalReply.presentation(from: retry, purpose: request.purpose, frame: frame)
+                trace(parsed: value, frame: frame, repaired: true)
+                remember(user, retry)
+                return value
+            } catch AskError.protocolFailure(let again) {
+                diagnostics?("repair_failed reason=" + Self.validationCode(again)); throw AskError.protocolFailure(again)
+            }
         }
+    }
+
+    /// What the host made of the reply after normalization; the grid-to-pixel conversion and the host captureID.
+    private func trace(parsed value: GuidePresentation, frame: LocalReply.ImageFrame?, repaired: Bool) {
+        guard let diagnostics else { return }
+        var line = "parsed kind=\(value.kind.rawValue) repaired=\(repaired) frame=" + (frame.map { "\($0.pixelWidth)x\($0.pixelHeight)" } ?? "none")
+        line += " captureID=\(value.captureID != nil) target=" + (value.target.map { "\(Int($0.width))x\(Int($0.height))px" } ?? "none")
+        if let action = value.action { line += " action=\(action.kind.rawValue)" }
+        if let state = value.outcomeState { line += " outcomeState=\(state.rawValue)" }
+        diagnostics(line)
+    }
+
+    /// The validation code and JSON path from host error text like "… (missing_field at $.target)"; never reply text.
+    static func validationCode(_ problem: String) -> String {
+        guard let open = problem.lastIndex(of: "("), let close = problem.lastIndex(of: ")"), open < close else { return "unstructured" }
+        return problem[problem.index(after: open)..<close].replacingOccurrences(of: " ", with: "_")
     }
 
     /// The latest capture, unless this turn names a different capture the agent never received.
@@ -85,9 +114,14 @@ public actor LocalMLXAgent: GuideAgentRunning {
         history += [user, LocalChatMessage(role: .assistant, text: reply)]
     }
 
-    private func generate(_ conversation: [LocalChatMessage], image: PNGImageAttachment?, purpose: GuideRequestPurpose) async throws -> String {
+    private func generate(_ conversation: [LocalChatMessage], image: PNGImageAttachment?, purpose: GuideRequestPurpose,
+                          imageDropped: Bool) async throws -> String {
         let messages = try Self.bounded(system: LocalPrompt.system(for: contract), conversation: conversation)
         let side = image.map { min(max($0.pixelWidth, $0.pixelHeight), Self.maximumImageSide) } ?? 1024
+        diagnostics?(LocalAgentDiagnostics.request(purpose: purpose, historyMessages: conversation.count - 1, sentMessages: messages.count,
+                                                   promptBytes: messages.reduce(0) { $0 + $1.text.utf8.count },
+                                                   imageAttached: image != nil, imageDropped: imageDropped, imageSide: image.map { _ in side }))
+        let started = DispatchTime.now().uptimeNanoseconds
         let request = LocalInferenceRequest(messages: messages, image: image?.data,
                                             parameters: LocalGenerationParameters(maximumTokens: Self.outputTokens(for: purpose),
                                                                                   maximumImageSide: side))
@@ -108,6 +142,10 @@ public actor LocalMLXAgent: GuideAgentRunning {
         defer { if inflight == task { inflight = nil } }
         let output = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
         guard !closed else { throw CancellationError() }
+        if let diagnostics {
+            let milliseconds = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+            diagnostics(LocalAgentDiagnostics.reply(output, history: conversation, milliseconds: milliseconds))
+        }
         return output
     }
 

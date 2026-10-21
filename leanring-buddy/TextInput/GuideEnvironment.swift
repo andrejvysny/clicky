@@ -1,9 +1,20 @@
 import AppKit
 import ApplicationServices
+import OSLog
 #if canImport(ClickyCore)
 // The SwiftPM coordinator harness compiles these app files against ClickyCore; the app compiles Core directly.
 import ClickyCore
 #endif
+
+/// DEBUG builds trace on-device guide turns content-free to the unified log (category `local-agent`).
+nonisolated private let localAgentDiagnostics: LocalAgentDiagnostics.Sink? = {
+    #if DEBUG
+    let logger = Logger(subsystem: "clicky", category: "local-agent")
+    return { line in logger.notice("\(line, privacy: .public)") }
+    #else
+    return nil
+    #endif
+}()
 
 /// Native effects the walkthrough coordinator and observer depend on.
 /// The app uses `.live`; coordinator tests inject a fake clock, capture, Accessibility and provider
@@ -84,7 +95,9 @@ struct GuideEnvironment {
         beginSelection: { TargetSelectionPanel.present(over: $0, onSelect: $1, onCancel: $2) },
         installEventSources: { GuideEventSources.installSystem(for: $0, keys: $1) },
         makeAgent: { provider, executable, root, effort, onUnexpectedExit in
-            if provider == .local { return LocalMLXAgent(contract: .guide, client: LocalAIRuntime.assistantClient) }
+            if provider == .local {
+                return LocalMLXAgent(contract: .guide, client: LocalAIRuntime.assistantClient, diagnostics: localAgentDiagnostics)
+            }
             guard let executable else { throw AskError.missingExecutable(provider.displayName) }
             let profile = try GuideAgentProfile(provider: provider, root: root, taskID: UUID(), effort: effort)
             return GuideAgentSession(profile: profile, executable: executable, onUnexpectedExit: onUnexpectedExit)

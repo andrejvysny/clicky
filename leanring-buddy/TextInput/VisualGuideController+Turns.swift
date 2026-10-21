@@ -103,6 +103,7 @@ extension VisualGuideController {
             // A mark or step against an older capture gets one fresh look instead of failing the question.
             let staleMark = result.kind == .annotation && annotationRect(result) == nil
             let staleStep = result.kind == .guide_step && (lastContext == nil || result.captureID != lastContext?.captureID)
+            if staleMark || staleStep { trace("stale reply kind=\(result.kind.rawValue) relocatedAlready=\(markRelocated)") }
             if staleMark || staleStep, !markRelocated, screenAvailable, displayGranted {
                 markRelocated = true
                 if task?.grant == nil, let currentTarget { task?.authorize(currentTarget) }
@@ -113,6 +114,7 @@ extension VisualGuideController {
             do {
                 try await present(result, current: current)
             } catch is GuideTargetChangedWhileLocating {
+                trace("locate target_changed")
                 // Loading, animation or hover changed the target after the capture: look again within the step's
                 // relocation budget rather than stopping for Resume; old coordinates are never shown.
                 guard task?.spendRelocation() == true, screenAvailable, displayGranted else {
@@ -220,7 +222,10 @@ extension VisualGuideController {
             guard sharingPreference != .off else { throw AskError.protocolFailure("Enable task-window sharing to start a walkthrough. Your explicit image can still support explanations.") }
             guard let image = lastImage, let context = lastContext, let target = currentTarget,
                   result.captureID == context.captureID, let pixelTarget = result.target,
-                  let rect = context.screenRect(pixelTarget), windowsStillCurrent(context), environment.focused(target) else { throw AttachmentError.targetChanged }
+                  let rect = context.screenRect(pixelTarget), windowsStillCurrent(context), environment.focused(target) else {
+                trace("step rejected reason=" + stepRejection(result))
+                throw AttachmentError.targetChanged
+            }
             let currentImage = try await matchingCapture(target, context: context)
             try check(current)
             guard windowsStillCurrent(context),
@@ -235,6 +240,11 @@ extension VisualGuideController {
                 guard pointerNear(rect) else { throw GuideTargetChangedWhileLocating() }
                 trace("locate hover_tolerated")
             }
+            let previousRect = stepScreenRect
+            trace("step located action=\(result.action?.kind.rawValue ?? "-") rect=\(Int(rect.width))x\(Int(rect.height))pt "
+                  + "overlapsPrevious=" + (previousRect.map { String(format: "%.2f", Self.overlap(rect, $0)) } ?? "-")
+                  + " outcomeAX=\(result.outcome.map { $0.axRole != nil || $0.axTitle != nil || $0.axValue != nil } ?? false)"
+                  + " phase=" + String(describing: task?.phase) + " composer=\(composerOpen)")
             let snapshot = GuideStepSnapshot(step: result, stepRevision: task?.stepRevision ?? 0, image: image, context: context,
                                              windowBounds: environment.bounds(target))
             stepSnapshot = snapshot
@@ -254,6 +264,8 @@ extension VisualGuideController {
             if let startedAt = taskStartedAt { metrics.sample(.firstInstruction, seconds: environment.uptime() - startedAt); taskStartedAt = nil }
             walkthroughPresented = true
             axOutcomeWasSatisfied = result.outcome.flatMap { environment.outcomeMatches($0, target) }
+            trace("step shown axBefore=" + (axOutcomeWasSatisfied.map { $0 ? "true" : "false" } ?? "undecidable")
+                  + " observing=\(!composerOpen) repeatsStep=\(repeatsStep)")
             onTarget?(GuideMark(mark: result.mark ?? .circle, target: rect, label: Self.stepLabel(result),
                                 value: result.mark == .value ? result.value : nil,
                                 ghost: result.ghost.flatMap(context.screenRect), within: context.region.rect,
@@ -294,6 +306,25 @@ extension VisualGuideController {
             try await verifyGoal(proposal: result, current: current)
         default: throw AskError.protocolFailure("The agent returned a presentation inappropriate for this task phase.")
         }
+    }
+
+    /// The first failed precondition for placing a step, as a fixed code.
+    private func stepRejection(_ result: GuidePresentation) -> String {
+        guard lastImage != nil, let context = lastContext else { return "no_capture" }
+        guard let target = currentTarget else { return "no_target" }
+        guard result.captureID == context.captureID else { return "capture_mismatch" }
+        guard let pixelTarget = result.target else { return "no_box" }
+        guard context.screenRect(pixelTarget) != nil else { return "box_outside_capture" }
+        guard windowsStillCurrent(context) else { return "windows_changed" }
+        return environment.focused(target) ? "unknown" : "not_focused"
+    }
+
+    /// Intersection over union of two screen rectangles, for content-free step traces.
+    static func overlap(_ a: CGRect, _ b: CGRect) -> Double {
+        let shared = a.intersection(b)
+        guard !shared.isNull else { return 0 }
+        let union = a.width * a.height + b.width * b.height - shared.width * shared.height
+        return union > 0 ? Double(shared.width * shared.height / union) : 0
     }
 
     /// Maps an annotation against the latest capture of the shared window or display.
